@@ -12,7 +12,76 @@ from pathlib import Path
 from typing import Callable, Optional
 
 # --- CONFIGURATION ---
-VERSION = "1.0.0"
+def _resolve_git_dir(start_path):
+    """Return the repository Git directory by reading Git metadata files."""
+    current = Path(start_path).resolve()
+
+    for candidate in (current, *current.parents):
+        git_path = candidate / ".git"
+        if git_path.is_dir():
+            return git_path
+
+        if git_path.is_file():
+            content = git_path.read_text(encoding="utf-8").strip()
+            prefix = "gitdir:"
+            if not content.lower().startswith(prefix):
+                continue
+
+            git_dir = Path(content[len(prefix) :].strip())
+            if not git_dir.is_absolute():
+                git_dir = candidate / git_dir
+            return git_dir.resolve()
+
+    return None
+
+
+def _read_packed_ref(git_dir, ref_name):
+    """Read a commit hash for ref_name from Git's packed-refs file."""
+    packed_refs = git_dir / "packed-refs"
+    if not packed_refs.is_file():
+        return None
+
+    with packed_refs.open(encoding="utf-8") as refs_file:
+        for line in refs_file:
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("^"):
+                continue
+
+            try:
+                commit_id, packed_ref_name = line.split(" ", 1)
+            except ValueError:
+                continue
+
+            if packed_ref_name == ref_name:
+                return commit_id
+
+    return None
+
+
+def get_git_commit_id(start_path=__file__):
+    """Return the current commit ID by reading the repository's Git files."""
+    git_dir = _resolve_git_dir(Path(start_path).parent)
+    if git_dir is None:
+        return "unknown"
+
+    head = git_dir / "HEAD"
+    if not head.is_file():
+        return "unknown"
+
+    head_value = head.read_text(encoding="utf-8").strip()
+    ref_prefix = "ref:"
+    if not head_value.startswith(ref_prefix):
+        return head_value
+
+    ref_name = head_value[len(ref_prefix) :].strip()
+    ref_path = git_dir / ref_name
+    if ref_path.is_file():
+        return ref_path.read_text(encoding="utf-8").strip()
+
+    return _read_packed_ref(git_dir, ref_name) or "unknown"
+
+
+VERSION = get_git_commit_id()
 SERVER_URL = "http://your-server-domain.com/farm_api.php"  # Target PHP endpoint
 POLL_INTERVAL = 10  # Seconds to wait before checking for new jobs if idle
 PC_ID = socket.gethostname()  # Unique identifier for this node
