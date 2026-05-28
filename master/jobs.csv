@@ -1,2 +1,0 @@
-job_id;enabled;status;input_path;output_path;preset;assigned_to;last_error
-1;TRUE;queued;/srv/in/video1.mkv;/srv/out/video1.mp4;compress_video;;
