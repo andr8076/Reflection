@@ -1,8 +1,12 @@
 # Reflection task modules
 
-Task modules live in the `tasks/` folder. Each file is auto-discovered when the
-agent starts, which makes adding a new task a matter of dropping in one
-standardized Python module.
+The core script is intentionally only split into two places:
+
+- `Reflection.py` keeps the farm-agent lifecycle and task loader.
+- `tasks/` contains one file per task.
+
+To add a task, drop a new Python file into `tasks/`. The filename is used as the
+task name unless the file defines `TASK_NAME`.
 
 ## Required task shape
 
@@ -14,7 +18,7 @@ DESCRIPTION = "Short human-readable description."
 
 
 def install():
-    """Optional dependency installer/checker for this task."""
+    """Optional dependency setup/checks for this task only."""
     # Example: check for Blender, FFmpeg, or Python packages here.
     pass
 
@@ -25,23 +29,17 @@ def run(source, delivery, overwrite_allowed):
     return True
 ```
 
-Only `run(source, delivery, overwrite_allowed)` is required. `TASK_NAME`,
-`DESCRIPTION`, and `install()` are optional, but recommended.
+Only `run(source, delivery, overwrite_allowed)` is required. The optional
+`install()` area stays in the task file so dependency setup lives next to the
+code that needs it.
 
-## Optional install area
+## Running a task install area
 
-Use the optional `install()` function inside a task module for task-specific
-software setup or checks. Run installers with:
-
-```bash
-python install_tasks.py
-```
-
-Run a single task installer with:
+Run a single task's optional installer through the main script:
 
 ```bash
-python install_tasks.py my_task
+python Reflection.py --install-task my_task
 ```
 
-Keep installation logic task-specific so a worker only needs the software for the
-tasks it will actually execute.
+There is no separate centralized installer file. `Reflection.py` only discovers
+the requested task and calls that task file's own `install()` function.
