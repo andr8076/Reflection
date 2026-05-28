@@ -2,11 +2,27 @@
 
 The core script is intentionally only split into two places:
 
-- `Reflection.py` keeps the farm-agent lifecycle and task loader.
-- `tasks/` contains one file per task.
+- `Reflection.py` keeps the farm-agent lifecycle, task loader, and built-in
+  control tasks.
+- `tasks/` contains one file per file-processing or render-style task.
 
-To add a task, drop a new Python file into `tasks/`. The filename is used as the
-task name unless the file defines `TASK_NAME`.
+To add a regular task, drop a new Python file into `tasks/`. The filename is
+used as the task name unless the file defines `TASK_NAME`.
+
+## Built-in control tasks
+
+These task names are reserved by `Reflection.py` and are always available even
+when no files exist in `tasks/`:
+
+- `noop`: connectivity check that immediately succeeds.
+- `status`: logs worker id, commit version, timestamp, and built-in task names;
+  if `delivery` is set, writes that snapshot as JSON.
+- `reload_tasks`: reloads the local task registry after reporting success to the
+  server.
+- `shutdown`: reports success to the server, then exits the agent loop cleanly.
+
+Built-in control tasks do not clean up `source` paths. If a task file tries to
+use one of these reserved names, the built-in task wins.
 
 ## Required task shape
 
@@ -33,6 +49,25 @@ Only `run(source, delivery, overwrite_allowed)` is required. The optional
 `install()` area stays in the task file so dependency setup lives next to the
 code that needs it.
 
+## Advanced task outcomes
+
+Most task files should return `True` or `False`. Control-style tasks can return
+a dictionary with these fields:
+
+```python
+return {
+    "success": True,
+    "message": "Optional status text to send as the report error/message field.",
+    "reload_tasks": False,
+    "stop_agent": False,
+    "cleanup_source": True,
+}
+```
+
+The built-in `reload_tasks` and `shutdown` tasks use this advanced outcome shape
+so the agent can finish the normal report-to-server step before changing its own
+lifecycle.
+
 ## Running a task install area
 
 Run a single task's optional installer through the main script:
@@ -41,5 +76,6 @@ Run a single task's optional installer through the main script:
 python Reflection.py --install-task my_task
 ```
 
-There is no separate centralized installer file. `Reflection.py` only discovers
-the requested task and calls that task file's own `install()` function.
+There is no separate centralized installer file. `Reflection.py` discovers the
+requested task and calls that task file's own `install()` function. Built-in
+control tasks do not have install areas.

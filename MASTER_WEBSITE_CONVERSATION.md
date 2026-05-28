@@ -51,7 +51,7 @@ payloads, and status messages around the Reflection worker lifecycle.
 ```json
 {
   "action": "request_task",
-  "version": "1.0.0",
+  "version": "<git-commit-id>",
   "pc_id": "render-node-01"
 }
 ```
@@ -84,9 +84,32 @@ payloads, and status messages around the Reflection worker lifecycle.
 ```json
 {
   "status": "version_mismatch",
-  "required_version": "1.0.0"
+  "required_version": "<git-commit-id>"
 }
 ```
+
+**Control task example:**
+
+The website can send built-in control tasks without relying on files in
+`tasks/`. For example, this tells a worker to report success and then stop its
+agent loop cleanly:
+
+```json
+{
+  "status": "task_available",
+  "task": {
+    "task_id": "control_2001",
+    "module": "shutdown",
+    "source": null,
+    "delivery": null,
+    "overwrite_allowed": false
+  }
+}
+```
+
+Other built-in control task names are `noop` for a connectivity check,
+`status` for a JSON-capable health snapshot, and `reload_tasks` for refreshing
+the worker's local task registry.
 
 ## 3. Worker locks the job
 
@@ -95,7 +118,7 @@ payloads, and status messages around the Reflection worker lifecycle.
 ```json
 {
   "action": "confirm_taken",
-  "version": "1.0.0",
+  "version": "<git-commit-id>",
   "pc_id": "render-node-01",
   "task_id": "job_1001"
 }
@@ -149,7 +172,7 @@ python Reflection.py --install-task dummy_task
 ```json
 {
   "action": "report_done",
-  "version": "1.0.0",
+  "version": "<git-commit-id>",
   "pc_id": "render-node-01",
   "task_id": "job_1001",
   "status": "success",
@@ -162,7 +185,7 @@ python Reflection.py --install-task dummy_task
 ```json
 {
   "action": "report_done",
-  "version": "1.0.0",
+  "version": "<git-commit-id>",
   "pc_id": "render-node-01",
   "task_id": "job_1001",
   "status": "failed",
@@ -225,4 +248,6 @@ python Reflection.py --install-task dummy_task
 - Treat source and delivery paths as untrusted input. Validate that they stay
   inside approved storage locations.
 - Show worker version mismatches clearly so old workers can be updated.
+- Use the worker's Git commit ID as the version value so compatibility checks
+  compare the exact code revision.
 - Store the worker's error text exactly, but display it safely in the UI.
