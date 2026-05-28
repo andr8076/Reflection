@@ -1,6 +1,7 @@
 import argparse
 import importlib.util
 import inspect
+import json
 import logging
 import os
 import shutil
@@ -9,10 +10,79 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 # --- CONFIGURATION ---
-VERSION = "1.0.0"
+def _resolve_git_dir(start_path):
+    """Return the repository Git directory by reading Git metadata files."""
+    current = Path(start_path).resolve()
+
+    for candidate in (current, *current.parents):
+        git_path = candidate / ".git"
+        if git_path.is_dir():
+            return git_path
+
+        if git_path.is_file():
+            content = git_path.read_text(encoding="utf-8").strip()
+            prefix = "gitdir:"
+            if not content.lower().startswith(prefix):
+                continue
+
+            git_dir = Path(content[len(prefix) :].strip())
+            if not git_dir.is_absolute():
+                git_dir = candidate / git_dir
+            return git_dir.resolve()
+
+    return None
+
+
+def _read_packed_ref(git_dir, ref_name):
+    """Read a commit hash for ref_name from Git's packed-refs file."""
+    packed_refs = git_dir / "packed-refs"
+    if not packed_refs.is_file():
+        return None
+
+    with packed_refs.open(encoding="utf-8") as refs_file:
+        for line in refs_file:
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("^"):
+                continue
+
+            try:
+                commit_id, packed_ref_name = line.split(" ", 1)
+            except ValueError:
+                continue
+
+            if packed_ref_name == ref_name:
+                return commit_id
+
+    return None
+
+
+def get_git_commit_id(start_path=__file__):
+    """Return the current commit ID by reading the repository's Git files."""
+    git_dir = _resolve_git_dir(Path(start_path).parent)
+    if git_dir is None:
+        return "unknown"
+
+    head = git_dir / "HEAD"
+    if not head.is_file():
+        return "unknown"
+
+    head_value = head.read_text(encoding="utf-8").strip()
+    ref_prefix = "ref:"
+    if not head_value.startswith(ref_prefix):
+        return head_value
+
+    ref_name = head_value[len(ref_prefix) :].strip()
+    ref_path = git_dir / ref_name
+    if ref_path.is_file():
+        return ref_path.read_text(encoding="utf-8").strip()
+
+    return _read_packed_ref(git_dir, ref_name) or "unknown"
+
+
+VERSION = get_git_commit_id()
 SERVER_URL = "http://your-server-domain.com/farm_api.php"  # Target PHP endpoint
 POLL_INTERVAL = 10  # Seconds to wait before checking for new jobs if idle
 PC_ID = socket.gethostname()  # Unique identifier for this node
@@ -23,11 +93,22 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - 
 
 
 @dataclass(frozen=True)
+class TaskOutcome:
+    """Normalized result from a task run."""
+
+    success: bool
+    stop_agent: bool = False
+    reload_tasks: bool = False
+    cleanup_source: bool = True
+    message: str = ""
+
+
+@dataclass(frozen=True)
 class TaskDefinition:
     """A standardized task loaded from a Python file in the tasks folder."""
 
     name: str
-    run: Callable[[str, str, bool], bool]
+    run: Callable[[str, str, bool], Any]
     install: Optional[Callable[[], None]] = None
     description: str = ""
 
@@ -67,23 +148,6 @@ def _load_task_definition(path):
     )
 
 
-def discover_tasks():
-    """Load every standardized task file from the tasks folder."""
-    registry = {}
-
-    for path in sorted(TASKS_DIR.glob("*.py")):
-        if path.name.startswith("_"):
-            continue
-
-        try:
-            definition = _load_task_definition(path)
-            registry[definition.name] = definition
-        except Exception as e:
-            logging.error("Failed to load task file '%s': %s", path, e)
-
-    return registry
-
-
 def run_task_installer(task_name):
     """Run the optional install() area inside one task file."""
     registry = discover_tasks()
@@ -100,6 +164,129 @@ def run_task_installer(task_name):
     logging.info("Running install() for task '%s'...", task_name)
     definition.install()
 
+
+def _normalize_task_result(result):
+    """Convert a task return value into a TaskOutcome."""
+    if isinstance(result, TaskOutcome):
+        return result
+
+    if isinstance(result, bool):
+        return TaskOutcome(success=result)
+
+    if isinstance(result, dict):
+        return TaskOutcome(
+            success=bool(result.get("success", False)),
+            stop_agent=bool(result.get("stop_agent", False)),
+            reload_tasks=bool(result.get("reload_tasks", False)),
+            cleanup_source=bool(result.get("cleanup_source", True)),
+            message=str(result.get("message", "")),
+        )
+
+    raise TypeError("Task run() must return a bool, dict, or TaskOutcome.")
+
+
+def _system_noop(source, delivery, overwrite_allowed):
+    """Built-in task used to prove the worker can accept control jobs."""
+    logging.info("System noop requested.")
+    return True
+
+
+def _system_status(source, delivery, overwrite_allowed):
+    """Built-in task that records basic worker status when delivery is set."""
+    status = {
+        "pc_id": PC_ID,
+        "version": VERSION,
+        "timestamp": int(time.time()),
+        "tasks": sorted(built_in_tasks()),
+    }
+
+    if delivery:
+        delivery_path = Path(delivery)
+        if delivery_path.exists() and not overwrite_allowed:
+            raise FileExistsError("Target delivery file exists and overwrite is disabled.")
+        if delivery_path.parent != Path(""):
+            delivery_path.parent.mkdir(parents=True, exist_ok=True)
+        delivery_path.write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")
+
+    logging.info("System status requested: %s", status)
+    return {
+        "success": True,
+        "cleanup_source": False,
+        "message": "Agent status recorded." if delivery else "Agent status logged.",
+    }
+
+
+def _system_reload_tasks(source, delivery, overwrite_allowed):
+    """Built-in task that asks the worker to rediscover local task files."""
+    logging.info("System task reload requested.")
+    return {
+        "success": True,
+        "reload_tasks": True,
+        "cleanup_source": False,
+        "message": "Task registry reload requested.",
+    }
+
+
+def _system_shutdown(source, delivery, overwrite_allowed):
+    """Built-in task that asks the worker process to stop gracefully."""
+    logging.info("System shutdown requested.")
+    return {
+        "success": True,
+        "stop_agent": True,
+        "cleanup_source": False,
+        "message": "Agent shutdown requested.",
+    }
+
+
+def built_in_tasks():
+    """Return control tasks that are always available without task files."""
+    return {
+        "noop": TaskDefinition(
+            name="noop",
+            run=_system_noop,
+            description="Built-in connectivity check that immediately succeeds.",
+        ),
+        "status": TaskDefinition(
+            name="status",
+            run=_system_status,
+            description="Built-in health snapshot for the worker.",
+        ),
+        "reload_tasks": TaskDefinition(
+            name="reload_tasks",
+            run=_system_reload_tasks,
+            description="Built-in control task that reloads the local task registry.",
+        ),
+        "shutdown": TaskDefinition(
+            name="shutdown",
+            run=_system_shutdown,
+            description="Built-in control task that stops the worker after reporting success.",
+        ),
+    }
+
+
+def discover_tasks():
+    """Load standardized task files plus reserved built-in system tasks."""
+    registry = {}
+
+    for path in sorted(TASKS_DIR.glob("*.py")):
+        if path.name.startswith("_"):
+            continue
+
+        try:
+            definition = _load_task_definition(path)
+            registry[definition.name] = definition
+        except Exception as e:
+            logging.error("Failed to load task file '%s': %s", path, e)
+
+    built_ins = built_in_tasks()
+    reserved_names = sorted(set(registry) & set(built_ins))
+    if reserved_names:
+        logging.warning(
+            "Task files cannot override built-in task names: %s",
+            ", ".join(reserved_names),
+        )
+    registry.update(built_ins)
+    return registry
 
 # --- CORE FARM AGENT CLASS ---
 class FarmAgent:
@@ -175,7 +362,12 @@ class FarmAgent:
         if definition is None:
             raise KeyError(f"Module '{module_name}' not pre-installed on this agent.")
 
-        return definition.run(source, delivery, overwrite_allowed)
+        return _normalize_task_result(definition.run(source, delivery, overwrite_allowed))
+
+    def reload_task_registry(self):
+        """Refresh the task registry while keeping built-in tasks available."""
+        self.task_registry = discover_tasks()
+        logging.info("Reloaded task modules: %s", ", ".join(sorted(self.task_registry)) or "none")
 
     def run_lifecycle(self):
         """Step 8: The loop."""
@@ -216,22 +408,31 @@ class FarmAgent:
             logging.info("Task %s locked. Starting module: '%s'", task_id, module_name)
 
             # 4. Perform the task via the Registry
-            task_success = False
+            task_outcome = TaskOutcome(success=False)
             error_message = ""
 
             try:
-                task_success = self.run_task(module_name, source, delivery, overwrite_allowed)
+                task_outcome = self.run_task(module_name, source, delivery, overwrite_allowed)
+                error_message = task_outcome.message
             except Exception as e:
                 error_message = str(e)
                 logging.error("Execution failed on module '%s': %s", module_name, error_message)
 
             # 5 & 6. Report done & get server final confirmation
-            server_confirmed = self.report_task_done(task_id, task_success, error_message)
+            server_confirmed = self.report_task_done(task_id, task_outcome.success, error_message)
 
             # 7. Clean up files if the server acknowledged the wrap-up
             if server_confirmed:
-                if task_success:
+                if task_outcome.success and task_outcome.cleanup_source and source:
                     self.cleanup_files(source)
+
+                if task_outcome.reload_tasks:
+                    self.reload_task_registry()
+
+                if task_outcome.stop_agent:
+                    logging.info("Shutdown task %s confirmed by server. Stopping agent.", task_id)
+                    return
+
                 logging.info("Lifecycle finished for Task %s. Repeating loop...\n", task_id)
             else:
                 logging.error("Server did not acknowledge task closeout for %s. Holding cleanup.", task_id)
