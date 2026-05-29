@@ -9,6 +9,20 @@ The core script is intentionally only split into two places:
 To add a regular task, drop a new Python file into `tasks/`. The filename is
 used as the task name unless the file defines `TASK_NAME`.
 
+
+## Included file-processing tasks
+
+- `compress_archive`: compresses a worker-readable source file or directory into
+  a small xz-compressed tar archive at `delivery`. The task selects the strongest
+  xz preset that fits the worker hardware, uses as many compression threads as
+  the CPU/RAM budget allows, and enforces a wall-clock timeout. Set
+  `REFLECTION_COMPRESS_MAX_SECONDS` to override the timeout and
+  `REFLECTION_COMPRESS_XZ_PRESET` to force an xz preset from `0` through `9`.
+- `invert_image`: inverts the colors of a worker-readable image file and writes
+  the result to `delivery`. Workers with Pillow installed can process common
+  formats such as PNG and JPEG; without Pillow, the task still supports
+  uncompressed 24-bit and 32-bit BMP files.
+
 ## Built-in control tasks
 
 These task names are reserved by `Reflection.py` and are always available even

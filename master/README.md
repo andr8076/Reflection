@@ -23,6 +23,7 @@ Farm-specific defaults live in `farm_settings.php`. Copy/edit this file for each
 - Username: `reflection`
 - Password: `reflection`
 
+Allowed task names are defined in `config.php`. Source and delivery values are worker-readable paths/URIs such as FTP, HTTP, SFTP, SMB, or local paths on the workers; the master only stores and passes those strings through. The `compress_archive` task expects a worker-local source path and writes a `.tar.xz` archive to the delivery path. The `invert_image` task expects a worker-local image path and writes an inverted image to the delivery path.
 Change those credentials before exposing the master website outside a trusted network. The credentials protect operator web pages with HTTP Basic authentication; `farm_api.php` remains unauthenticated so existing workers can continue to poll it.
 
 `config.php` also reads two optional environment variables, which override the matching `farm_settings.php` values:
