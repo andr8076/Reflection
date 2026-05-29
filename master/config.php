@@ -43,7 +43,7 @@ function reflection_git_commit_id(string $repoRoot): ?string
 function reflection_master_config(): array
 {
     $repoRoot = dirname(__DIR__);
-    $defaultStorage = $repoRoot . DIRECTORY_SEPARATOR . 'master' . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'farm_store.json';
+    $defaultStorage = __DIR__ . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'farm_store.json';
     $requiredVersion = getenv('REFLECTION_REQUIRED_VERSION');
 
     return [
