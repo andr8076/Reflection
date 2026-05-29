@@ -10,8 +10,12 @@ final class FarmStore
     {
         $this->path = $path;
         $directory = dirname($this->path);
-        if (!is_dir($directory)) {
-            mkdir($directory, 0775, true);
+        if (!is_dir($directory) && !@mkdir($directory, 0775, true) && !is_dir($directory)) {
+            throw new RuntimeException(sprintf('Unable to create farm store directory: %s', $directory));
+        }
+
+        if (!is_writable($directory)) {
+            throw new RuntimeException(sprintf('Farm store directory is not writable: %s', $directory));
         }
     }
 
@@ -149,9 +153,9 @@ final class FarmStore
 
     private function withLock(callable $callback, bool $write = false): mixed
     {
-        $handle = fopen($this->path, 'c+');
+        $handle = @fopen($this->path, 'c+');
         if ($handle === false) {
-            throw new RuntimeException('Unable to open farm store.');
+            throw new RuntimeException(sprintf('Unable to open farm store: %s', $this->path));
         }
 
         flock($handle, $write ? LOCK_EX : LOCK_SH);

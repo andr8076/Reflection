@@ -21,7 +21,7 @@ Then open <http://127.0.0.1:8080/> and point workers at
 `config.php` reads two optional environment variables:
 
 - `REFLECTION_MASTER_STORE`: path to the JSON store file. Defaults to
-  `master/data/farm_store.json`.
+  `data/farm_store.json` beside the deployed master PHP files.
 - `REFLECTION_REQUIRED_VERSION`: required worker Git commit. Defaults to the
   repository's current commit id when it can be read.
 

@@ -12,6 +12,14 @@ $config = [
     'required_version' => 'test-version',
 ];
 
+putenv('REFLECTION_MASTER_STORE');
+$defaultConfig = reflection_master_config();
+assertSameValue(
+    realpath(__DIR__ . '/../master') . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'farm_store.json',
+    $defaultConfig['storage_path'],
+    'Default farm store should live beside the deployed farm master files.'
+);
+
 function assertSameValue(mixed $expected, mixed $actual, string $message): void
 {
     if ($expected !== $actual) {
