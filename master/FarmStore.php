@@ -287,12 +287,16 @@ final class FarmStore
             return null;
         }
 
-        $payload = json_decode($body, true);
-        if (!is_array($payload)) {
-            return null;
+        $soc = null;
+        $trimmedBody = trim($body);
+        if (is_numeric($trimmedBody)) {
+            $soc = $this->normalizeSocPercent((float) $trimmedBody);
+        } else {
+            $payload = json_decode($body, true);
+            if (is_array($payload)) {
+                $soc = $this->extractSocPercent($payload);
+            }
         }
-
-        $soc = $this->extractSocPercent($payload);
         if ($soc === null) {
             return null;
         }
@@ -498,7 +502,7 @@ final class FarmStore
     {
         foreach (['soc', 'SOC', 'stateOfCharge', 'state_of_charge', 'battery_percent'] as $key) {
             if (isset($payload[$key]) && is_numeric($payload[$key])) {
-                return max(0, min(100, (int) round((float) $payload[$key])));
+                return $this->normalizeSocPercent((float) $payload[$key]);
             }
         }
 
@@ -509,6 +513,15 @@ final class FarmStore
         return null;
     }
 
+    private function normalizeSocPercent(float $value): int
+    {
+        if ($value >= 0.0 && $value <= 1.0) {
+            $value *= 100;
+        }
+
+        return max(0, min(100, (int) round($value)));
+    }
+
     private function defaultSettings(): array
     {
         return [
@@ -516,7 +529,7 @@ final class FarmStore
             'failure_strategy' => 'mark_failed',
             'max_retries' => 0,
             'ess_soc_percent' => 100,
-            'ess_soc_url' => '',
+            'ess_soc_url' => 'http://192.168.1.245:8076',
             'ess_min_soc_percent' => 20,
             'ess_shutdown_below_minimum' => true,
         ];

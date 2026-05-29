@@ -12,6 +12,7 @@ $fileHistoryPath = dirname($storePath) . DIRECTORY_SEPARATOR . 'farm_file_histor
 @unlink($eventLogPath);
 @unlink($fileHistoryPath);
 $store = new FarmStore($storePath);
+$store->updateSettings(['ess_soc_url' => '']);
 $config = [
     'required_version' => 'test-version',
 ];
@@ -48,6 +49,21 @@ assertSameValue(
     'Fallback farm store should warn about the unwritable default path.'
 );
 @rmdir($fallbackDirectory);
+
+$socStorePath = sys_get_temp_dir() . '/reflection_soc_store_' . bin2hex(random_bytes(6)) . '.json';
+$socEndpointPath = sys_get_temp_dir() . '/reflection_soc_endpoint_' . bin2hex(random_bytes(6)) . '.txt';
+file_put_contents($socEndpointPath, '0.974381625411616');
+$socStore = new FarmStore($socStorePath);
+assertSameValue(
+    'http://192.168.1.245:8076',
+    $socStore->effectiveSettings()['ess_soc_url'],
+    'Default ESS SOC URL should point at the local ESS endpoint.'
+);
+$socStore->updateSettings(['ess_soc_url' => $socEndpointPath]);
+assertSameValue(97, $socStore->refreshEssSocFromConfiguredEndpoint(), 'Plain fractional SOC endpoint should convert to percent.');
+assertSameValue(97, $socStore->effectiveSettings()['ess_soc_percent'], 'Parsed SOC should be stored as percent.');
+unlink($socStorePath);
+unlink($socEndpointPath);
 
 function assertSameValue($expected, $actual, string $message): void
 {

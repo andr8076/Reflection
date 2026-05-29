@@ -64,10 +64,12 @@ The dashboard leans on status cards for queue, energy, and farm-computer state. 
 - Version enforcement can be enabled or disabled without editing PHP files.
 - Failed jobs can either remain failed or be copied to the end of the queue until
   the configured retry limit is reached.
-- ESS state-of-charge (SOC), an optional ESS JSON status URL, minimum SOC, and
+- ESS state-of-charge (SOC), an optional ESS status URL, minimum SOC, and
   per-computer SOC margins determine how many workers the master should keep
-  active or wake. The JSON URL may return keys such as `soc`, `SOC`,
-  `stateOfCharge`, or `battery.soc`.
+  active or wake. The default SOC URL is `http://192.168.1.245:8076`. The SOC
+  endpoint may return a plain fraction such as `0.974381625411616`, a percent
+  such as `97`, or JSON keys such as `soc`, `SOC`, `stateOfCharge`, or
+  `battery.soc`.
 - When SOC is below the minimum, API responses ask idle workers to stop, and
   workers that understand `shutdown_after_task` stop after completing their
   current task.

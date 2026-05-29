@@ -376,9 +376,9 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
                     </label>
                 </div>
                 <label>
-                    Optional ESS SOC JSON URL
-                    <input name="ess_soc_url" value="<?= reflection_h($settings['ess_soc_url'] ?? '') ?>" placeholder="http://ess.local/status.json">
-                    <small>If set, the master reads JSON keys like <code>soc</code>, <code>SOC</code>, or <code>battery.soc</code> and updates SOC automatically.</small>
+                    ESS SOC URL
+                    <input name="ess_soc_url" value="<?= reflection_h($settings['ess_soc_url'] ?? '') ?>" placeholder="http://192.168.1.245:8076">
+                    <small>Defaults to <code>http://192.168.1.245:8076</code>. The master accepts a plain fraction like <code>0.974</code>, a percent like <code>97</code>, or JSON keys like <code>soc</code>, <code>SOC</code>, or <code>battery.soc</code>.</small>
                 </label>
                 <label class="check-row">
                     <input type="checkbox" name="ess_shutdown_below_minimum" value="1" <?= !empty($settings['ess_shutdown_below_minimum']) ? 'checked' : '' ?>>
