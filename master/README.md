@@ -25,8 +25,7 @@ Then open <http://127.0.0.1:8080/> and point workers at
 - `REFLECTION_REQUIRED_VERSION`: required worker Git commit. Defaults to the
   repository's current commit id when it can be read.
 
-Allowed task names and safe source/delivery path roots are also defined in
-`config.php`.
+Allowed task names are defined in `config.php`. Source and delivery values are worker-readable paths/URIs such as FTP, HTTP, SFTP, SMB, or local paths on the workers; the master only stores and passes those strings through.
 
 ## Deploy on Synology NAS / shared hosting
 
@@ -60,7 +59,7 @@ loading `index.php` or `farm_api.php`.
 
 ## General options, retries, ESS SOC, and Wake-on-LAN
 
-The dashboard's **General options** panel stores runtime policy in the farm store:
+The dashboard leans on status cards for queue, energy, and farm-computer state. The **General options** panel stores runtime policy in the farm store:
 
 - Version enforcement can be enabled or disabled without editing PHP files.
 - Failed jobs can either remain failed or be copied to the end of the queue until
@@ -81,9 +80,9 @@ that fit within the current SOC budget.
 ## Bulk import jobs from a file list
 
 Use the dashboard's **Create jobs** panel and switch **Submit mode** to **Bulk import** to paste or upload a newline list
-of source paths. It also accepts a JSON array of path strings. Every imported
-source path is validated against the configured source roots before a job is
-queued.
+of source URIs/paths. It also accepts a JSON array of path strings. Every imported
+source value is validated as a non-empty worker-readable path/URI before a job is
+queued. The master does not create, move, download, or otherwise manage those files.
 
 A helper script can build the list from a folder:
 
@@ -100,20 +99,21 @@ Quote glob patterns such as `*.mp4` so your shell does not expand them before th
 script can pass them to `find`.
 
 The optional delivery template supports `{source}`, `{basename}`, `{name}`, and
-`{ext}`. For example, `outputs/{basename}` maps `incoming/img001.png` to
-`outputs/img001.png`.
+`{ext}`. For example, `ftp://farm.local/outputs/{basename}` maps
+`ftp://farm.local/incoming/img001.png` to
+`ftp://farm.local/outputs/img001.png`.
 
 
-## Logs and file history
+## Logs and asset/URI history
 
 The master writes operational metadata beside the selected farm store file:
 
 - `farm_events.log`: newline-delimited JSON events for queued, started,
   successful, failed, and stale jobs.
-- `farm_file_history.json`: per-file history showing when each source or
-  delivery path was queued, started, and finished.
+- `farm_file_history.json`: per-asset/URI history showing when each source or
+  delivery string was queued, started, and finished.
 
-The dashboard shows recent log entries and a compact file-history table. If the
+The dashboard shows recent log entries and a compact asset/URI-history table. If the
 app is using the temporary fallback store, these files live in the same temporary
 fallback directory; configure `REFLECTION_MASTER_STORE` or fix `data/`
 permissions for persistent logs.

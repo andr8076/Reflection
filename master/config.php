@@ -128,8 +128,6 @@ function reflection_master_config(): array
             'shutdown' => 'Ask a worker to stop after reporting success.',
             'wake_farm' => 'Ask a worker to send Wake-on-LAN packets to configured farm computers.',
         ],
-        'allowed_source_roots' => ['incoming', 'uploads', 'frames', 'projects'],
-        'allowed_delivery_roots' => ['outputs', 'renders', 'reports'],
         'stale_after_seconds' => 15 * 60,
     ];
 }

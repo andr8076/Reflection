@@ -20,24 +20,17 @@ function reflection_validate_task(string $module, array $config): ?string
     return array_key_exists($module, $config['allowed_tasks']) ? null : 'Choose an allowed task.';
 }
 
-function reflection_path_allowed(?string $path, array $roots, bool $required): ?string
+function reflection_path_allowed(?string $path, bool $required): ?string
 {
     if ($path === null || $path === '') {
-        return $required ? 'Path is required for this task.' : null;
+        return $required ? 'Path or URI is required for this task.' : null;
     }
 
-    $normalized = str_replace('\\', '/', $path);
-    if (reflection_string_starts_with($normalized, '/') || reflection_string_contains($normalized, '..')) {
-        return 'Paths must be relative and may not contain .. segments.';
+    if (preg_match('/[\x00-\x1F\x7F]/', $path) === 1) {
+        return 'Paths and URIs may not contain control characters.';
     }
 
-    foreach ($roots as $root) {
-        if ($normalized === $root || reflection_string_starts_with($normalized, $root . '/')) {
-            return null;
-        }
-    }
-
-    return 'Path must start with one of: ' . implode(', ', $roots) . '.';
+    return null;
 }
 
 function reflection_import_lines(string $raw): array
@@ -74,7 +67,7 @@ function reflection_clean_import_path(string $path): string
         return '';
     }
 
-    return ltrim(str_replace('\\', '/', $path), './');
+    return str_replace('\\', '/', $path);
 }
 
 function reflection_apply_delivery_template(string $template, string $source): ?string
@@ -150,6 +143,64 @@ function reflection_machine_list_text(array $machines): string
     return implode(PHP_EOL, $lines);
 }
 
+function reflection_worker_cards(array $workers, array $machines): array
+{
+    $cards = [];
+    foreach ($machines as $machine) {
+        $pcId = (string) ($machine['pc_id'] ?? '');
+        if ($pcId === '') {
+            continue;
+        }
+
+        $cards[$pcId] = [
+            'pc_id' => $pcId,
+            'mac' => $machine['mac'] ?? '',
+            'soc_margin_percent' => $machine['soc_margin_percent'] ?? 5,
+            'wake_enabled' => !empty($machine['wake_enabled']),
+            'version' => '—',
+            'current_job' => null,
+            'last_check_in' => null,
+            'state' => 'configured',
+        ];
+    }
+
+    foreach ($workers as $worker) {
+        $pcId = (string) ($worker['pc_id'] ?? 'unknown');
+        $lastCheckIn = (string) ($worker['last_check_in'] ?? '');
+        $lastSeen = $lastCheckIn !== '' ? strtotime($lastCheckIn) : false;
+        $state = !empty($worker['current_job']) ? 'running' : 'idle';
+        if ($lastSeen !== false && (time() - $lastSeen) > 15 * 60) {
+            $state = 'stale';
+        }
+
+        $cards[$pcId] = array_merge($cards[$pcId] ?? [
+            'pc_id' => $pcId,
+            'mac' => '',
+            'soc_margin_percent' => 5,
+            'wake_enabled' => false,
+        ], [
+            'version' => $worker['version'] ?? '—',
+            'current_job' => $worker['current_job'] ?? null,
+            'last_check_in' => $worker['last_check_in'] ?? null,
+            'state' => $state,
+        ]);
+    }
+
+    ksort($cards);
+    return array_values($cards);
+}
+
+function reflection_count_worker_states(array $workerCards): array
+{
+    $counts = [];
+    foreach ($workerCards as $card) {
+        $state = (string) ($card['state'] ?? 'unknown');
+        $counts[$state] = ($counts[$state] ?? 0) + 1;
+    }
+
+    return $counts;
+}
+
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $formAction = (string) ($_POST['form_action'] ?? 'single');
@@ -200,8 +251,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $deliveryPath = reflection_apply_delivery_template($delivery, $source);
                 $lineLabel = 'line ' . ((int) $lineNumber + 1) . ' (' . $source . ')';
-                $pathError = reflection_path_allowed($source, $config['allowed_source_roots'], !$isControlTask)
-                    ?? reflection_path_allowed($deliveryPath, $config['allowed_delivery_roots'], false);
+                $pathError = reflection_path_allowed($source, !$isControlTask)
+                    ?? reflection_path_allowed($deliveryPath, false);
 
                 if ($pathError !== null) {
                     $skipped[] = $lineLabel . ': ' . $pathError;
@@ -228,8 +279,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         $source = trim((string) ($_POST['single_source'] ?? ''));
         $error = reflection_validate_task($module, $config)
-            ?? reflection_path_allowed($source !== '' ? $source : null, $config['allowed_source_roots'], !$isControlTask)
-            ?? reflection_path_allowed($delivery !== '' ? $delivery : null, $config['allowed_delivery_roots'], false);
+            ?? reflection_path_allowed($source !== '' ? $source : null, !$isControlTask)
+            ?? reflection_path_allowed($delivery !== '' ? $delivery : null, false);
 
         if ($error === null) {
             $job = $store->createJob(
@@ -254,6 +305,8 @@ $settings = $store->effectiveSettings();
 $machines = $store->machines();
 $allowedActiveWorkers = $store->allowedActiveWorkers();
 $wakeTargetCount = count($store->wakeTargetsForCurrentSoc());
+$workerCards = reflection_worker_cards($workers, $machines);
+$workerStateCounts = reflection_count_worker_states($workerCards);
 $scriptDirectory = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '')), '/');
 $apiPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/farm_api.php';
 $statusCounts = array_count_values(array_map(static fn (array $job): string => (string) $job['status'], $data['jobs']));
@@ -366,19 +419,19 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
                 <div class="mode-fields mode-single">
                     <label>
                         Source path
-                        <input name="single_source" placeholder="incoming/source.dat">
-                        <small>Required for normal work. Allowed roots: <?= reflection_h(implode(', ', $config['allowed_source_roots'])) ?>.</small>
+                        <input name="single_source" placeholder="ftp://farm.local/incoming/source.dat">
+                        <small>Required for normal work. Use an FTP/HTTP/SFTP URL or any worker-readable path; the master only passes it through.</small>
                     </label>
                     <label>
                         Delivery path
-                        <input name="single_delivery" placeholder="outputs/result.txt">
-                        <small>Allowed roots: <?= reflection_h(implode(', ', $config['allowed_delivery_roots'])) ?>.</small>
+                        <input name="single_delivery" placeholder="ftp://farm.local/outputs/result.txt">
+                        <small>Optional worker-readable delivery URI/path; the master does not create or move files.</small>
                     </label>
                 </div>
                 <div class="mode-fields mode-bulk" hidden>
                     <label>
                         Source list
-                        <textarea name="source_list" rows="8" placeholder="incoming/img001.png&#10;incoming/img002.png"></textarea>
+                        <textarea name="source_list" rows="8" placeholder="ftp://farm.local/incoming/img001.png&#10;ftp://farm.local/incoming/img002.png"></textarea>
                         <small>Paste newline paths, a JSON array of paths, or upload a list file generated by <code>tools/reflection-file-list.sh</code>.</small>
                     </label>
                     <label>
@@ -387,8 +440,8 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
                     </label>
                     <label>
                         Delivery template
-                        <input name="bulk_delivery" placeholder="outputs/{basename}">
-                        <small>Optional. Supports <code>{source}</code>, <code>{basename}</code>, <code>{name}</code>, and <code>{ext}</code>. Allowed roots: <?= reflection_h(implode(', ', $config['allowed_delivery_roots'])) ?>.</small>
+                        <input name="bulk_delivery" placeholder="ftp://farm.local/outputs/{basename}">
+                        <small>Optional. Supports <code>{source}</code>, <code>{basename}</code>, <code>{name}</code>, and <code>{ext}</code>. Use any worker-readable delivery URI/path; the master only passes it through.</small>
                     </label>
                 </div>
                 <label class="check-row">
@@ -408,6 +461,18 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
                         <strong><?= (int) ($statusCounts[$status] ?? 0) ?></strong>
                     </div>
                 <?php endforeach; ?>
+                <div class="stat energy">
+                    <span>ESS SOC</span>
+                    <strong><?= (int) ($settings['ess_soc_percent'] ?? 100) ?>%</strong>
+                </div>
+                <div class="stat energy">
+                    <span>active budget</span>
+                    <strong><?= $allowedActiveWorkers === PHP_INT_MAX ? '∞' : (int) $allowedActiveWorkers ?></strong>
+                </div>
+                <div class="stat energy">
+                    <span>wake targets</span>
+                    <strong><?= (int) $wakeTargetCount ?></strong>
+                </div>
             </div>
             <p class="api-note">Point workers at <code><?= reflection_h($apiPath) ?></code>. Use <a href="json_tool.php">JSON Tool</a> to simulate a worker.</p>
         </section>
@@ -482,19 +547,19 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
     </section>
 
     <section class="panel">
-        <h2>File history</h2>
+        <h2>Asset / URI history</h2>
         <div class="table-wrap">
             <table>
                 <thead>
                     <tr>
-                        <th>File</th>
+                        <th>Path or URI</th>
                         <th>Last touched</th>
                         <th>Recent actions</th>
                     </tr>
                 </thead>
                 <tbody>
                 <?php if ($fileHistory === []): ?>
-                    <tr><td colspan="3" class="empty">No file history yet.</td></tr>
+                    <tr><td colspan="3" class="empty">No asset/URI history yet.</td></tr>
                 <?php endif; ?>
                 <?php foreach ($fileHistory as $path => $touches): ?>
                     <?php $recentTouches = array_slice(array_reverse($touches), 0, 4); ?>
@@ -514,7 +579,36 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
     </section>
 
     <section class="panel">
-        <h2>Workers</h2>
+        <h2>Farm computers</h2>
+        <div class="stats-grid computer-summary">
+            <?php foreach (['running', 'idle', 'stale', 'configured'] as $state): ?>
+                <div class="stat">
+                    <span><?= reflection_h($state) ?></span>
+                    <strong><?= (int) ($workerStateCounts[$state] ?? 0) ?></strong>
+                </div>
+            <?php endforeach; ?>
+        </div>
+        <div class="computer-grid">
+            <?php if ($workerCards === []): ?>
+                <p class="empty">No configured computers or worker check-ins yet.</p>
+            <?php endif; ?>
+            <?php foreach ($workerCards as $card): ?>
+                <article class="computer-card <?= reflection_h($card['state'] ?? 'unknown') ?>">
+                    <div class="computer-card-head">
+                        <strong><?= reflection_h($card['pc_id'] ?? 'unknown') ?></strong>
+                        <span class="badge <?= reflection_h($card['state'] ?? 'unknown') ?>"><?= reflection_h($card['state'] ?? 'unknown') ?></span>
+                    </div>
+                    <dl>
+                        <div><dt>Current job</dt><dd><?= reflection_h($card['current_job'] ?? '—') ?></dd></div>
+                        <div><dt>Last check-in</dt><dd><?= reflection_h($card['last_check_in'] ?? '—') ?></dd></div>
+                        <div><dt>Version</dt><dd><code><?= reflection_h($card['version'] ?? '—') ?></code></dd></div>
+                        <div><dt>Wake</dt><dd><?= !empty($card['wake_enabled']) ? 'enabled' : 'disabled' ?><?= !empty($card['mac']) ? ' · ' . reflection_h($card['mac']) : '' ?></dd></div>
+                        <div><dt>SOC margin</dt><dd><?= (int) ($card['soc_margin_percent'] ?? 0) ?>%</dd></div>
+                    </dl>
+                </article>
+            <?php endforeach; ?>
+        </div>
+        <h3>Worker check-in table</h3>
         <div class="table-wrap">
             <table>
                 <thead>

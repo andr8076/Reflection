@@ -343,3 +343,87 @@ a {
 .inline-form {
     margin-top: 1rem;
 }
+
+.stat.energy {
+    background: #ecfdf3;
+}
+
+.computer-summary {
+    margin-bottom: 1rem;
+}
+
+.computer-grid {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    margin-bottom: 1.25rem;
+}
+
+.computer-card {
+    background: #f8fafc;
+    border: 1px solid var(--line);
+    border-left: 6px solid var(--muted);
+    border-radius: 18px;
+    padding: 1rem;
+}
+
+.computer-card.running {
+    border-left-color: var(--warning);
+}
+
+.computer-card.idle {
+    border-left-color: var(--success);
+}
+
+.computer-card.stale {
+    border-left-color: var(--error);
+}
+
+.computer-card.configured {
+    border-left-color: var(--accent);
+}
+
+.computer-card-head {
+    align-items: center;
+    display: flex;
+    gap: 0.75rem;
+    justify-content: space-between;
+    margin-bottom: 0.8rem;
+}
+
+.computer-card dl,
+.computer-card dd {
+    margin: 0;
+}
+
+.computer-card dl {
+    display: grid;
+    gap: 0.65rem;
+}
+
+.computer-card dt {
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.computer-card dd {
+    overflow-wrap: anywhere;
+}
+
+.badge.idle {
+    background: #d1fadf;
+    color: #05603a;
+}
+
+.badge.configured {
+    background: #e0eaff;
+    color: #1749a9;
+}
+
+.badge.unknown {
+    background: #eef2f7;
+    color: var(--muted);
+}
