@@ -40,26 +40,150 @@ function reflection_path_allowed(?string $path, array $roots, bool $required): ?
     return 'Path must start with one of: ' . implode(', ', $roots) . '.';
 }
 
+function reflection_import_lines(string $raw): array
+{
+    $trimmed = trim($raw);
+    if ($trimmed === '') {
+        return [];
+    }
+
+    $json = json_decode($trimmed, true);
+    if (is_array($json)) {
+        $paths = [];
+        foreach ($json as $entry) {
+            if (is_string($entry)) {
+                $paths[] = $entry;
+                continue;
+            }
+
+            if (is_array($entry) && isset($entry['source']) && is_string($entry['source'])) {
+                $paths[] = $entry['source'];
+            }
+        }
+
+        return $paths;
+    }
+
+    return preg_split('/\r\n|\r|\n/', $trimmed) ?: [];
+}
+
+function reflection_clean_import_path(string $path): string
+{
+    $path = trim($path);
+    if ($path === '' || reflection_string_starts_with($path, '#')) {
+        return '';
+    }
+
+    return ltrim(str_replace('\\', '/', $path), './');
+}
+
+function reflection_apply_delivery_template(string $template, string $source): ?string
+{
+    $template = trim($template);
+    if ($template === '') {
+        return null;
+    }
+
+    $basename = basename($source);
+    $extension = pathinfo($basename, PATHINFO_EXTENSION);
+    $name = $extension !== '' ? substr($basename, 0, -strlen($extension) - 1) : $basename;
+
+    return strtr($template, [
+        '{source}' => $source,
+        '{basename}' => $basename,
+        '{name}' => $name,
+        '{ext}' => $extension,
+    ]);
+}
+
+function reflection_uploaded_import_text(string $field): string
+{
+    if (!isset($_FILES[$field]) || !is_array($_FILES[$field])) {
+        return '';
+    }
+
+    if (($_FILES[$field]['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        return '';
+    }
+
+    $tmpName = (string) ($_FILES[$field]['tmp_name'] ?? '');
+    if ($tmpName === '' || !is_uploaded_file($tmpName)) {
+        return '';
+    }
+
+    return (string) file_get_contents($tmpName);
+}
+
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $formAction = (string) ($_POST['form_action'] ?? 'single');
     $module = trim((string) ($_POST['module'] ?? ''));
-    $source = trim((string) ($_POST['source'] ?? ''));
     $delivery = trim((string) ($_POST['delivery'] ?? ''));
     $overwriteAllowed = isset($_POST['overwrite_allowed']);
     $controlTasks = ['noop', 'status', 'reload_tasks', 'shutdown'];
     $isControlTask = in_array($module, $controlTasks, true);
 
-    $error = reflection_validate_task($module, $config)
-        ?? reflection_path_allowed($source !== '' ? $source : null, $config['allowed_source_roots'], !$isControlTask)
-        ?? reflection_path_allowed($delivery !== '' ? $delivery : null, $config['allowed_delivery_roots'], false);
+    if ($formAction === 'bulk') {
+        $importText = (string) ($_POST['source_list'] ?? '');
+        $uploadedText = reflection_uploaded_import_text('source_file');
+        if ($uploadedText !== '') {
+            $importText .= PHP_EOL . $uploadedText;
+        }
 
-    if ($error === null) {
-        $job = $store->createJob(
-            $module,
-            $source !== '' ? $source : null,
-            $delivery !== '' ? $delivery : null,
-            $overwriteAllowed,
-        );
-        $message = 'Queued ' . $job['task_id'] . ' for ' . $job['module'] . '.';
+        $paths = reflection_import_lines($importText);
+        $queued = 0;
+        $skipped = [];
+        $error = reflection_validate_task($module, $config);
+
+        if ($error === null) {
+            foreach ($paths as $lineNumber => $path) {
+                $source = reflection_clean_import_path((string) $path);
+                if ($source === '') {
+                    continue;
+                }
+
+                $deliveryPath = reflection_apply_delivery_template($delivery, $source);
+                $lineLabel = 'line ' . ((int) $lineNumber + 1) . ' (' . $source . ')';
+                $pathError = reflection_path_allowed($source, $config['allowed_source_roots'], !$isControlTask)
+                    ?? reflection_path_allowed($deliveryPath, $config['allowed_delivery_roots'], false);
+
+                if ($pathError !== null) {
+                    $skipped[] = $lineLabel . ': ' . $pathError;
+                    continue;
+                }
+
+                $store->createJob($module, $source, $deliveryPath, $overwriteAllowed);
+                $queued++;
+            }
+
+            if ($queued > 0) {
+                $message = 'Imported ' . $queued . ' job(s) for ' . $module . '.';
+            }
+
+            if ($skipped !== []) {
+                $error = 'Skipped ' . count($skipped) . ' item(s): ' . implode(' | ', array_slice($skipped, 0, 6));
+                if (count($skipped) > 6) {
+                    $error .= ' | ...';
+                }
+            } elseif ($queued === 0) {
+                $error = 'No importable source paths found.';
+            }
+        }
+    } else {
+        $source = trim((string) ($_POST['source'] ?? ''));
+        $error = reflection_validate_task($module, $config)
+            ?? reflection_path_allowed($source !== '' ? $source : null, $config['allowed_source_roots'], !$isControlTask)
+            ?? reflection_path_allowed($delivery !== '' ? $delivery : null, $config['allowed_delivery_roots'], false);
+
+        if ($error === null) {
+            $job = $store->createJob(
+                $module,
+                $source !== '' ? $source : null,
+                $delivery !== '' ? $delivery : null,
+                $overwriteAllowed,
+            );
+            $message = 'Queued ' . $job['task_id'] . ' for ' . $job['module'] . '.';
+        }
     }
 }
 
@@ -109,6 +233,7 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
         <section class="panel submit-panel">
             <h2>Submit job</h2>
             <form method="post">
+                <input type="hidden" name="form_action" value="single">
                 <label>
                     Task
                     <select name="module" required>
@@ -135,6 +260,40 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
             </form>
         </section>
 
+        <section class="panel submit-panel">
+            <h2>Bulk import jobs</h2>
+            <form method="post" enctype="multipart/form-data">
+                <input type="hidden" name="form_action" value="bulk">
+                <label>
+                    Task
+                    <select name="module" required>
+                        <?php foreach ($config['allowed_tasks'] as $taskName => $description): ?>
+                            <option value="<?= reflection_h($taskName) ?>"><?= reflection_h($taskName) ?> — <?= reflection_h($description) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </label>
+                <label>
+                    Source list
+                    <textarea name="source_list" rows="8" placeholder="incoming/img001.png&#10;incoming/img002.png"></textarea>
+                    <small>Paste newline paths, a JSON array of paths, or upload a list file generated by <code>tools/reflection-file-list.sh</code>.</small>
+                </label>
+                <label>
+                    Upload list file
+                    <input type="file" name="source_file" accept=".txt,.list,.json,text/plain,application/json">
+                </label>
+                <label>
+                    Delivery template
+                    <input name="delivery" placeholder="outputs/{basename}">
+                    <small>Optional. Supports <code>{source}</code>, <code>{basename}</code>, <code>{name}</code>, and <code>{ext}</code>. Allowed roots: <?= reflection_h(implode(', ', $config['allowed_delivery_roots'])) ?>.</small>
+                </label>
+                <label class="check-row">
+                    <input type="checkbox" name="overwrite_allowed" value="1">
+                    Allow worker to overwrite existing delivery output
+                </label>
+                <button type="submit">Import jobs</button>
+            </form>
+        </section>
+
         <section class="panel stats-panel">
             <h2>Queue status</h2>
             <div class="stats-grid">
@@ -145,7 +304,7 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
                     </div>
                 <?php endforeach; ?>
             </div>
-            <p class="api-note">Point workers at <code><?= reflection_h($apiPath) ?></code>.</p>
+            <p class="api-note">Point workers at <code><?= reflection_h($apiPath) ?></code>. Use <a href="json_tool.php">JSON Tool</a> to simulate a worker.</p>
         </section>
     </main>
 

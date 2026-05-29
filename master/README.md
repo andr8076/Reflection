@@ -56,6 +56,44 @@ If your NAS policy does not allow the PHP app to write under the web root, point
 `REFLECTION_MASTER_STORE` at another persistent writable JSON file path before
 loading `index.php` or `farm_api.php`.
 
+
+## Bulk import jobs from a file list
+
+Use the dashboard's **Bulk import jobs** panel to paste or upload a newline list
+of source paths. It also accepts a JSON array of path strings. Every imported
+source path is validated against the configured source roots before a job is
+queued.
+
+A helper script can build the list from a folder:
+
+```bash
+# From the deployed farm directory, list matching source files.
+tools/reflection-file-list.sh -r incoming 'img*.png' > import.list
+tools/reflection-file-list.sh -r incoming '*.mp4' -o mp4.list
+
+# When scanning by absolute path, set the base so output remains relative.
+tools/reflection-file-list.sh -r /volume1/web/api/farm/incoming -b /volume1/web/api/farm --all > import.list
+```
+
+Quote glob patterns such as `*.mp4` so your shell does not expand them before the
+script can pass them to `find`.
+
+The optional delivery template supports `{source}`, `{basename}`, `{name}`, and
+`{ext}`. For example, `outputs/{basename}` maps `incoming/img001.png` to
+`outputs/img001.png`.
+
+## Manual JSON worker simulator
+
+Open `json_tool.php` beside the dashboard to send editable JSON requests to
+`farm_api.php`. The tool includes presets for the worker lifecycle:
+
+1. `request_task`
+2. `confirm_taken`
+3. `report_success` / `report_failed`
+
+Edit the JSON before sending to simulate versions, worker IDs, job IDs, and
+worker completion responses.
+
 ## Worker API lifecycle
 
 The endpoint supports the three actions used by `Reflection.py`:
