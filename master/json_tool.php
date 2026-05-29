@@ -2,10 +2,11 @@
 
 declare(strict_types=1);
 
-define('REFLECTION_TESTING', true);
+define('REFLECTION_EMBEDDED_API', true);
 require_once __DIR__ . '/farm_api.php';
 
 $config = reflection_master_config();
+reflection_require_master_login($config);
 $scriptDirectory = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '')), '/');
 $requestScheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
 $requestHost = (string) ($_SERVER['HTTP_HOST'] ?? '127.0.0.1');
@@ -56,7 +57,7 @@ function reflection_send_json(string $endpoint, string $json, array $config, str
     }
 
     if (reflection_endpoint_is_local($endpoint, $defaultEndpoint)) {
-        $store = new FarmStore($config['storage_path']);
+        $store = reflection_farm_store($config);
         $statusCode = 'local farm_api.php';
         return json_encode(reflection_handle_farm_api($decoded, $store, $config), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
     }
@@ -139,7 +140,7 @@ $presets = [
         <div>
             <p class="eyebrow">Reflection</p>
             <h1>JSON Tool</h1>
-            <p class="lede">Send editable JSON requests to the farm master API so you can manually act like a worker and inspect each response.</p>
+            <p class="lede">Send editable JSON requests to <?= reflection_tool_h($config['farm_name'] ?? 'the farm master') ?> so you can manually act like a worker and inspect each response.</p>
         </div>
         <div class="version-card">
             <span>Default endpoint</span>
