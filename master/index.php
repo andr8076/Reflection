@@ -114,16 +114,72 @@ function reflection_uploaded_import_text(string $field): string
     return (string) file_get_contents($tmpName);
 }
 
+function reflection_parse_machine_list(string $raw): array
+{
+    $machines = [];
+    foreach (preg_split('/\r\n|\r|\n/', trim($raw)) ?: [] as $line) {
+        $line = trim($line);
+        if ($line === '' || reflection_string_starts_with($line, '#')) {
+            continue;
+        }
+
+        $parts = array_map('trim', explode(',', $line));
+        $machines[] = [
+            'pc_id' => $parts[0] ?? '',
+            'mac' => $parts[1] ?? '',
+            'soc_margin_percent' => (int) ($parts[2] ?? 5),
+            'wake_enabled' => !isset($parts[3]) || !in_array(strtolower($parts[3]), ['0', 'false', 'no', 'off'], true),
+        ];
+    }
+
+    return $machines;
+}
+
+function reflection_machine_list_text(array $machines): string
+{
+    $lines = [];
+    foreach ($machines as $machine) {
+        $lines[] = implode(',', [
+            $machine['pc_id'] ?? '',
+            $machine['mac'] ?? '',
+            $machine['soc_margin_percent'] ?? 5,
+            !empty($machine['wake_enabled']) ? '1' : '0',
+        ]);
+    }
+
+    return implode(PHP_EOL, $lines);
+}
+
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $formAction = (string) ($_POST['form_action'] ?? 'single');
     $module = trim((string) ($_POST['module'] ?? ''));
     $delivery = trim((string) ($_POST[$formAction === 'bulk' ? 'bulk_delivery' : 'single_delivery'] ?? ''));
     $overwriteAllowed = isset($_POST['overwrite_allowed']);
-    $controlTasks = ['noop', 'status', 'reload_tasks', 'shutdown'];
+    $controlTasks = ['noop', 'status', 'reload_tasks', 'shutdown', 'wake_farm'];
     $isControlTask = in_array($module, $controlTasks, true);
 
-    if ($formAction === 'bulk') {
+    if ($formAction === 'settings') {
+        $settings = $store->updateSettings([
+            'enforce_version' => isset($_POST['enforce_version']),
+            'failure_strategy' => (string) ($_POST['failure_strategy'] ?? 'mark_failed'),
+            'max_retries' => (int) ($_POST['max_retries'] ?? 0),
+            'ess_soc_percent' => (int) ($_POST['ess_soc_percent'] ?? 100),
+            'ess_soc_url' => trim((string) ($_POST['ess_soc_url'] ?? '')),
+            'ess_min_soc_percent' => (int) ($_POST['ess_min_soc_percent'] ?? 20),
+            'ess_shutdown_below_minimum' => isset($_POST['ess_shutdown_below_minimum']),
+        ]);
+        $store->updateMachines(reflection_parse_machine_list((string) ($_POST['machines'] ?? '')));
+        $message = 'Saved general options.';
+    } elseif ($formAction === 'wake_farm') {
+        $targets = $store->wakeTargetsForCurrentSoc();
+        if ($targets === []) {
+            $error = 'No wake-enabled computers fit the current SOC budget.';
+        } else {
+            $job = $store->createJob('wake_farm', json_encode($targets, JSON_UNESCAPED_SLASHES), null, true);
+            $message = 'Queued ' . $job['task_id'] . ' to wake ' . count($targets) . ' computer(s).';
+        }
+    } elseif ($formAction === 'bulk') {
         $importText = (string) ($_POST['source_list'] ?? '');
         $uploadedText = reflection_uploaded_import_text('source_file');
         if ($uploadedText !== '') {
@@ -187,12 +243,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+$store->refreshEssSocFromConfiguredEndpoint();
 $staleCount = $store->requeueStaleJobs((int) $config['stale_after_seconds']);
 $data = $store->read();
 $jobs = array_reverse($data['jobs']);
 $workers = $data['workers'];
 $events = $store->readRecentEvents(25);
 $fileHistory = array_slice($store->readFileHistory(), 0, 50, true);
+$settings = $store->effectiveSettings();
+$machines = $store->machines();
+$allowedActiveWorkers = $store->allowedActiveWorkers();
+$wakeTargetCount = count($store->wakeTargetsForCurrentSoc());
 $scriptDirectory = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '')), '/');
 $apiPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/farm_api.php';
 $statusCounts = array_count_values(array_map(static fn (array $job): string => (string) $job['status'], $data['jobs']));
@@ -232,6 +293,57 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
     <?php endif; ?>
 
     <main>
+        <section class="panel submit-panel">
+            <h2>General options</h2>
+            <form method="post">
+                <input type="hidden" name="form_action" value="settings">
+                <label class="check-row">
+                    <input type="checkbox" name="enforce_version" value="1" <?= !empty($settings['enforce_version']) ? 'checked' : '' ?>>
+                    Enforce worker version
+                </label>
+                <label>
+                    Failed task behavior
+                    <select name="failure_strategy">
+                        <option value="mark_failed" <?= ($settings['failure_strategy'] ?? '') === 'mark_failed' ? 'selected' : '' ?>>Mark failed and stop retrying</option>
+                        <option value="retry_to_end" <?= ($settings['failure_strategy'] ?? '') === 'retry_to_end' ? 'selected' : '' ?>>Retry by pushing a copy to the end of the queue</option>
+                    </select>
+                </label>
+                <label>
+                    Max retries
+                    <input type="number" name="max_retries" min="0" value="<?= (int) ($settings['max_retries'] ?? 0) ?>">
+                </label>
+                <div class="option-grid">
+                    <label>
+                        ESS SOC %
+                        <input type="number" name="ess_soc_percent" min="0" max="100" value="<?= (int) ($settings['ess_soc_percent'] ?? 100) ?>">
+                    </label>
+                    <label>
+                        Minimum SOC %
+                        <input type="number" name="ess_min_soc_percent" min="0" max="100" value="<?= (int) ($settings['ess_min_soc_percent'] ?? 20) ?>">
+                    </label>
+                </div>
+                <label>
+                    Optional ESS SOC JSON URL
+                    <input name="ess_soc_url" value="<?= reflection_h($settings['ess_soc_url'] ?? '') ?>" placeholder="http://ess.local/status.json">
+                    <small>If set, the master reads JSON keys like <code>soc</code>, <code>SOC</code>, or <code>battery.soc</code> and updates SOC automatically.</small>
+                </label>
+                <label class="check-row">
+                    <input type="checkbox" name="ess_shutdown_below_minimum" value="1" <?= !empty($settings['ess_shutdown_below_minimum']) ? 'checked' : '' ?>>
+                    Tell workers to shut down after current task when SOC is below minimum
+                </label>
+                <label>
+                    Farm computers available for Wake-on-LAN
+                    <textarea name="machines" rows="6" placeholder="render-01,AA:BB:CC:DD:EE:01,5,1&#10;render-02,AA:BB:CC:DD:EE:02,8,1"><?= reflection_h(reflection_machine_list_text($machines)) ?></textarea>
+                    <small>One per line: <code>pc_id,mac,soc_margin_percent,wake_enabled</code>. Current SOC allows <?= $allowedActiveWorkers === PHP_INT_MAX ? 'unlimited' : (int) $allowedActiveWorkers ?> active worker(s), with <?= (int) $wakeTargetCount ?> wake target(s) in budget.</small>
+                </label>
+                <button type="submit">Save options</button>
+            </form>
+            <form method="post" class="inline-form">
+                <input type="hidden" name="form_action" value="wake_farm">
+                <button type="submit">Queue Wake-on-LAN task</button>
+            </form>
+        </section>
+
         <section class="panel submit-panel">
             <h2>Create jobs</h2>
             <form method="post" enctype="multipart/form-data" id="job-form">

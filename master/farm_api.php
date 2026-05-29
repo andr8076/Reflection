@@ -23,9 +23,11 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
     }
 
     $store->recordWorkerCheckIn($pcId, $version);
+    $store->refreshEssSocFromConfiguredEndpoint();
 
+    $settings = $store->effectiveSettings();
     $requiredVersion = $config['required_version'] ?? null;
-    if (is_string($requiredVersion) && $requiredVersion !== '' && $version !== $requiredVersion) {
+    if (!empty($settings['enforce_version']) && is_string($requiredVersion) && $requiredVersion !== '' && $version !== $requiredVersion) {
         return ['status' => 'version_mismatch', 'required_version' => $requiredVersion];
     }
 
@@ -43,6 +45,20 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
 
 function reflection_api_request_task(FarmStore $store): array
 {
+    $allowedWorkers = $store->allowedActiveWorkers();
+    $settings = $store->effectiveSettings();
+    if ($allowedWorkers <= 0) {
+        return [
+            'status' => 'no_jobs',
+            'shutdown_after_task' => !empty($settings['ess_shutdown_below_minimum']),
+            'reason' => 'ess_soc_below_minimum',
+        ];
+    }
+
+    if ($allowedWorkers !== PHP_INT_MAX && $store->runningWorkerCount() >= $allowedWorkers) {
+        return ['status' => 'no_jobs', 'reason' => 'ess_worker_limit'];
+    }
+
     $job = $store->nextQueuedJob();
     if ($job === null) {
         return ['status' => 'no_jobs'];
@@ -56,6 +72,7 @@ function reflection_api_request_task(FarmStore $store): array
             'source' => $job['source'],
             'delivery' => $job['delivery'],
             'overwrite_allowed' => (bool) $job['overwrite_allowed'],
+            'shutdown_after_task' => !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 1,
         ],
     ];
 }
@@ -92,7 +109,12 @@ function reflection_api_report_done(array $payload, FarmStore $store, string $pc
         return ['status' => 'not_available'];
     }
 
-    return ['status' => 'confirmed_by_server'];
+    $settings = $store->effectiveSettings();
+    $allowedWorkers = $store->allowedActiveWorkers();
+    return [
+        'status' => 'confirmed_by_server',
+        'shutdown_after_task' => !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 0,
+    ];
 }
 
 if (!defined('REFLECTION_TESTING')) {

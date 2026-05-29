@@ -29,6 +29,7 @@ assertSameValue(
     'Default farm store directory should ship with the deployed farm master files.'
 );
 assertSameValue(null, $defaultConfig['storage_warning'], 'Writable default farm store should not warn.');
+assertSameValue(true, array_key_exists('wake_farm', $defaultConfig['allowed_tasks']), 'Wake-on-LAN should be an allowed master task.');
 
 $fallbackDirectory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'reflection_farm_fallback_' . bin2hex(random_bytes(6));
 $fallbackConfig = reflection_resolve_master_store(
@@ -120,6 +121,32 @@ assertSameValue('no_jobs', $response['status'], 'Finished jobs should leave the 
 $data = $store->read();
 assertSameValue('success', $data['jobs'][0]['status'], 'Store should retain the final job status.');
 assertSameValue(null, $data['workers']['node-01']['current_job'], 'Worker should be idle after report_done.');
+
+$store->updateSettings([
+    'enforce_version' => false,
+    'failure_strategy' => 'retry_to_end',
+    'max_retries' => 1,
+    'ess_soc_percent' => 12,
+    'ess_min_soc_percent' => 20,
+]);
+$response = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'wrong-but-allowed',
+    'pc_id' => 'node-03',
+], $store, $config);
+assertSameValue('no_jobs', $response['status'], 'SOC below minimum should withhold new work.');
+assertSameValue(true, $response['shutdown_after_task'], 'SOC below minimum should ask idle workers to shut down.');
+
+$store->updateSettings([
+    'ess_soc_percent' => 100,
+    'ess_min_soc_percent' => 20,
+]);
+$retryJob = $store->createJob('dummy_task', 'incoming/retry.dat', 'outputs/retry.txt', false);
+assertSameValue(true, $store->markJobRunning($retryJob['task_id'], 'node-04'), 'Retry test job should lock.');
+assertSameValue(true, $store->finishJob($retryJob['task_id'], 'node-04', 'failed', 'simulated'), 'Retry test job should finish as failed.');
+$data = $store->read();
+assertSameValue('queued', $data['jobs'][2]['status'], 'Failed jobs should be retried to the end of the queue.');
+assertSameValue(1, $data['jobs'][2]['attempt'], 'Retried jobs should increment attempt count.');
 
 unlink($storePath);
 @unlink($eventLogPath);

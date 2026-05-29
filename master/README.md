@@ -57,6 +57,27 @@ If your NAS policy does not allow the PHP app to write under the web root, point
 loading `index.php` or `farm_api.php`.
 
 
+
+## General options, retries, ESS SOC, and Wake-on-LAN
+
+The dashboard's **General options** panel stores runtime policy in the farm store:
+
+- Version enforcement can be enabled or disabled without editing PHP files.
+- Failed jobs can either remain failed or be copied to the end of the queue until
+  the configured retry limit is reached.
+- ESS state-of-charge (SOC), an optional ESS JSON status URL, minimum SOC, and
+  per-computer SOC margins determine how many workers the master should keep
+  active or wake. The JSON URL may return keys such as `soc`, `SOC`,
+  `stateOfCharge`, or `battery.soc`.
+- When SOC is below the minimum, API responses ask idle workers to stop, and
+  workers that understand `shutdown_after_task` stop after completing their
+  current task.
+- The computer list format is `pc_id,mac,soc_margin_percent,wake_enabled`.
+
+The **Queue Wake-on-LAN task** button creates a `wake_farm` control job. A worker
+that receives it sends Wake-on-LAN magic packets for the configured computers
+that fit within the current SOC budget.
+
 ## Bulk import jobs from a file list
 
 Use the dashboard's **Create jobs** panel and switch **Submit mode** to **Bulk import** to paste or upload a newline list

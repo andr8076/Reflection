@@ -47,6 +47,8 @@ final class FarmStore
                 'source' => $source,
                 'delivery' => $delivery,
                 'overwrite_allowed' => $overwriteAllowed,
+                'attempt' => 0,
+                'parent_task_id' => null,
                 'status' => 'queued',
                 'worker' => null,
                 'error' => '',
@@ -131,6 +133,7 @@ final class FarmStore
     {
         $result = $this->withLock(function (array $data) use ($taskId, $pcId, $status, $error): array {
             $finishedJob = null;
+            $retryJob = null;
             foreach ($data['jobs'] as &$job) {
                 if (($job['task_id'] ?? '') === $taskId && ($job['status'] ?? '') === 'running') {
                     $job['status'] = $status === 'success' ? 'success' : 'failed';
@@ -138,6 +141,23 @@ final class FarmStore
                     $job['error'] = $error;
                     $job['finished_at'] = gmdate(DATE_ATOM);
                     $finishedJob = $job;
+
+                    $settings = array_merge($this->defaultSettings(), $data['settings'] ?? []);
+                    $attempt = (int) ($job['attempt'] ?? 0);
+                    $maxRetries = max(0, (int) ($settings['max_retries'] ?? 0));
+                    if ($job['status'] === 'failed' && ($settings['failure_strategy'] ?? 'mark_failed') === 'retry_to_end' && $attempt < $maxRetries) {
+                        $retryJob = $job;
+                        $retryJob['task_id'] = $this->nextJobId($data);
+                        $retryJob['status'] = 'queued';
+                        $retryJob['worker'] = null;
+                        $retryJob['error'] = '';
+                        $retryJob['attempt'] = $attempt + 1;
+                        $retryJob['parent_task_id'] = $job['parent_task_id'] ?? $job['task_id'];
+                        $retryJob['created_at'] = gmdate(DATE_ATOM);
+                        $retryJob['started_at'] = null;
+                        $retryJob['finished_at'] = null;
+                        $data['jobs'][] = $retryJob;
+                    }
                     break;
                 }
             }
@@ -148,13 +168,21 @@ final class FarmStore
                 $data['workers'][$pcId]['current_job'] = null;
             }
 
-            return ['data' => $data, 'result' => $finishedJob];
+            return ['data' => $data, 'result' => ['finished' => $finishedJob, 'retry' => $retryJob]];
         }, true);
 
-        if (is_array($result)) {
-            $this->recordEvent('job_' . $result['status'], $result);
-            $this->recordFileTouch($result['source'], 'finished_source_' . $result['status'], $result);
-            $this->recordFileTouch($result['delivery'], 'finished_delivery_' . $result['status'], $result);
+        if (is_array($result) && is_array($result['finished'] ?? null)) {
+            $finishedJob = $result['finished'];
+            $this->recordEvent('job_' . $finishedJob['status'], $finishedJob);
+            $this->recordFileTouch($finishedJob['source'], 'finished_source_' . $finishedJob['status'], $finishedJob);
+            $this->recordFileTouch($finishedJob['delivery'], 'finished_delivery_' . $finishedJob['status'], $finishedJob);
+
+            if (is_array($result['retry'] ?? null)) {
+                $this->recordEvent('job_retried', $result['retry']);
+                $this->recordFileTouch($result['retry']['source'], 'retried_source', $result['retry']);
+                $this->recordFileTouch($result['retry']['delivery'], 'retried_delivery', $result['retry']);
+            }
+
             return true;
         }
 
@@ -192,6 +220,159 @@ final class FarmStore
         }
 
         return count($staleJobs);
+    }
+
+    public function updateSettings(array $settings): array
+    {
+        return $this->withLock(function (array $data) use ($settings): array {
+            $data['settings'] = array_merge($this->defaultSettings(), $data['settings'] ?? [], $settings);
+            $data['settings']['max_retries'] = max(0, (int) ($data['settings']['max_retries'] ?? 0));
+            $data['settings']['ess_soc_percent'] = max(0, min(100, (int) ($data['settings']['ess_soc_percent'] ?? 100)));
+            $data['settings']['ess_min_soc_percent'] = max(0, min(100, (int) ($data['settings']['ess_min_soc_percent'] ?? 20)));
+            return ['data' => $data, 'result' => $data['settings']];
+        }, true);
+    }
+
+    public function updateMachines(array $machines): array
+    {
+        return $this->withLock(function (array $data) use ($machines): array {
+            $cleanMachines = [];
+            foreach ($machines as $machine) {
+                if (!is_array($machine)) {
+                    continue;
+                }
+
+                $pcId = trim((string) ($machine['pc_id'] ?? ''));
+                $mac = trim((string) ($machine['mac'] ?? ''));
+                if ($pcId === '' && $mac === '') {
+                    continue;
+                }
+
+                $cleanMachines[] = [
+                    'pc_id' => $pcId !== '' ? $pcId : $mac,
+                    'mac' => $mac,
+                    'soc_margin_percent' => max(0, (int) ($machine['soc_margin_percent'] ?? 5)),
+                    'wake_enabled' => !empty($machine['wake_enabled']),
+                ];
+            }
+
+            $data['machines'] = $cleanMachines;
+            return ['data' => $data, 'result' => $cleanMachines];
+        }, true);
+    }
+
+    public function effectiveSettings(): array
+    {
+        $data = $this->read();
+        return array_merge($this->defaultSettings(), $data['settings'] ?? []);
+    }
+
+    public function machines(): array
+    {
+        $data = $this->read();
+        return $data['machines'] ?? [];
+    }
+
+    public function refreshEssSocFromConfiguredEndpoint(): ?int
+    {
+        $settings = $this->effectiveSettings();
+        $url = trim((string) ($settings['ess_soc_url'] ?? ''));
+        if ($url === '') {
+            return null;
+        }
+
+        $context = stream_context_create(['http' => ['timeout' => 3, 'ignore_errors' => true]]);
+        $body = @file_get_contents($url, false, $context);
+        if ($body === false) {
+            return null;
+        }
+
+        $payload = json_decode($body, true);
+        if (!is_array($payload)) {
+            return null;
+        }
+
+        $soc = $this->extractSocPercent($payload);
+        if ($soc === null) {
+            return null;
+        }
+
+        $this->updateSettings(['ess_soc_percent' => $soc]);
+        return $soc;
+    }
+
+    public function allowedActiveWorkers(): int
+    {
+        $settings = $this->effectiveSettings();
+        $soc = (int) ($settings['ess_soc_percent'] ?? 100);
+        $minimum = (int) ($settings['ess_min_soc_percent'] ?? 20);
+        if ($soc <= $minimum) {
+            return 0;
+        }
+
+        $budget = $soc - $minimum;
+        $margins = [];
+        foreach ($this->machines() as $machine) {
+            if (!empty($machine['wake_enabled'])) {
+                $margins[] = max(1, (int) ($machine['soc_margin_percent'] ?? 5));
+            }
+        }
+
+        if ($margins === []) {
+            return PHP_INT_MAX;
+        }
+
+        sort($margins, SORT_NUMERIC);
+        $allowed = 0;
+        foreach ($margins as $margin) {
+            if ($budget < $margin) {
+                break;
+            }
+
+            $budget -= $margin;
+            $allowed++;
+        }
+
+        return $allowed;
+    }
+
+    public function runningWorkerCount(): int
+    {
+        $data = $this->read();
+        $workers = $data['workers'] ?? [];
+        $count = 0;
+        foreach ($workers as $worker) {
+            if (!empty($worker['current_job'])) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    public function wakeTargetsForCurrentSoc(): array
+    {
+        $settings = $this->effectiveSettings();
+        $budget = max(0, (int) ($settings['ess_soc_percent'] ?? 100) - (int) ($settings['ess_min_soc_percent'] ?? 20));
+        $machines = array_values(array_filter($this->machines(), static function (array $machine): bool {
+            return !empty($machine['wake_enabled']) && !empty($machine['mac']);
+        }));
+        usort($machines, static function (array $a, array $b): int {
+            return ((int) ($a['soc_margin_percent'] ?? 5)) <=> ((int) ($b['soc_margin_percent'] ?? 5));
+        });
+
+        $targets = [];
+        foreach ($machines as $machine) {
+            $margin = max(1, (int) ($machine['soc_margin_percent'] ?? 5));
+            if ($budget < $margin) {
+                break;
+            }
+
+            $budget -= $margin;
+            $targets[] = $machine;
+        }
+
+        return $targets;
     }
 
     public function readRecentEvents(int $limit = 50): array
@@ -307,7 +488,37 @@ final class FarmStore
         return [
             'jobs' => array_values($data['jobs'] ?? []),
             'workers' => $data['workers'] ?? [],
+            'settings' => array_merge($this->defaultSettings(), $data['settings'] ?? []),
+            'machines' => array_values($data['machines'] ?? []),
             'last_job_number' => (int) ($data['last_job_number'] ?? 1000),
+        ];
+    }
+
+    private function extractSocPercent(array $payload): ?int
+    {
+        foreach (['soc', 'SOC', 'stateOfCharge', 'state_of_charge', 'battery_percent'] as $key) {
+            if (isset($payload[$key]) && is_numeric($payload[$key])) {
+                return max(0, min(100, (int) round((float) $payload[$key])));
+            }
+        }
+
+        if (isset($payload['battery']) && is_array($payload['battery'])) {
+            return $this->extractSocPercent($payload['battery']);
+        }
+
+        return null;
+    }
+
+    private function defaultSettings(): array
+    {
+        return [
+            'enforce_version' => true,
+            'failure_strategy' => 'mark_failed',
+            'max_retries' => 0,
+            'ess_soc_percent' => 100,
+            'ess_soc_url' => '',
+            'ess_min_soc_percent' => 20,
+            'ess_shutdown_below_minimum' => true,
         ];
     }
 
