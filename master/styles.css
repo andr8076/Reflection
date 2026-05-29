@@ -1,0 +1,279 @@
+:root {
+    color-scheme: light;
+    --bg: #eef3f8;
+    --panel: #ffffff;
+    --ink: #152238;
+    --muted: #667085;
+    --accent: #2264e5;
+    --accent-dark: #1749a9;
+    --line: #d8e0ec;
+    --success: #067647;
+    --error: #b42318;
+    --warning: #b54708;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    background: radial-gradient(circle at top left, #d7e7ff, transparent 32rem), var(--bg);
+    color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 2rem;
+}
+
+header,
+main,
+.panel,
+.alert {
+    max-width: 1180px;
+    margin-inline: auto;
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    gap: 1.5rem;
+    align-items: flex-end;
+    margin-bottom: 1.5rem;
+}
+
+h1,
+h2,
+p {
+    margin-top: 0;
+}
+
+h1 {
+    font-size: clamp(2.25rem, 7vw, 4.5rem);
+    line-height: 0.95;
+    margin-bottom: 0.75rem;
+}
+
+h2 {
+    font-size: 1.2rem;
+}
+
+.eyebrow {
+    color: var(--accent);
+    font-weight: 800;
+    letter-spacing: 0.2em;
+    margin-bottom: 0.4rem;
+    text-transform: uppercase;
+}
+
+.lede {
+    color: var(--muted);
+    max-width: 48rem;
+    font-size: 1.1rem;
+}
+
+.version-card,
+.panel,
+.alert {
+    background: color-mix(in srgb, var(--panel), transparent 4%);
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    box-shadow: 0 18px 48px rgba(21, 34, 56, 0.08);
+}
+
+.version-card {
+    padding: 1rem;
+    min-width: min(100%, 22rem);
+}
+
+.version-card span,
+.stat span,
+small {
+    color: var(--muted);
+    display: block;
+    font-size: 0.85rem;
+}
+
+.version-card strong {
+    display: block;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 0.85rem;
+    overflow-wrap: anywhere;
+}
+
+.alert {
+    padding: 0.85rem 1rem;
+    margin-bottom: 1rem;
+    font-weight: 700;
+}
+
+.alert.success {
+    color: var(--success);
+}
+
+.alert.error {
+    color: var(--error);
+}
+
+.alert.warning {
+    color: var(--warning);
+}
+
+main {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(18rem, 0.8fr);
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.panel {
+    padding: 1.25rem;
+    margin-bottom: 1rem;
+}
+
+form {
+    display: grid;
+    gap: 1rem;
+}
+
+label {
+    display: grid;
+    gap: 0.35rem;
+    font-weight: 700;
+}
+
+input,
+select,
+button {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    font: inherit;
+    padding: 0.75rem 0.85rem;
+}
+
+input:focus,
+select:focus {
+    border-color: var(--accent);
+    outline: 3px solid rgba(34, 100, 229, 0.16);
+}
+
+.check-row {
+    align-items: center;
+    display: flex;
+    font-weight: 600;
+}
+
+button {
+    background: var(--accent);
+    border: 0;
+    color: #fff;
+    cursor: pointer;
+    font-weight: 800;
+}
+
+button:hover {
+    background: var(--accent-dark);
+}
+
+.stats-grid {
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+}
+
+.stat {
+    background: #f5f8fc;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 0.9rem;
+}
+
+.stat strong {
+    display: block;
+    font-size: 2rem;
+}
+
+.api-note {
+    color: var(--muted);
+    margin: 1rem 0 0;
+}
+
+.table-wrap {
+    overflow-x: auto;
+}
+
+table {
+    border-collapse: collapse;
+    min-width: 900px;
+    width: 100%;
+}
+
+th,
+td {
+    border-bottom: 1px solid var(--line);
+    padding: 0.75rem;
+    text-align: left;
+    vertical-align: top;
+}
+
+th {
+    color: var(--muted);
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+code {
+    background: #eef2f7;
+    border-radius: 6px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    padding: 0.08rem 0.28rem;
+}
+
+.badge {
+    border-radius: 999px;
+    display: inline-block;
+    font-size: 0.8rem;
+    font-weight: 800;
+    padding: 0.18rem 0.55rem;
+}
+
+.badge.queued {
+    background: #e0eaff;
+    color: #1749a9;
+}
+
+.badge.running {
+    background: #fef0c7;
+    color: #93370d;
+}
+
+.badge.success {
+    background: #d1fadf;
+    color: #05603a;
+}
+
+.badge.failed,
+.badge.stale {
+    background: #fee4e2;
+    color: #912018;
+}
+
+.empty {
+    color: var(--muted);
+    text-align: center;
+}
+
+@media (max-width: 800px) {
+    body {
+        padding: 1rem;
+    }
+
+    header,
+    main {
+        display: block;
+    }
+
+    .version-card {
+        margin-top: 1rem;
+    }
+}
