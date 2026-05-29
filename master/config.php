@@ -187,18 +187,9 @@ function reflection_master_config(?array $farmSettings = null): array
         'required_version' => $requiredVersion !== false && $requiredVersion !== ''
             ? $requiredVersion
             : reflection_git_commit_id($repoRoot),
-        'allowed_tasks' => [
-            'dummy_task' => 'Placeholder pipeline test task.',
-            'render_frame' => 'Render a frame with the configured worker renderer.',
-            'compress_archive' => 'Compress a file or directory into a small .tar.xz archive with hardware-aware limits.',
-            'invert_image' => 'Invert an image while preserving alpha transparency when possible.',
-            'noop' => 'Built-in worker connectivity check.',
-            'status' => 'Built-in worker health snapshot.',
-            'reload_tasks' => 'Ask a worker to reload its local task registry.',
-            'shutdown' => 'Ask a worker to stop after reporting success.',
-            'wake_farm' => 'Ask a worker to send Wake-on-LAN packets to configured farm computers.',
-        ],
-        'stale_after_seconds' => 15 * 60,
+        'runtime_defaults' => is_array($settings['runtime_defaults'] ?? null) ? $settings['runtime_defaults'] : [],
+        'allowed_tasks' => is_array($settings['allowed_tasks'] ?? null) ? $settings['allowed_tasks'] : [],
+        'stale_after_seconds' => (int) ($settings['stale_after_seconds'] ?? (15 * 60)),
     ];
 }
 
