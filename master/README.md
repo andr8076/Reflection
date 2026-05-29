@@ -18,14 +18,19 @@ Then open <http://127.0.0.1:8080/> and point workers at
 
 ## Configuration
 
-`config.php` reads two optional environment variables:
+Farm-specific defaults live in `farm_settings.php`. Copy/edit this file for each deployed farm so the farm id, display name, dashboard login, storage path, runtime defaults, and allowed task list stay together in one place. The shipped default dashboard / JSON Tool login is:
 
-- `REFLECTION_MASTER_STORE`: path to the JSON store file. Defaults to
-  `data/farm_store.json` beside the deployed master PHP files.
-- `REFLECTION_REQUIRED_VERSION`: required worker Git commit. Defaults to the
-  repository's current commit id when it can be read.
+- Username: `reflection`
+- Password: `reflection`
 
-Allowed task names are defined in `config.php`. Source and delivery values are worker-readable paths/URIs such as FTP, HTTP, SFTP, SMB, or local paths on the workers; the master only stores and passes those strings through.
+Change those credentials before exposing the master website outside a trusted network. The credentials protect operator web pages with HTTP Basic authentication; `farm_api.php` remains unauthenticated so existing workers can continue to poll it.
+
+`config.php` also reads two optional environment variables, which override the matching `farm_settings.php` values:
+
+- `REFLECTION_MASTER_STORE`: path to the JSON store file. Defaults to the `storage_path` in `farm_settings.php`, which ships as `data/farm_store.json` beside the deployed master PHP files.
+- `REFLECTION_REQUIRED_VERSION`: required worker Git commit. Defaults to the `required_version` in `farm_settings.php`, or the repository's current commit id when it can be read.
+
+Allowed task names are defined in `farm_settings.php`. Source and delivery values are worker-readable paths/URIs such as FTP, HTTP, SFTP, SMB, or local paths on the workers; the master only stores and passes those strings through.
 
 ## Deploy on Synology NAS / shared hosting
 
@@ -59,7 +64,7 @@ loading `index.php` or `farm_api.php`.
 
 ## General options, retries, ESS SOC, and Wake-on-LAN
 
-The dashboard leans on status cards for queue, energy, and farm-computer state. The **General options** panel stores runtime policy in the farm store:
+The dashboard leans on status cards for queue, energy, and farm-computer state. The **General options** panel stores runtime policy in the farm store, seeded by the `runtime_defaults` section in `farm_settings.php`:
 
 - Version enforcement can be enabled or disabled without editing PHP files.
 - Failed jobs can either remain failed or be copied to the end of the queue until

@@ -6,7 +6,8 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
 
 $config = reflection_master_config();
-$store = new FarmStore($config['storage_path']);
+reflection_require_master_login($config);
+$store = reflection_farm_store($config);
 $message = null;
 $error = null;
 
@@ -323,8 +324,9 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
     <header>
         <div>
             <p class="eyebrow">Reflection</p>
-            <h1>Farm Master</h1>
+            <h1><?= reflection_h($config['farm_name'] ?? 'Farm Master') ?></h1>
             <p class="lede">Queue approved farm jobs, serve workers through the JSON API, and watch the fleet from one PHP dashboard.</p>
+            <p class="api-note">Farm ID: <code><?= reflection_h($config['farm_id'] ?? 'default') ?></code></p>
         </div>
         <div class="version-card">
             <span>Required worker version</span>
@@ -348,6 +350,7 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
     <main>
         <section class="panel submit-panel">
             <h2>General options</h2>
+            <p class="api-note">Dashboard login defaults are loaded from <code>farm_settings.php</code> for this farm. Current default user: <code><?= reflection_h(($config['default_login'] ?? [])['username'] ?? '') ?></code>.</p>
             <form method="post">
                 <input type="hidden" name="form_action" value="settings">
                 <label class="check-row">

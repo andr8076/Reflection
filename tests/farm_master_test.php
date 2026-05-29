@@ -32,6 +32,43 @@ assertSameValue(
 assertSameValue(null, $defaultConfig['storage_warning'], 'Writable default farm store should not warn.');
 assertSameValue(true, array_key_exists('wake_farm', $defaultConfig['allowed_tasks']), 'Wake-on-LAN should be an allowed master task.');
 
+assertSameValue('default', $defaultConfig['farm_id'], 'Default farm id should come from farm settings.');
+assertSameValue(
+    'reflection',
+    $defaultConfig['default_login']['username'],
+    'Default farm login username should come from farm settings.'
+);
+assertSameValue(true, !empty($defaultConfig['auth']['enabled']), 'Dashboard authentication should be enabled by default.');
+
+$customStorePath = sys_get_temp_dir() . '/reflection_custom_defaults_' . bin2hex(random_bytes(6)) . '.json';
+$customConfig = reflection_master_config([
+    'farm_id' => 'paint-farm',
+    'farm_name' => 'Paint Farm',
+    'default_login' => [
+        'username' => 'paint-user',
+        'password' => 'paint-pass',
+    ],
+    'auth' => ['enabled' => true, 'realm' => 'Paint Farm'],
+    'storage_path' => $customStorePath,
+    'required_version' => 'paint-version',
+    'runtime_defaults' => ['ess_soc_url' => 'http://example.test/soc'],
+    'allowed_tasks' => ['noop' => 'Connectivity check.'],
+    'stale_after_seconds' => 30,
+]);
+assertSameValue('paint-farm', $customConfig['farm_id'], 'Custom farm id should be loaded from farm settings.');
+assertSameValue('Paint Farm', $customConfig['farm_name'], 'Custom farm name should be loaded from farm settings.');
+assertSameValue('paint-user', $customConfig['default_login']['username'], 'Custom farm login username should be loaded from farm settings.');
+assertSameValue('paint-version', $customConfig['required_version'], 'Custom required version should be loaded from farm settings.');
+assertSameValue('http://example.test/soc', $customConfig['runtime_defaults']['ess_soc_url'], 'Runtime defaults should be loaded from farm settings.');
+assertSameValue(30, $customConfig['stale_after_seconds'], 'Stale timeout should be loaded from farm settings.');
+$customDefaultsStore = new FarmStore($customStorePath, $customConfig['runtime_defaults']);
+assertSameValue(
+    'http://example.test/soc',
+    $customDefaultsStore->effectiveSettings()['ess_soc_url'],
+    'FarmStore should seed defaults from the farm config file.'
+);
+@unlink($customStorePath);
+
 $fallbackDirectory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'reflection_farm_fallback_' . bin2hex(random_bytes(6));
 $fallbackConfig = reflection_resolve_master_store(
     null,
