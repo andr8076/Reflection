@@ -59,7 +59,7 @@ loading `index.php` or `farm_api.php`.
 
 ## Bulk import jobs from a file list
 
-Use the dashboard's **Bulk import jobs** panel to paste or upload a newline list
+Use the dashboard's **Create jobs** panel and switch **Submit mode** to **Bulk import** to paste or upload a newline list
 of source paths. It also accepts a JSON array of path strings. Every imported
 source path is validated against the configured source roots before a job is
 queued.
@@ -81,6 +81,21 @@ script can pass them to `find`.
 The optional delivery template supports `{source}`, `{basename}`, `{name}`, and
 `{ext}`. For example, `outputs/{basename}` maps `incoming/img001.png` to
 `outputs/img001.png`.
+
+
+## Logs and file history
+
+The master writes operational metadata beside the selected farm store file:
+
+- `farm_events.log`: newline-delimited JSON events for queued, started,
+  successful, failed, and stale jobs.
+- `farm_file_history.json`: per-file history showing when each source or
+  delivery path was queued, started, and finished.
+
+The dashboard shows recent log entries and a compact file-history table. If the
+app is using the temporary fallback store, these files live in the same temporary
+fallback directory; configure `REFLECTION_MASTER_STORE` or fix `data/`
+permissions for persistent logs.
 
 ## Manual JSON worker simulator
 

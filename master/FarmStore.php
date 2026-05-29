@@ -5,11 +5,15 @@ declare(strict_types=1);
 final class FarmStore
 {
     private string $path;
+    private string $eventLogPath;
+    private string $fileHistoryPath;
 
     public function __construct(string $path)
     {
         $this->path = $path;
         $directory = dirname($this->path);
+        $this->eventLogPath = $directory . DIRECTORY_SEPARATOR . 'farm_events.log';
+        $this->fileHistoryPath = $directory . DIRECTORY_SEPARATOR . 'farm_file_history.json';
         if (!is_dir($directory) && !@mkdir($directory, 0775, true) && !is_dir($directory)) {
             $parentDirectory = dirname($directory);
             throw new RuntimeException(sprintf(
@@ -36,7 +40,7 @@ final class FarmStore
 
     public function createJob(string $module, ?string $source, ?string $delivery, bool $overwriteAllowed): array
     {
-        return $this->withLock(function (array $data) use ($module, $source, $delivery, $overwriteAllowed): array {
+        $job = $this->withLock(function (array $data) use ($module, $source, $delivery, $overwriteAllowed): array {
             $job = [
                 'task_id' => $this->nextJobId($data),
                 'module' => $module,
@@ -54,6 +58,12 @@ final class FarmStore
             $data['jobs'][] = $job;
             return ['data' => $data, 'result' => $job];
         }, true);
+
+        $this->recordEvent('job_queued', $job);
+        $this->recordFileTouch($job['source'], 'queued_as_source', $job);
+        $this->recordFileTouch($job['delivery'], 'queued_as_delivery', $job);
+
+        return $job;
     }
 
     public function recordWorkerCheckIn(string $pcId, string $version): void
@@ -84,20 +94,20 @@ final class FarmStore
 
     public function markJobRunning(string $taskId, string $pcId): bool
     {
-        return $this->withLock(function (array $data) use ($taskId, $pcId): array {
-            $locked = false;
+        $result = $this->withLock(function (array $data) use ($taskId, $pcId): array {
+            $lockedJob = null;
             foreach ($data['jobs'] as &$job) {
                 if (($job['task_id'] ?? '') === $taskId && ($job['status'] ?? '') === 'queued') {
                     $job['status'] = 'running';
                     $job['worker'] = $pcId;
                     $job['started_at'] = gmdate(DATE_ATOM);
-                    $locked = true;
+                    $lockedJob = $job;
                     break;
                 }
             }
             unset($job);
 
-            if ($locked) {
+            if ($lockedJob !== null) {
                 $data['workers'][$pcId] = array_merge($data['workers'][$pcId] ?? [], [
                     'pc_id' => $pcId,
                     'last_check_in' => gmdate(DATE_ATOM),
@@ -105,40 +115,57 @@ final class FarmStore
                 ]);
             }
 
-            return ['data' => $data, 'result' => $locked];
+            return ['data' => $data, 'result' => $lockedJob];
         }, true);
+
+        if (is_array($result)) {
+            $this->recordEvent('job_started', $result);
+            $this->recordFileTouch($result['source'], 'started_source', $result);
+            return true;
+        }
+
+        return false;
     }
 
     public function finishJob(string $taskId, string $pcId, string $status, string $error): bool
     {
-        return $this->withLock(function (array $data) use ($taskId, $pcId, $status, $error): array {
-            $finished = false;
+        $result = $this->withLock(function (array $data) use ($taskId, $pcId, $status, $error): array {
+            $finishedJob = null;
             foreach ($data['jobs'] as &$job) {
                 if (($job['task_id'] ?? '') === $taskId && ($job['status'] ?? '') === 'running') {
                     $job['status'] = $status === 'success' ? 'success' : 'failed';
                     $job['worker'] = $pcId;
                     $job['error'] = $error;
                     $job['finished_at'] = gmdate(DATE_ATOM);
-                    $finished = true;
+                    $finishedJob = $job;
                     break;
                 }
             }
             unset($job);
 
-            if ($finished && isset($data['workers'][$pcId])) {
+            if ($finishedJob !== null && isset($data['workers'][$pcId])) {
                 $data['workers'][$pcId]['last_check_in'] = gmdate(DATE_ATOM);
                 $data['workers'][$pcId]['current_job'] = null;
             }
 
-            return ['data' => $data, 'result' => $finished];
+            return ['data' => $data, 'result' => $finishedJob];
         }, true);
+
+        if (is_array($result)) {
+            $this->recordEvent('job_' . $result['status'], $result);
+            $this->recordFileTouch($result['source'], 'finished_source_' . $result['status'], $result);
+            $this->recordFileTouch($result['delivery'], 'finished_delivery_' . $result['status'], $result);
+            return true;
+        }
+
+        return false;
     }
 
     public function requeueStaleJobs(int $staleAfterSeconds): int
     {
-        return $this->withLock(function (array $data) use ($staleAfterSeconds): array {
+        $staleJobs = $this->withLock(function (array $data) use ($staleAfterSeconds): array {
             $now = time();
-            $count = 0;
+            $staleJobs = [];
 
             foreach ($data['jobs'] as &$job) {
                 if (($job['status'] ?? '') !== 'running' || empty($job['started_at'])) {
@@ -150,13 +177,95 @@ final class FarmStore
                     $job['status'] = 'stale';
                     $job['error'] = 'Worker did not finish before the stale timeout.';
                     $job['finished_at'] = gmdate(DATE_ATOM);
-                    $count++;
+                    $staleJobs[] = $job;
                 }
             }
             unset($job);
 
-            return ['data' => $data, 'result' => $count];
+            return ['data' => $data, 'result' => $staleJobs];
         }, true);
+
+        foreach ($staleJobs as $job) {
+            $this->recordEvent('job_stale', $job);
+            $this->recordFileTouch($job['source'], 'stale_source', $job);
+            $this->recordFileTouch($job['delivery'], 'stale_delivery', $job);
+        }
+
+        return count($staleJobs);
+    }
+
+    public function readRecentEvents(int $limit = 50): array
+    {
+        if (!is_file($this->eventLogPath)) {
+            return [];
+        }
+
+        $lines = file($this->eventLogPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+        $lines = array_slice($lines, -$limit);
+        $events = [];
+
+        foreach ($lines as $line) {
+            $event = json_decode($line, true);
+            if (is_array($event)) {
+                $events[] = $event;
+            }
+        }
+
+        return array_reverse($events);
+    }
+
+    public function readFileHistory(): array
+    {
+        if (!is_file($this->fileHistoryPath)) {
+            return [];
+        }
+
+        $history = json_decode((string) file_get_contents($this->fileHistoryPath), true);
+        if (!is_array($history)) {
+            return [];
+        }
+
+        ksort($history);
+        return $history;
+    }
+
+    private function recordEvent(string $event, array $job): void
+    {
+        $entry = [
+            'timestamp' => gmdate(DATE_ATOM),
+            'event' => $event,
+            'task_id' => $job['task_id'] ?? null,
+            'module' => $job['module'] ?? null,
+            'status' => $job['status'] ?? null,
+            'worker' => $job['worker'] ?? null,
+            'source' => $job['source'] ?? null,
+            'delivery' => $job['delivery'] ?? null,
+            'error' => $job['error'] ?? '',
+        ];
+
+        @file_put_contents($this->eventLogPath, json_encode($entry, JSON_UNESCAPED_SLASHES) . PHP_EOL, FILE_APPEND | LOCK_EX);
+    }
+
+    private function recordFileTouch(?string $path, string $action, array $job): void
+    {
+        if ($path === null || $path === '') {
+            return;
+        }
+
+        $history = $this->readFileHistory();
+        $entry = [
+            'timestamp' => gmdate(DATE_ATOM),
+            'action' => $action,
+            'task_id' => $job['task_id'] ?? null,
+            'module' => $job['module'] ?? null,
+            'status' => $job['status'] ?? null,
+            'worker' => $job['worker'] ?? null,
+            'paired_path' => ($path === ($job['source'] ?? null)) ? ($job['delivery'] ?? null) : ($job['source'] ?? null),
+            'error' => $job['error'] ?? '',
+        ];
+
+        $history[$path][] = $entry;
+        @file_put_contents($this->fileHistoryPath, json_encode($history, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL, LOCK_EX);
     }
 
     private function withLock(callable $callback, bool $write = false)

@@ -7,6 +7,10 @@ define('REFLECTION_TESTING', true);
 require_once __DIR__ . '/../master/farm_api.php';
 
 $storePath = sys_get_temp_dir() . '/reflection_farm_store_' . bin2hex(random_bytes(6)) . '.json';
+$eventLogPath = dirname($storePath) . DIRECTORY_SEPARATOR . 'farm_events.log';
+$fileHistoryPath = dirname($storePath) . DIRECTORY_SEPARATOR . 'farm_file_history.json';
+@unlink($eventLogPath);
+@unlink($fileHistoryPath);
 $store = new FarmStore($storePath);
 $config = [
     'required_version' => 'test-version',
@@ -56,6 +60,12 @@ function assertSameValue($expected, $actual, string $message): void
 
 $job = $store->createJob('dummy_task', 'incoming/source.dat', 'outputs/result.txt', false);
 assertSameValue('job_1001', $job['task_id'], 'Job ids should start at job_1001.');
+assertSameValue('job_queued', $store->readRecentEvents(1)[0]['event'], 'Queued jobs should be written to the event log.');
+assertSameValue(
+    'queued_as_source',
+    $store->readFileHistory()['incoming/source.dat'][0]['action'],
+    'Queued source files should be written to file history.'
+);
 
 $response = reflection_handle_farm_api([
     'action' => 'request_task',
@@ -112,4 +122,6 @@ assertSameValue('success', $data['jobs'][0]['status'], 'Store should retain the 
 assertSameValue(null, $data['workers']['node-01']['current_job'], 'Worker should be idle after report_done.');
 
 unlink($storePath);
+@unlink($eventLogPath);
+@unlink($fileHistoryPath);
 echo "farm master tests passed\n";

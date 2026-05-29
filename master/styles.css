@@ -324,3 +324,12 @@ a {
     color: var(--muted);
     padding-left: 1.25rem;
 }
+
+.mode-fields {
+    display: grid;
+    gap: 1rem;
+}
+
+.mode-fields[hidden] {
+    display: none;
+}
