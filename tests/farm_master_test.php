@@ -31,6 +31,8 @@ assertSameValue(
 );
 assertSameValue(null, $defaultConfig['storage_warning'], 'Writable default farm store should not warn.');
 assertSameValue(true, array_key_exists('wake_farm', $defaultConfig['allowed_tasks']), 'Wake-on-LAN should be an allowed master task.');
+assertSameValue(true, array_key_exists('compress_archive', $defaultConfig['allowed_tasks']), 'Compression should be an allowed master task.');
+assertSameValue(true, array_key_exists('invert_image', $defaultConfig['allowed_tasks']), 'Image inversion should be an allowed master task.');
 
 $fallbackDirectory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'reflection_farm_fallback_' . bin2hex(random_bytes(6));
 $fallbackConfig = reflection_resolve_master_store(

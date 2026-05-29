@@ -122,6 +122,8 @@ function reflection_master_config(): array
         'allowed_tasks' => [
             'dummy_task' => 'Placeholder pipeline test task.',
             'render_frame' => 'Render a frame with the configured worker renderer.',
+            'compress_archive' => 'Compress a file or directory into a small .tar.xz archive with hardware-aware limits.',
+            'invert_image' => 'Invert an image while preserving alpha transparency when possible.',
             'noop' => 'Built-in worker connectivity check.',
             'status' => 'Built-in worker health snapshot.',
             'reload_tasks' => 'Ask a worker to reload its local task registry.',

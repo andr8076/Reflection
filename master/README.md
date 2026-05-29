@@ -25,7 +25,7 @@ Then open <http://127.0.0.1:8080/> and point workers at
 - `REFLECTION_REQUIRED_VERSION`: required worker Git commit. Defaults to the
   repository's current commit id when it can be read.
 
-Allowed task names are defined in `config.php`. Source and delivery values are worker-readable paths/URIs such as FTP, HTTP, SFTP, SMB, or local paths on the workers; the master only stores and passes those strings through.
+Allowed task names are defined in `config.php`. Source and delivery values are worker-readable paths/URIs such as FTP, HTTP, SFTP, SMB, or local paths on the workers; the master only stores and passes those strings through. The `compress_archive` task expects a worker-local source path and writes a `.tar.xz` archive to the delivery path. The `invert_image` task expects a worker-local image path and writes an inverted image to the delivery path.
 
 ## Deploy on Synology NAS / shared hosting
 
