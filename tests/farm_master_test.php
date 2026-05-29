@@ -24,6 +24,25 @@ assertSameValue(
     is_dir(dirname($defaultConfig['storage_path'])),
     'Default farm store directory should ship with the deployed farm master files.'
 );
+assertSameValue(null, $defaultConfig['storage_warning'], 'Writable default farm store should not warn.');
+
+$fallbackDirectory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'reflection_farm_fallback_' . bin2hex(random_bytes(6));
+$fallbackConfig = reflection_resolve_master_store(
+    null,
+    '/proc/reflection_farm_store/farm_store.json',
+    $fallbackDirectory,
+);
+assertSameValue(
+    $fallbackDirectory . DIRECTORY_SEPARATOR . 'farm_store.json',
+    $fallbackConfig['storage_path'],
+    'Unwritable default farm store should use the temporary fallback store.'
+);
+assertSameValue(
+    true,
+    is_string($fallbackConfig['storage_warning']) && str_contains($fallbackConfig['storage_warning'], '/proc/reflection_farm_store'),
+    'Fallback farm store should warn about the unwritable default path.'
+);
+@rmdir($fallbackDirectory);
 
 function assertSameValue(mixed $expected, mixed $actual, string $message): void
 {

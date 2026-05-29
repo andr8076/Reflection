@@ -98,6 +98,9 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
     <?php if ($error !== null): ?>
         <div class="alert error"><?= reflection_h($error) ?></div>
     <?php endif; ?>
+    <?php if (!empty($config['storage_warning'])): ?>
+        <div class="alert warning"><?= reflection_h($config['storage_warning']) ?></div>
+    <?php endif; ?>
     <?php if ($staleCount > 0): ?>
         <div class="alert warning"><?= reflection_h($staleCount) ?> stale job(s) were marked for operator review.</div>
     <?php endif; ?>

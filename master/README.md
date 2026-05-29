@@ -35,10 +35,15 @@ This repository includes the `data/` directory so PHP does not have to create it
 on the first web request, which avoids a common Synology Web Station permission
 error.
 
-If you still see an error such as `Unable to create farm store directory` or
-`Farm store directory is not writable`, create the directory manually and give
-the web server user write access. On Synology, the web server user/group varies
-by Web Station configuration, so use DSM File Station permissions or SSH as an
+If `data/` exists but is not writable, the app automatically falls back to a
+writable temporary store so the dashboard and worker API can load instead of
+crashing. The dashboard shows a warning when that happens. Treat the fallback as
+a recovery mode: NAS temporary directories can be cleaned by the system, so use a
+persistent writable store for production.
+
+For the default persistent store, create the directory manually and give the web
+server user write access. On Synology, the web server user/group varies by Web
+Station configuration, so use DSM File Station permissions or SSH as an
 administrator to grant write access to the deployed `data/` directory. For
 example, adjust the path to your deployment:
 
@@ -48,8 +53,8 @@ chmod 775 /volume1/web/api/farm/data
 ```
 
 If your NAS policy does not allow the PHP app to write under the web root, point
-`REFLECTION_MASTER_STORE` at another writable JSON file path before loading
-`index.php` or `farm_api.php`.
+`REFLECTION_MASTER_STORE` at another persistent writable JSON file path before
+loading `index.php` or `farm_api.php`.
 
 ## Worker API lifecycle
 
