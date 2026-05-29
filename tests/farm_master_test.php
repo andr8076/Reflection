@@ -19,6 +19,11 @@ assertSameValue(
     $defaultConfig['storage_path'],
     'Default farm store should live beside the deployed farm master files.'
 );
+assertSameValue(
+    true,
+    is_dir(dirname($defaultConfig['storage_path'])),
+    'Default farm store directory should ship with the deployed farm master files.'
+);
 
 function assertSameValue(mixed $expected, mixed $actual, string $message): void
 {

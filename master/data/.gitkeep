@@ -1,0 +1,2 @@
+# Keep the default farm store directory in source control so shared hosting and
+# Synology deployments do not need PHP to create it on first request.

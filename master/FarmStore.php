@@ -11,11 +11,19 @@ final class FarmStore
         $this->path = $path;
         $directory = dirname($this->path);
         if (!is_dir($directory) && !@mkdir($directory, 0775, true) && !is_dir($directory)) {
-            throw new RuntimeException(sprintf('Unable to create farm store directory: %s', $directory));
+            $parentDirectory = dirname($directory);
+            throw new RuntimeException(sprintf(
+                'Unable to create farm store directory: %s. Create it manually and make it writable by the web server user, or set REFLECTION_MASTER_STORE to a writable JSON file path. Parent directory: %s',
+                $directory,
+                $parentDirectory,
+            ));
         }
 
         if (!is_writable($directory)) {
-            throw new RuntimeException(sprintf('Farm store directory is not writable: %s', $directory));
+            throw new RuntimeException(sprintf(
+                'Farm store directory is not writable: %s. Make this directory writable by the web server user, or set REFLECTION_MASTER_STORE to a writable JSON file path.',
+                $directory,
+            ));
         }
     }
 

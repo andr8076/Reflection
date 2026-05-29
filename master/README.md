@@ -28,6 +28,29 @@ Then open <http://127.0.0.1:8080/> and point workers at
 Allowed task names and safe source/delivery path roots are also defined in
 `config.php`.
 
+## Deploy on Synology NAS / shared hosting
+
+The default JSON store path is `data/farm_store.json` beside these PHP files.
+This repository includes the `data/` directory so PHP does not have to create it
+on the first web request, which avoids a common Synology Web Station permission
+error.
+
+If you still see an error such as `Unable to create farm store directory` or
+`Farm store directory is not writable`, create the directory manually and give
+the web server user write access. On Synology, the web server user/group varies
+by Web Station configuration, so use DSM File Station permissions or SSH as an
+administrator to grant write access to the deployed `data/` directory. For
+example, adjust the path to your deployment:
+
+```bash
+mkdir -p /volume1/web/api/farm/data
+chmod 775 /volume1/web/api/farm/data
+```
+
+If your NAS policy does not allow the PHP app to write under the web root, point
+`REFLECTION_MASTER_STORE` at another writable JSON file path before loading
+`index.php` or `farm_api.php`.
+
 ## Worker API lifecycle
 
 The endpoint supports the three actions used by `Reflection.py`:
