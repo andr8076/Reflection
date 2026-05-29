@@ -7,10 +7,12 @@ final class FarmStore
     private string $path;
     private string $eventLogPath;
     private string $fileHistoryPath;
+    private array $configuredDefaultSettings;
 
-    public function __construct(string $path)
+    public function __construct(string $path, array $defaultSettings = [])
     {
         $this->path = $path;
+        $this->configuredDefaultSettings = $defaultSettings;
         $directory = dirname($this->path);
         $this->eventLogPath = $directory . DIRECTORY_SEPARATOR . 'farm_events.log';
         $this->fileHistoryPath = $directory . DIRECTORY_SEPARATOR . 'farm_file_history.json';
@@ -524,7 +526,7 @@ final class FarmStore
 
     private function defaultSettings(): array
     {
-        return [
+        return array_merge([
             'enforce_version' => true,
             'failure_strategy' => 'mark_failed',
             'max_retries' => 0,
@@ -532,7 +534,7 @@ final class FarmStore
             'ess_soc_url' => 'http://192.168.1.245:8076',
             'ess_min_soc_percent' => 20,
             'ess_shutdown_below_minimum' => true,
-        ];
+        ], $this->configuredDefaultSettings);
     }
 
     private function nextJobId(array &$data): string

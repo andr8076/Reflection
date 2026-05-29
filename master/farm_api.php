@@ -117,9 +117,9 @@ function reflection_api_report_done(array $payload, FarmStore $store, string $pc
     ];
 }
 
-if (!defined('REFLECTION_TESTING')) {
+if (!defined('REFLECTION_TESTING') && !defined('REFLECTION_EMBEDDED_API')) {
     $config = reflection_master_config();
-    $store = new FarmStore($config['storage_path']);
+    $store = reflection_farm_store($config);
     $rawBody = file_get_contents('php://input') ?: '';
     $payload = json_decode($rawBody, true);
 
