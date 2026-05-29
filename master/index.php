@@ -10,7 +10,7 @@ $store = new FarmStore($config['storage_path']);
 $message = null;
 $error = null;
 
-function reflection_h(mixed $value): string
+function reflection_h($value): string
 {
     return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
@@ -27,12 +27,12 @@ function reflection_path_allowed(?string $path, array $roots, bool $required): ?
     }
 
     $normalized = str_replace('\\', '/', $path);
-    if (str_starts_with($normalized, '/') || str_contains($normalized, '..')) {
+    if (reflection_string_starts_with($normalized, '/') || reflection_string_contains($normalized, '..')) {
         return 'Paths must be relative and may not contain .. segments.';
     }
 
     foreach ($roots as $root) {
-        if ($normalized === $root || str_starts_with($normalized, $root . '/')) {
+        if ($normalized === $root || reflection_string_starts_with($normalized, $root . '/')) {
             return null;
         }
     }

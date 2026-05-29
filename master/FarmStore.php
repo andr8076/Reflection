@@ -159,7 +159,7 @@ final class FarmStore
         }, true);
     }
 
-    private function withLock(callable $callback, bool $write = false): mixed
+    private function withLock(callable $callback, bool $write = false)
     {
         $handle = @fopen($this->path, 'c+');
         if ($handle === false) {
@@ -189,7 +189,7 @@ final class FarmStore
         return $result;
     }
 
-    private function normalizeData(mixed $data): array
+    private function normalizeData($data): array
     {
         if (!is_array($data)) {
             $data = [];

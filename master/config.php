@@ -2,6 +2,16 @@
 
 declare(strict_types=1);
 
+function reflection_string_starts_with(string $value, string $prefix): bool
+{
+    return $prefix === '' || strncmp($value, $prefix, strlen($prefix)) === 0;
+}
+
+function reflection_string_contains(string $value, string $needle): bool
+{
+    return $needle === '' || strpos($value, $needle) !== false;
+}
+
 function reflection_git_commit_id(string $repoRoot): ?string
 {
     $headPath = $repoRoot . DIRECTORY_SEPARATOR . '.git' . DIRECTORY_SEPARATOR . 'HEAD';
@@ -10,7 +20,7 @@ function reflection_git_commit_id(string $repoRoot): ?string
     }
 
     $head = trim((string) file_get_contents($headPath));
-    if (!str_starts_with($head, 'ref:')) {
+    if (!reflection_string_starts_with($head, 'ref:')) {
         return $head !== '' ? $head : null;
     }
 
@@ -27,7 +37,7 @@ function reflection_git_commit_id(string $repoRoot): ?string
     }
 
     foreach (file($packedRefsPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
-        if (str_starts_with($line, '#') || str_starts_with($line, '^')) {
+        if (reflection_string_starts_with($line, '#') || reflection_string_starts_with($line, '^')) {
             continue;
         }
 

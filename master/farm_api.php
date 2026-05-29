@@ -29,12 +29,16 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
         return ['status' => 'version_mismatch', 'required_version' => $requiredVersion];
     }
 
-    return match ($action) {
-        'request_task' => reflection_api_request_task($store),
-        'confirm_taken' => reflection_api_confirm_taken($payload, $store, $pcId),
-        'report_done' => reflection_api_report_done($payload, $store, $pcId),
-        default => ['status' => 'error', 'error' => 'Unknown action.'],
-    };
+    switch ($action) {
+        case 'request_task':
+            return reflection_api_request_task($store);
+        case 'confirm_taken':
+            return reflection_api_confirm_taken($payload, $store, $pcId);
+        case 'report_done':
+            return reflection_api_report_done($payload, $store, $pcId);
+        default:
+            return ['status' => 'error', 'error' => 'Unknown action.'];
+    }
 }
 
 function reflection_api_request_task(FarmStore $store): array

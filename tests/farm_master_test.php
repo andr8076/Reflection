@@ -39,12 +39,12 @@ assertSameValue(
 );
 assertSameValue(
     true,
-    is_string($fallbackConfig['storage_warning']) && str_contains($fallbackConfig['storage_warning'], '/proc/reflection_farm_store'),
+    is_string($fallbackConfig['storage_warning']) && strpos($fallbackConfig['storage_warning'], '/proc/reflection_farm_store') !== false,
     'Fallback farm store should warn about the unwritable default path.'
 );
 @rmdir($fallbackDirectory);
 
-function assertSameValue(mixed $expected, mixed $actual, string $message): void
+function assertSameValue($expected, $actual, string $message): void
 {
     if ($expected !== $actual) {
         fwrite(STDERR, $message . PHP_EOL);
