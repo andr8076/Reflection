@@ -35,21 +35,32 @@ assertSameValue(true, array_key_exists('h265_encode', $defaultConfig['allowed_ta
 
 assertSameValue('default', $defaultConfig['farm_id'], 'Default farm id should come from farm settings.');
 assertSameValue(
-    'reflection',
-    $defaultConfig['default_login']['username'],
-    'Default farm login username should come from farm settings.'
+    false,
+    array_key_exists('default_login', $defaultConfig),
+    'Master website login should not be configured.'
 );
-assertSameValue(true, !empty($defaultConfig['auth']['enabled']), 'Dashboard authentication should be enabled by default.');
+assertSameValue(
+    'reflection',
+    $defaultConfig['transfer_auth']['username'],
+    'Default FTP username should come from farm settings.'
+);
+assertSameValue(
+    'reflection',
+    $defaultConfig['transfer_auth']['password'],
+    'Default FTP password should come from farm settings.'
+);
 
 $customStorePath = sys_get_temp_dir() . '/reflection_custom_defaults_' . bin2hex(random_bytes(6)) . '.json';
 $customConfig = reflection_master_config([
     'farm_id' => 'paint-farm',
     'farm_name' => 'Paint Farm',
-    'default_login' => [
+    'transfer_auth' => [
+        'scheme' => 'ftps',
+        'host' => 'ftp.example.test',
+        'port' => 990,
         'username' => 'paint-user',
         'password' => 'paint-pass',
     ],
-    'auth' => ['enabled' => true, 'realm' => 'Paint Farm'],
     'storage_path' => $customStorePath,
     'required_version' => 'paint-version',
     'runtime_defaults' => ['ess_soc_url' => 'http://example.test/soc'],
@@ -58,7 +69,9 @@ $customConfig = reflection_master_config([
 ]);
 assertSameValue('paint-farm', $customConfig['farm_id'], 'Custom farm id should be loaded from farm settings.');
 assertSameValue('Paint Farm', $customConfig['farm_name'], 'Custom farm name should be loaded from farm settings.');
-assertSameValue('paint-user', $customConfig['default_login']['username'], 'Custom farm login username should be loaded from farm settings.');
+assertSameValue('paint-user', $customConfig['transfer_auth']['username'], 'Custom FTP username should be loaded from farm settings.');
+assertSameValue('paint-pass', $customConfig['transfer_auth']['password'], 'Custom FTP password should be loaded from farm settings.');
+assertSameValue('ftp.example.test', $customConfig['transfer_auth']['host'], 'Custom FTP host should be loaded from farm settings.');
 assertSameValue('paint-version', $customConfig['required_version'], 'Custom required version should be loaded from farm settings.');
 assertSameValue('http://example.test/soc', $customConfig['runtime_defaults']['ess_soc_url'], 'Runtime defaults should be loaded from farm settings.');
 assertSameValue(30, $customConfig['stale_after_seconds'], 'Stale timeout should be loaded from farm settings.');
@@ -138,6 +151,8 @@ $response = reflection_handle_farm_api([
 assertSameValue('task_available', $response['status'], 'Queued jobs should be offered to workers.');
 assertSameValue('dummy_task', $response['task']['module'], 'API should expose the queued module.');
 assertSameValue(false, $response['task']['overwrite_allowed'], 'API should preserve overwrite policy.');
+assertSameValue('reflection', $response['task']['transfer_auth']['username'], 'Workers should receive FTP username for file transfers.');
+assertSameValue('reflection', $response['task']['transfer_auth']['password'], 'Workers should receive FTP password for file transfers.');
 
 $response = reflection_handle_farm_api([
     'action' => 'confirm_taken',

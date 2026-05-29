@@ -8,15 +8,14 @@ return [
     'farm_id' => 'default',
     'farm_name' => 'Default Reflection Farm',
 
-    // Default dashboard / JSON Tool login for this farm. Change these before
-    // exposing the master website outside a trusted network.
-    'default_login' => [
+    // Credentials workers use when source/delivery paths point at the farm FTP server.
+    // REFLECTION_FTP_* environment variables override these values.
+    'transfer_auth' => [
+        'scheme' => 'ftp',
+        'host' => '',
+        'port' => 21,
         'username' => 'reflection',
         'password' => 'reflection',
-    ],
-    'auth' => [
-        'enabled' => true,
-        'realm' => 'Reflection Farm Master',
     ],
 
     // Persistent farm data. REFLECTION_MASTER_STORE still overrides this value.

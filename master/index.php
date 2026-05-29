@@ -6,7 +6,6 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
 
 $config = reflection_master_config();
-reflection_require_master_login($config);
 $store = reflection_farm_store($config);
 $message = null;
 $error = null;
@@ -350,7 +349,7 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
     <main>
         <section class="panel submit-panel">
             <h2>General options</h2>
-            <p class="api-note">Dashboard login defaults are loaded from <code>farm_settings.php</code> for this farm. Current default user: <code><?= reflection_h(($config['default_login'] ?? [])['username'] ?? '') ?></code>.</p>
+            <p class="api-note">The master website is open on your trusted network. FTP credentials for worker file transfers are loaded from <code>farm_settings.php</code> and are sent only with worker task assignments.</p>
             <form method="post">
                 <input type="hidden" name="form_action" value="settings">
                 <label class="check-row">
@@ -423,7 +422,7 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
                     <label>
                         Source path
                         <input name="single_source" placeholder="ftp://farm.local/incoming/source.dat">
-                        <small>Required for normal work. Use an FTP/HTTP/SFTP URL or any worker-readable path; the master only passes it through.</small>
+                        <small>Required for normal work. Use an FTP URL or any worker-readable path; the master passes it through to workers.</small>
                     </label>
                     <label>
                         Delivery path

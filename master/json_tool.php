@@ -6,7 +6,6 @@ define('REFLECTION_EMBEDDED_API', true);
 require_once __DIR__ . '/farm_api.php';
 
 $config = reflection_master_config();
-reflection_require_master_login($config);
 $scriptDirectory = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '')), '/');
 $requestScheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
 $requestHost = (string) ($_SERVER['HTTP_HOST'] ?? '127.0.0.1');

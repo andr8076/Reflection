@@ -33,7 +33,7 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
 
     switch ($action) {
         case 'request_task':
-            return reflection_api_request_task($store);
+            return reflection_api_request_task($store, $config);
         case 'confirm_taken':
             return reflection_api_confirm_taken($payload, $store, $pcId);
         case 'report_done':
@@ -43,7 +43,33 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
     }
 }
 
-function reflection_api_request_task(FarmStore $store): array
+function reflection_worker_transfer_auth(array $config): ?array
+{
+    $auth = reflection_transfer_auth_config(array_replace_recursive(
+        reflection_default_farm_settings(),
+        $config,
+    ));
+    $username = (string) ($auth['username'] ?? '');
+    $password = (string) ($auth['password'] ?? '');
+    if ($username === '' || $password === '') {
+        return null;
+    }
+
+    $scheme = strtolower((string) ($auth['scheme'] ?? 'ftp'));
+    if (!in_array($scheme, ['ftp', 'ftps'], true)) {
+        $scheme = 'ftp';
+    }
+
+    return [
+        'scheme' => $scheme,
+        'host' => (string) ($auth['host'] ?? ''),
+        'port' => (int) ($auth['port'] ?? ($scheme === 'ftps' ? 990 : 21)),
+        'username' => $username,
+        'password' => $password,
+    ];
+}
+
+function reflection_api_request_task(FarmStore $store, array $config): array
 {
     $allowedWorkers = $store->allowedActiveWorkers();
     $settings = $store->effectiveSettings();
@@ -64,16 +90,23 @@ function reflection_api_request_task(FarmStore $store): array
         return ['status' => 'no_jobs'];
     }
 
+    $task = [
+        'task_id' => $job['task_id'],
+        'module' => $job['module'],
+        'source' => $job['source'],
+        'delivery' => $job['delivery'],
+        'overwrite_allowed' => (bool) $job['overwrite_allowed'],
+        'shutdown_after_task' => !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 1,
+    ];
+
+    $transferAuth = reflection_worker_transfer_auth($config);
+    if ($transferAuth !== null) {
+        $task['transfer_auth'] = $transferAuth;
+    }
+
     return [
         'status' => 'task_available',
-        'task' => [
-            'task_id' => $job['task_id'],
-            'module' => $job['module'],
-            'source' => $job['source'],
-            'delivery' => $job['delivery'],
-            'overwrite_allowed' => (bool) $job['overwrite_allowed'],
-            'shutdown_after_task' => !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 1,
-        ],
+        'task' => $task,
     ];
 }
 
