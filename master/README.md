@@ -32,6 +32,8 @@ Change those credentials before exposing the master website outside a trusted ne
 
 Allowed task names are defined in `farm_settings.php`. Source and delivery values are worker-readable paths/URIs such as FTP, HTTP, SFTP, SMB, or local paths on the workers; the master only stores and passes those strings through.
 
+The bundled `h265_encode` task converts local worker-readable video files to H.265/HEVC MP4 using FFmpeg. Queue a single source video with an optional delivery file, or bulk import several source videos and use a delivery template such as `outputs/{name}_h265.mp4`.
+
 ## Deploy on Synology NAS / shared hosting
 
 The default JSON store path is `data/farm_store.json` beside these PHP files.

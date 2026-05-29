@@ -24,6 +24,18 @@ when no files exist in `tasks/`:
 Built-in control tasks do not clean up `source` paths. If a task file tries to
 use one of these reserved names, the built-in task wins.
 
+
+## Included file-processing tasks
+
+- `dummy_task`: placeholder pipeline test task.
+- `render_frame`: placeholder for future frame rendering work.
+- `h265_encode`: FFmpeg/FFprobe-based H.265 batch encoder. It accepts a
+  normal file or folder path in `source`; optional JSON source values can set
+  `path`, `recursive`, `extensions`, `skip_hevc`, and `mode` (`software`,
+  `hardware`, or `auto`). When `delivery` is blank, outputs are written beside
+  each input as `<name>_h265.mp4`; when encoding multiple inputs, `delivery` is
+  treated as the output directory.
+
 ## Required task shape
 
 Create `tasks/my_task.py` with this structure:

@@ -31,6 +31,7 @@ assertSameValue(
 );
 assertSameValue(null, $defaultConfig['storage_warning'], 'Writable default farm store should not warn.');
 assertSameValue(true, array_key_exists('wake_farm', $defaultConfig['allowed_tasks']), 'Wake-on-LAN should be an allowed master task.');
+assertSameValue(true, array_key_exists('h265_encode', $defaultConfig['allowed_tasks']), 'H.265 encoder should be an allowed master task.');
 
 assertSameValue('default', $defaultConfig['farm_id'], 'Default farm id should come from farm settings.');
 assertSameValue(

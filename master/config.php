@@ -124,6 +124,7 @@ function reflection_default_farm_settings(): array
         'allowed_tasks' => [
             'dummy_task' => 'Placeholder pipeline test task.',
             'render_frame' => 'Render a frame with the configured worker renderer.',
+            'h265_encode' => 'Transcode video files to H.265/HEVC MP4 with FFmpeg.',
             'noop' => 'Built-in worker connectivity check.',
             'status' => 'Built-in worker health snapshot.',
             'reload_tasks' => 'Ask a worker to reload its local task registry.',
