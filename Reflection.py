@@ -1,4 +1,6 @@
 import argparse
+import contextlib
+import ftplib
 import importlib.util
 import inspect
 import json
@@ -6,11 +8,13 @@ import logging
 import os
 import shutil
 import socket
+import tempfile
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import unquote, urlparse
 
 # --- CONFIGURATION ---
 def _resolve_git_dir(start_path):
@@ -335,6 +339,115 @@ def discover_tasks():
     registry.update(built_ins)
     return registry
 
+
+def _is_ftp_uri(value):
+    """Return true when value is an FTP/FTPS URI string."""
+    if not value:
+        return False
+    return urlparse(str(value)).scheme.lower() in {"ftp", "ftps"}
+
+
+def _ftp_connection(parsed_uri, transfer_auth):
+    """Open an FTP/FTPS connection using URI credentials first, then task auth."""
+    auth = transfer_auth if isinstance(transfer_auth, dict) else {}
+    scheme = parsed_uri.scheme.lower() or str(auth.get("scheme", "ftp")).lower()
+    ftp_class = ftplib.FTP_TLS if scheme == "ftps" else ftplib.FTP
+    host = parsed_uri.hostname or str(auth.get("host", ""))
+    if not host:
+        raise ValueError(
+            "FTP URI must include a host or transfer_auth.host must be configured."
+        )
+
+    default_port = 990 if scheme == "ftps" else 21
+    port = parsed_uri.port or int(auth.get("port") or default_port)
+    username = unquote(parsed_uri.username or str(auth.get("username", "")))
+    password = unquote(parsed_uri.password or str(auth.get("password", "")))
+    if not username or not password:
+        raise ValueError("FTP transfer credentials are required for farm file transfers.")
+
+    ftp = ftp_class()
+    ftp.connect(host, port, timeout=30)
+    ftp.login(username, password)
+    if isinstance(ftp, ftplib.FTP_TLS):
+        ftp.prot_p()
+    return ftp
+
+
+def _ftp_uri_path(parsed_uri):
+    """Decode and validate the path component from an FTP URI."""
+    remote_path = unquote(parsed_uri.path or "")
+    if remote_path in {"", "/"}:
+        raise ValueError("FTP URI must point at a file path.")
+    return remote_path
+
+
+def _download_ftp_file(uri, transfer_auth, local_directory):
+    """Download one FTP/FTPS file into local_directory and return the local path."""
+    parsed = urlparse(str(uri))
+    remote_path = _ftp_uri_path(parsed)
+    local_name = Path(remote_path).name or "source"
+    local_path = local_directory / local_name
+
+    safe_uri = parsed._replace(netloc=parsed.hostname or "").geturl()
+    logging.info("Downloading FTP source %s to local worker storage.", safe_uri)
+    with contextlib.closing(_ftp_connection(parsed, transfer_auth)) as ftp:
+        with local_path.open("wb") as local_file:
+            ftp.retrbinary(f"RETR {remote_path}", local_file.write)
+    return str(local_path)
+
+
+def _ensure_ftp_directory(ftp, remote_directory):
+    """Create remote FTP directories when they are missing."""
+    if remote_directory in {"", "/", "."}:
+        return
+
+    current = "" if remote_directory.startswith("/") else ftp.pwd()
+    for part in remote_directory.strip("/").split("/"):
+        if not part:
+            continue
+        current = f"{current}/{part}" if current else part
+        with contextlib.suppress(ftplib.error_perm):
+            ftp.mkd(current)
+
+
+def _upload_ftp_file(local_path, uri, transfer_auth):
+    """Upload one local file to an FTP/FTPS URI."""
+    parsed = urlparse(str(uri))
+    remote_path = _ftp_uri_path(parsed)
+    source_path = Path(local_path)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"FTP delivery upload expected a file: {source_path}")
+
+    safe_uri = parsed._replace(netloc=parsed.hostname or "").geturl()
+    logging.info("Uploading task delivery to FTP target %s.", safe_uri)
+    with contextlib.closing(_ftp_connection(parsed, transfer_auth)) as ftp:
+        _ensure_ftp_directory(ftp, str(Path(remote_path).parent))
+        with source_path.open("rb") as source_file:
+            ftp.storbinary(f"STOR {remote_path}", source_file)
+
+
+def _prepare_transfer_paths(source, delivery, task_id, transfer_auth):
+    """Convert FTP source/delivery URIs into local paths for task execution."""
+    temp_directory = None
+    prepared_source = source
+    prepared_delivery = delivery
+
+    if _is_ftp_uri(source) or _is_ftp_uri(delivery):
+        temp_directory = tempfile.TemporaryDirectory(
+            prefix=f"reflection-{task_id or 'task'}-"
+        )
+        temp_path = Path(temp_directory.name)
+
+    if _is_ftp_uri(source):
+        prepared_source = _download_ftp_file(source, transfer_auth, temp_path)
+
+    if _is_ftp_uri(delivery):
+        parsed_delivery = urlparse(str(delivery))
+        delivery_name = Path(unquote(parsed_delivery.path or "delivery")).name or "delivery"
+        prepared_delivery = str(temp_path / delivery_name)
+
+    return prepared_source, prepared_delivery, temp_directory
+
 # --- CORE FARM AGENT CLASS ---
 class FarmAgent:
     def __init__(self):
@@ -448,6 +561,7 @@ class FarmAgent:
             source = task.get("source")
             delivery = task.get("delivery")
             overwrite_allowed = task.get("overwrite_allowed", False)
+            transfer_auth = task.get("transfer_auth", {})
 
             # 3. Confirm task taken
             if not self.confirm_task_taken(task_id):
@@ -460,12 +574,29 @@ class FarmAgent:
             task_outcome = TaskOutcome(success=False)
             error_message = ""
 
+            transfer_workspace = None
             try:
-                task_outcome = self.run_task(module_name, source, delivery, overwrite_allowed)
+                prepared_source, prepared_delivery, transfer_workspace = _prepare_transfer_paths(
+                    source,
+                    delivery,
+                    task_id,
+                    transfer_auth,
+                )
+                task_outcome = self.run_task(
+                    module_name,
+                    prepared_source,
+                    prepared_delivery,
+                    overwrite_allowed,
+                )
+                if task_outcome.success and _is_ftp_uri(delivery):
+                    _upload_ftp_file(prepared_delivery, delivery, transfer_auth)
                 error_message = task_outcome.message
             except Exception as e:
                 error_message = str(e)
                 logging.error("Execution failed on module '%s': %s", module_name, error_message)
+            finally:
+                if transfer_workspace is not None:
+                    transfer_workspace.cleanup()
 
             # 5 & 6. Report done & get server final confirmation
             server_response = self.report_task_done(task_id, task_outcome.success, error_message)

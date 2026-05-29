@@ -8,15 +8,14 @@ return [
     'farm_id' => 'default',
     'farm_name' => 'Default Reflection Farm',
 
-    // Default dashboard / JSON Tool login for this farm. Change these before
-    // exposing the master website outside a trusted network.
-    'default_login' => [
+    // Credentials workers use when source/delivery paths point at the farm FTP server.
+    // REFLECTION_FTP_* environment variables override these values.
+    'transfer_auth' => [
+        'scheme' => 'ftp',
+        'host' => '',
+        'port' => 21,
         'username' => 'reflection',
         'password' => 'reflection',
-    ],
-    'auth' => [
-        'enabled' => true,
-        'realm' => 'Reflection Farm Master',
     ],
 
     // Persistent farm data. REFLECTION_MASTER_STORE still overrides this value.
@@ -42,6 +41,9 @@ return [
     'allowed_tasks' => [
         'dummy_task' => 'Placeholder pipeline test task.',
         'render_frame' => 'Render a frame with the configured worker renderer.',
+        'h265_encode' => 'Transcode video files to H.265/HEVC MP4 with FFmpeg.',
+        'compress_archive' => 'Compress a file or directory into a small .tar.xz archive with hardware-aware limits.',
+        'invert_image' => 'Invert an image while preserving alpha transparency when possible.',
         'noop' => 'Built-in worker connectivity check.',
         'status' => 'Built-in worker health snapshot.',
         'reload_tasks' => 'Ask a worker to reload its local task registry.',

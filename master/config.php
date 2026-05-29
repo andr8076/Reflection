@@ -101,13 +101,12 @@ function reflection_default_farm_settings(): array
     return [
         'farm_id' => 'default',
         'farm_name' => 'Default Reflection Farm',
-        'default_login' => [
+        'transfer_auth' => [
+            'scheme' => 'ftp',
+            'host' => '',
+            'port' => 21,
             'username' => 'reflection',
             'password' => 'reflection',
-        ],
-        'auth' => [
-            'enabled' => true,
-            'realm' => 'Reflection Farm Master',
         ],
         'storage_path' => __DIR__ . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'farm_store.json',
         'required_version' => null,
@@ -156,6 +155,28 @@ function reflection_env_string(string $name): ?string
     return $value !== false && $value !== '' ? $value : null;
 }
 
+function reflection_transfer_auth_config(array $settings): array
+{
+    $configured = is_array($settings['transfer_auth'] ?? null) ? $settings['transfer_auth'] : [];
+    $host = reflection_env_string('REFLECTION_FTP_HOST') ?? (string) ($configured['host'] ?? '');
+    $username = reflection_env_string('REFLECTION_FTP_USERNAME') ?? (string) ($configured['username'] ?? '');
+    $password = reflection_env_string('REFLECTION_FTP_PASSWORD') ?? (string) ($configured['password'] ?? '');
+    $scheme = strtolower(reflection_env_string('REFLECTION_FTP_SCHEME') ?? (string) ($configured['scheme'] ?? 'ftp'));
+    $port = (int) (reflection_env_string('REFLECTION_FTP_PORT') ?? ($configured['port'] ?? 21));
+
+    if (!in_array($scheme, ['ftp', 'ftps'], true)) {
+        $scheme = 'ftp';
+    }
+
+    return [
+        'scheme' => $scheme,
+        'host' => $host,
+        'port' => $port > 0 ? $port : ($scheme === 'ftps' ? 990 : 21),
+        'username' => $username,
+        'password' => $password,
+    ];
+}
+
 function reflection_master_config(?array $farmSettings = null): array
 {
     $repoRoot = dirname(__DIR__);
@@ -180,60 +201,19 @@ function reflection_master_config(?array $farmSettings = null): array
     return [
         'farm_id' => (string) ($settings['farm_id'] ?? 'default'),
         'farm_name' => (string) ($settings['farm_name'] ?? 'Default Reflection Farm'),
-        'default_login' => is_array($settings['default_login'] ?? null) ? $settings['default_login'] : [],
-        'auth' => is_array($settings['auth'] ?? null) ? $settings['auth'] : [],
+        'transfer_auth' => reflection_transfer_auth_config($settings),
         'storage_path' => $storeConfig['storage_path'],
         'storage_warning' => $storeConfig['storage_warning'],
         'required_version' => $requiredVersion !== false && $requiredVersion !== ''
             ? $requiredVersion
             : reflection_git_commit_id($repoRoot),
-        'allowed_tasks' => [
-            'dummy_task' => 'Placeholder pipeline test task.',
-            'render_frame' => 'Render a frame with the configured worker renderer.',
-            'compress_archive' => 'Compress a file or directory into a small .tar.xz archive with hardware-aware limits.',
-            'invert_image' => 'Invert an image while preserving alpha transparency when possible.',
-            'noop' => 'Built-in worker connectivity check.',
-            'status' => 'Built-in worker health snapshot.',
-            'reload_tasks' => 'Ask a worker to reload its local task registry.',
-            'shutdown' => 'Ask a worker to stop after reporting success.',
-            'wake_farm' => 'Ask a worker to send Wake-on-LAN packets to configured farm computers.',
-        ],
-        'stale_after_seconds' => 15 * 60,
+        'runtime_defaults' => is_array($settings['runtime_defaults'] ?? null) ? $settings['runtime_defaults'] : [],
+        'allowed_tasks' => is_array($settings['allowed_tasks'] ?? null) ? $settings['allowed_tasks'] : [],
+        'stale_after_seconds' => (int) ($settings['stale_after_seconds'] ?? (15 * 60)),
     ];
 }
 
 function reflection_farm_store(array $config): FarmStore
 {
     return new FarmStore($config['storage_path'], $config['runtime_defaults'] ?? []);
-}
-
-function reflection_require_master_login(array $config): void
-{
-    if (defined('REFLECTION_TESTING') || PHP_SAPI === 'cli') {
-        return;
-    }
-
-    $auth = is_array($config['auth'] ?? null) ? $config['auth'] : [];
-    if (empty($auth['enabled'])) {
-        return;
-    }
-
-    $credentials = is_array($config['default_login'] ?? null) ? $config['default_login'] : [];
-    $expectedUsername = (string) ($credentials['username'] ?? '');
-    $expectedPassword = (string) ($credentials['password'] ?? '');
-    if ($expectedUsername === '' || $expectedPassword === '') {
-        return;
-    }
-
-    $username = (string) ($_SERVER['PHP_AUTH_USER'] ?? '');
-    $password = (string) ($_SERVER['PHP_AUTH_PW'] ?? '');
-    if (hash_equals($expectedUsername, $username) && hash_equals($expectedPassword, $password)) {
-        return;
-    }
-
-    $realm = preg_replace('/[^\x20-\x7E]/', '', (string) ($auth['realm'] ?? 'Reflection Farm Master'));
-    header('WWW-Authenticate: Basic realm="' . str_replace('"', '', $realm) . '"');
-    http_response_code(401);
-    echo 'Authentication required.' . PHP_EOL;
-    exit;
 }
