@@ -7,7 +7,12 @@ define('REFLECTION_TESTING', true);
 require_once __DIR__ . '/../master/farm_api.php';
 
 $storePath = sys_get_temp_dir() . '/reflection_farm_store_' . bin2hex(random_bytes(6)) . '.json';
+$eventLogPath = dirname($storePath) . DIRECTORY_SEPARATOR . 'farm_events.log';
+$fileHistoryPath = dirname($storePath) . DIRECTORY_SEPARATOR . 'farm_file_history.json';
+@unlink($eventLogPath);
+@unlink($fileHistoryPath);
 $store = new FarmStore($storePath);
+$store->updateSettings(['ess_soc_url' => '']);
 $config = [
     'required_version' => 'test-version',
 ];
@@ -19,8 +24,48 @@ assertSameValue(
     $defaultConfig['storage_path'],
     'Default farm store should live beside the deployed farm master files.'
 );
+assertSameValue(
+    true,
+    is_dir(dirname($defaultConfig['storage_path'])),
+    'Default farm store directory should ship with the deployed farm master files.'
+);
+assertSameValue(null, $defaultConfig['storage_warning'], 'Writable default farm store should not warn.');
+assertSameValue(true, array_key_exists('wake_farm', $defaultConfig['allowed_tasks']), 'Wake-on-LAN should be an allowed master task.');
 
-function assertSameValue(mixed $expected, mixed $actual, string $message): void
+$fallbackDirectory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'reflection_farm_fallback_' . bin2hex(random_bytes(6));
+$fallbackConfig = reflection_resolve_master_store(
+    null,
+    '/proc/reflection_farm_store/farm_store.json',
+    $fallbackDirectory,
+);
+assertSameValue(
+    $fallbackDirectory . DIRECTORY_SEPARATOR . 'farm_store.json',
+    $fallbackConfig['storage_path'],
+    'Unwritable default farm store should use the temporary fallback store.'
+);
+assertSameValue(
+    true,
+    is_string($fallbackConfig['storage_warning']) && strpos($fallbackConfig['storage_warning'], '/proc/reflection_farm_store') !== false,
+    'Fallback farm store should warn about the unwritable default path.'
+);
+@rmdir($fallbackDirectory);
+
+$socStorePath = sys_get_temp_dir() . '/reflection_soc_store_' . bin2hex(random_bytes(6)) . '.json';
+$socEndpointPath = sys_get_temp_dir() . '/reflection_soc_endpoint_' . bin2hex(random_bytes(6)) . '.txt';
+file_put_contents($socEndpointPath, '0.974381625411616');
+$socStore = new FarmStore($socStorePath);
+assertSameValue(
+    'http://192.168.1.245:8076',
+    $socStore->effectiveSettings()['ess_soc_url'],
+    'Default ESS SOC URL should point at the local ESS endpoint.'
+);
+$socStore->updateSettings(['ess_soc_url' => $socEndpointPath]);
+assertSameValue(97, $socStore->refreshEssSocFromConfiguredEndpoint(), 'Plain fractional SOC endpoint should convert to percent.');
+assertSameValue(97, $socStore->effectiveSettings()['ess_soc_percent'], 'Parsed SOC should be stored as percent.');
+unlink($socStorePath);
+unlink($socEndpointPath);
+
+function assertSameValue($expected, $actual, string $message): void
 {
     if ($expected !== $actual) {
         fwrite(STDERR, $message . PHP_EOL);
@@ -32,6 +77,12 @@ function assertSameValue(mixed $expected, mixed $actual, string $message): void
 
 $job = $store->createJob('dummy_task', 'incoming/source.dat', 'outputs/result.txt', false);
 assertSameValue('job_1001', $job['task_id'], 'Job ids should start at job_1001.');
+assertSameValue('job_queued', $store->readRecentEvents(1)[0]['event'], 'Queued jobs should be written to the event log.');
+assertSameValue(
+    'queued_as_source',
+    $store->readFileHistory()['incoming/source.dat'][0]['action'],
+    'Queued source files should be written to file history.'
+);
 
 $response = reflection_handle_farm_api([
     'action' => 'request_task',
@@ -87,5 +138,33 @@ $data = $store->read();
 assertSameValue('success', $data['jobs'][0]['status'], 'Store should retain the final job status.');
 assertSameValue(null, $data['workers']['node-01']['current_job'], 'Worker should be idle after report_done.');
 
+$store->updateSettings([
+    'enforce_version' => false,
+    'failure_strategy' => 'retry_to_end',
+    'max_retries' => 1,
+    'ess_soc_percent' => 12,
+    'ess_min_soc_percent' => 20,
+]);
+$response = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'wrong-but-allowed',
+    'pc_id' => 'node-03',
+], $store, $config);
+assertSameValue('no_jobs', $response['status'], 'SOC below minimum should withhold new work.');
+assertSameValue(true, $response['shutdown_after_task'], 'SOC below minimum should ask idle workers to shut down.');
+
+$store->updateSettings([
+    'ess_soc_percent' => 100,
+    'ess_min_soc_percent' => 20,
+]);
+$retryJob = $store->createJob('dummy_task', 'incoming/retry.dat', 'outputs/retry.txt', false);
+assertSameValue(true, $store->markJobRunning($retryJob['task_id'], 'node-04'), 'Retry test job should lock.');
+assertSameValue(true, $store->finishJob($retryJob['task_id'], 'node-04', 'failed', 'simulated'), 'Retry test job should finish as failed.');
+$data = $store->read();
+assertSameValue('queued', $data['jobs'][2]['status'], 'Failed jobs should be retried to the end of the queue.');
+assertSameValue(1, $data['jobs'][2]['attempt'], 'Retried jobs should increment attempt count.');
+
 unlink($storePath);
+@unlink($eventLogPath);
+@unlink($fileHistoryPath);
 echo "farm master tests passed\n";

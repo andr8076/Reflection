@@ -143,6 +143,7 @@ label {
 
 input,
 select,
+textarea,
 button {
     border: 1px solid var(--line);
     border-radius: 12px;
@@ -151,7 +152,8 @@ button {
 }
 
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
     border-color: var(--accent);
     outline: 3px solid rgba(34, 100, 229, 0.16);
 }
@@ -276,4 +278,152 @@ code {
     .version-card {
         margin-top: 1rem;
     }
+}
+
+
+textarea {
+    min-height: 8rem;
+    resize: vertical;
+}
+
+input[type="file"] {
+    background: #fff;
+}
+
+a {
+    color: var(--accent);
+    font-weight: 800;
+}
+
+.preset-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.preset-row button {
+    border-radius: 999px;
+    padding: 0.55rem 0.8rem;
+}
+
+.json-viewer {
+    background: #101828;
+    border-radius: 16px;
+    color: #e4e7ec;
+    overflow-x: auto;
+    padding: 1rem;
+}
+
+.json-viewer code {
+    background: transparent;
+    color: inherit;
+    padding: 0;
+}
+
+.steps {
+    color: var(--muted);
+    padding-left: 1.25rem;
+}
+
+.mode-fields {
+    display: grid;
+    gap: 1rem;
+}
+
+.mode-fields[hidden] {
+    display: none;
+}
+
+.option-grid {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+}
+
+.inline-form {
+    margin-top: 1rem;
+}
+
+.stat.energy {
+    background: #ecfdf3;
+}
+
+.computer-summary {
+    margin-bottom: 1rem;
+}
+
+.computer-grid {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    margin-bottom: 1.25rem;
+}
+
+.computer-card {
+    background: #f8fafc;
+    border: 1px solid var(--line);
+    border-left: 6px solid var(--muted);
+    border-radius: 18px;
+    padding: 1rem;
+}
+
+.computer-card.running {
+    border-left-color: var(--warning);
+}
+
+.computer-card.idle {
+    border-left-color: var(--success);
+}
+
+.computer-card.stale {
+    border-left-color: var(--error);
+}
+
+.computer-card.configured {
+    border-left-color: var(--accent);
+}
+
+.computer-card-head {
+    align-items: center;
+    display: flex;
+    gap: 0.75rem;
+    justify-content: space-between;
+    margin-bottom: 0.8rem;
+}
+
+.computer-card dl,
+.computer-card dd {
+    margin: 0;
+}
+
+.computer-card dl {
+    display: grid;
+    gap: 0.65rem;
+}
+
+.computer-card dt {
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.computer-card dd {
+    overflow-wrap: anywhere;
+}
+
+.badge.idle {
+    background: #d1fadf;
+    color: #05603a;
+}
+
+.badge.configured {
+    background: #e0eaff;
+    color: #1749a9;
+}
+
+.badge.unknown {
+    background: #eef2f7;
+    color: var(--muted);
 }

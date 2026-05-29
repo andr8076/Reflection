@@ -238,6 +238,48 @@ def _system_shutdown(source, delivery, overwrite_allowed):
     }
 
 
+def _normalize_wake_targets(source):
+    if not source:
+        return []
+
+    try:
+        parsed = json.loads(source)
+    except (TypeError, json.JSONDecodeError):
+        parsed = [part.strip() for part in str(source).replace(",", "\n").splitlines()]
+
+    targets = []
+    for entry in parsed:
+        if isinstance(entry, dict):
+            mac = str(entry.get("mac", "")).strip()
+        else:
+            mac = str(entry).strip()
+        if mac:
+            targets.append(mac)
+    return targets
+
+
+def _send_wake_packet(mac_address):
+    clean_mac = mac_address.replace(":", "").replace("-", "").replace(".", "")
+    if len(clean_mac) != 12:
+        raise ValueError(f"Invalid MAC address: {mac_address}")
+    payload = bytes.fromhex("FF" * 6 + clean_mac * 16)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as wol_socket:
+        wol_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        wol_socket.sendto(payload, ("255.255.255.255", 9))
+
+
+def _system_wake_farm(source, delivery, overwrite_allowed):
+    """Built-in task that sends Wake-on-LAN packets for configured machines."""
+    targets = _normalize_wake_targets(source)
+    for mac in targets:
+        _send_wake_packet(mac)
+    return {
+        "success": True,
+        "cleanup_source": False,
+        "message": f"Sent Wake-on-LAN packets to {len(targets)} target(s).",
+    }
+
+
 def built_in_tasks():
     """Return control tasks that are always available without task files."""
     return {
@@ -260,6 +302,11 @@ def built_in_tasks():
             name="shutdown",
             run=_system_shutdown,
             description="Built-in control task that stops the worker after reporting success.",
+        ),
+        "wake_farm": TaskDefinition(
+            name="wake_farm",
+            run=_system_wake_farm,
+            description="Built-in control task that sends Wake-on-LAN packets to configured farm computers.",
         ),
     }
 
@@ -340,8 +387,7 @@ class FarmAgent:
             "status": "success" if success else "failed",
             "error": error_msg,
         }
-        res = self.post_to_server(payload)
-        return res and res.get("status") == "confirmed_by_server"
+        return self.post_to_server(payload)
 
     def cleanup_files(self, source_path):
         """Step 7: Local cleanup of source files if requested or necessary."""
@@ -384,6 +430,9 @@ class FarmAgent:
                 continue
 
             if response.get("status") == "no_jobs":
+                if response.get("shutdown_after_task"):
+                    logging.info("Server requested idle shutdown due to SOC policy. Stopping agent.")
+                    return
                 logging.info("Server has no jobs. Sleeping for %ss...", POLL_INTERVAL)
                 time.sleep(POLL_INTERVAL)
                 continue
@@ -419,7 +468,8 @@ class FarmAgent:
                 logging.error("Execution failed on module '%s': %s", module_name, error_message)
 
             # 5 & 6. Report done & get server final confirmation
-            server_confirmed = self.report_task_done(task_id, task_outcome.success, error_message)
+            server_response = self.report_task_done(task_id, task_outcome.success, error_message)
+            server_confirmed = bool(server_response and server_response.get("status") == "confirmed_by_server")
 
             # 7. Clean up files if the server acknowledged the wrap-up
             if server_confirmed:
@@ -431,6 +481,10 @@ class FarmAgent:
 
                 if task_outcome.stop_agent:
                     logging.info("Shutdown task %s confirmed by server. Stopping agent.", task_id)
+                    return
+
+                if server_response.get("shutdown_after_task"):
+                    logging.info("Server requested shutdown after task %s due to SOC policy. Stopping agent.", task_id)
                     return
 
                 logging.info("Lifecycle finished for Task %s. Repeating loop...\n", task_id)
