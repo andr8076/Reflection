@@ -213,5 +213,69 @@ class AgentConfigTest(unittest.TestCase):
                 Reflection.load_agent_config(config_path)
 
 
+class TransferHandlingTest(unittest.TestCase):
+    def test_ftp_delivery_directory_uploads_with_source_filename(self):
+        class FakeAgent:
+            def run_task(self, module_name, source, delivery, overwrite_allowed):
+                self.seen_delivery = delivery
+                Path(delivery).write_text("result", encoding="utf-8")
+                return Reflection.TaskOutcome(success=True, message="task succeeded")
+
+        fake_agent = FakeAgent()
+        upload_calls = []
+        original_upload = Reflection._upload_ftp_file
+        try:
+            def record_upload(local_path, uri, transfer_auth):
+                upload_calls.append((local_path, uri, transfer_auth))
+
+            Reflection._upload_ftp_file = record_upload
+            outcome = Reflection._run_task_with_transfer_handling(
+                fake_agent,
+                "invert_image",
+                "local-source.jpg",
+                "ftp://192.168.1.35/System/images_dump",
+                False,
+                "job_1005",
+                {},
+            )
+        finally:
+            Reflection._upload_ftp_file = original_upload
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(len(upload_calls), 1)
+        self.assertEqual(
+            upload_calls[0][1],
+            "ftp://192.168.1.35/System/images_dump/local-source.jpg",
+        )
+        self.assertEqual(Path(fake_agent.seen_delivery).name, "local-source.jpg")
+
+    def test_ftp_upload_failure_marks_task_failed(self):
+        class FakeAgent:
+            def run_task(self, module_name, source, delivery, overwrite_allowed):
+                Path(delivery).write_text("result", encoding="utf-8")
+                return Reflection.TaskOutcome(success=True, message="task succeeded")
+
+        original_upload = Reflection._upload_ftp_file
+        try:
+            def fail_upload(local_path, uri, transfer_auth):
+                raise RuntimeError("553 /System/output.jpg: Permission denied.")
+
+            Reflection._upload_ftp_file = fail_upload
+            outcome = Reflection._run_task_with_transfer_handling(
+                FakeAgent(),
+                "invert_image",
+                "local-source.jpg",
+                "ftp://192.168.1.35/System/output.jpg",
+                False,
+                "job_1005",
+                {},
+            )
+        finally:
+            Reflection._upload_ftp_file = original_upload
+
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.message, "553 /System/output.jpg: Permission denied.")
+
+
 if __name__ == "__main__":
     unittest.main()

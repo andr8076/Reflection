@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 # --- CONFIGURATION ---
 DEFAULT_SERVER_URL = "http://your-server-domain.com/farm_api.php"
@@ -636,11 +636,46 @@ def _upload_sftp_file(local_path, uri, transfer_auth):
         transport.close()
 
 
+def _transfer_uri_with_child(uri, child_name):
+    """Return a transfer URI with child_name appended to its path."""
+    parsed = urlparse(str(uri))
+    base_path = parsed.path or "/"
+    separator = "" if base_path.endswith("/") else "/"
+    return parsed._replace(path=f"{base_path}{separator}{quote(child_name)}").geturl()
+
+
+def _delivery_uri_points_to_directory(uri):
+    """Return true when a transfer delivery URI looks like a directory target."""
+    parsed = urlparse(str(uri))
+    remote_path = unquote(parsed.path or "")
+    if remote_path.endswith("/"):
+        return True
+
+    return Path(remote_path).suffix == ""
+
+
+def _transfer_delivery_target(delivery, prepared_source, temp_path):
+    """Return local delivery path and final upload URI for transfer delivery."""
+    parsed_delivery = urlparse(str(delivery))
+    remote_path = unquote(parsed_delivery.path or "")
+    source_name = Path(str(prepared_source)).name or "delivery"
+
+    if _delivery_uri_points_to_directory(delivery):
+        delivery_name = source_name
+        upload_delivery = _transfer_uri_with_child(delivery, delivery_name)
+    else:
+        delivery_name = Path(remote_path or "delivery").name or source_name
+        upload_delivery = delivery
+
+    return str(temp_path / delivery_name), upload_delivery
+
+
 def _prepare_transfer_paths(source, delivery, task_id, transfer_auth):
-    """Convert FTP source/delivery URIs into local paths for task execution."""
+    """Convert transfer URIs into local task paths and final upload URI."""
     temp_directory = None
     prepared_source = source
     prepared_delivery = delivery
+    upload_delivery = delivery
 
     if _is_transfer_uri(source) or _is_transfer_uri(delivery):
         temp_directory = tempfile.TemporaryDirectory(
@@ -654,11 +689,56 @@ def _prepare_transfer_paths(source, delivery, task_id, transfer_auth):
         prepared_source = _download_sftp_file(source, transfer_auth, temp_path)
 
     if _is_transfer_uri(delivery):
-        parsed_delivery = urlparse(str(delivery))
-        delivery_name = Path(unquote(parsed_delivery.path or "delivery")).name or "delivery"
-        prepared_delivery = str(temp_path / delivery_name)
+        prepared_delivery, upload_delivery = _transfer_delivery_target(
+            delivery,
+            prepared_source,
+            temp_path,
+        )
 
-    return prepared_source, prepared_delivery, temp_directory
+    return prepared_source, prepared_delivery, upload_delivery, temp_directory
+
+
+def _run_task_with_transfer_handling(
+    agent,
+    module_name,
+    source,
+    delivery,
+    overwrite_allowed,
+    task_id,
+    transfer_auth,
+):
+    """Run one task and treat download/upload errors as task failures."""
+    transfer_workspace = None
+    try:
+        (
+            prepared_source,
+            prepared_delivery,
+            upload_delivery,
+            transfer_workspace,
+        ) = _prepare_transfer_paths(
+            source,
+            delivery,
+            task_id,
+            transfer_auth,
+        )
+        task_outcome = agent.run_task(
+            module_name,
+            prepared_source,
+            prepared_delivery,
+            overwrite_allowed,
+        )
+        if task_outcome.success and _is_ftp_uri(upload_delivery):
+            _upload_ftp_file(prepared_delivery, upload_delivery, transfer_auth)
+        elif task_outcome.success and _is_sftp_uri(upload_delivery):
+            _upload_sftp_file(prepared_delivery, upload_delivery, transfer_auth)
+        return task_outcome
+    except Exception as e:
+        error_message = str(e)
+        logging.error("Execution failed on module '%s': %s", module_name, error_message)
+        return TaskOutcome(success=False, message=error_message)
+    finally:
+        if transfer_workspace is not None:
+            transfer_workspace.cleanup()
 
 # --- CORE FARM AGENT CLASS ---
 class FarmAgent:
@@ -786,31 +866,16 @@ class FarmAgent:
             task_outcome = TaskOutcome(success=False)
             error_message = ""
 
-            transfer_workspace = None
-            try:
-                prepared_source, prepared_delivery, transfer_workspace = _prepare_transfer_paths(
-                    source,
-                    delivery,
-                    task_id,
-                    transfer_auth,
-                )
-                task_outcome = self.run_task(
-                    module_name,
-                    prepared_source,
-                    prepared_delivery,
-                    overwrite_allowed,
-                )
-                if task_outcome.success and _is_ftp_uri(delivery):
-                    _upload_ftp_file(prepared_delivery, delivery, transfer_auth)
-                elif task_outcome.success and _is_sftp_uri(delivery):
-                    _upload_sftp_file(prepared_delivery, delivery, transfer_auth)
-                error_message = task_outcome.message
-            except Exception as e:
-                error_message = str(e)
-                logging.error("Execution failed on module '%s': %s", module_name, error_message)
-            finally:
-                if transfer_workspace is not None:
-                    transfer_workspace.cleanup()
+            task_outcome = _run_task_with_transfer_handling(
+                self,
+                module_name,
+                source,
+                delivery,
+                overwrite_allowed,
+                task_id,
+                transfer_auth,
+            )
+            error_message = task_outcome.message
 
             # 5 & 6. Report done & get server final confirmation
             server_response = self.report_task_done(task_id, task_outcome.success, error_message)
