@@ -17,6 +17,58 @@ from typing import Any, Callable, Optional
 from urllib.parse import unquote, urlparse
 
 # --- CONFIGURATION ---
+DEFAULT_SERVER_URL = "http://your-server-domain.com/farm_api.php"
+DEFAULT_POLL_INTERVAL = 10
+DEFAULT_PC_ID = socket.gethostname()
+CONFIG_FILE_ENV = "REFLECTION_CONFIG_FILE"
+CONFIG_FILE_NAME = "reflection_config.json"
+
+
+def default_config_path():
+    """Return the local agent configuration path."""
+    configured = os.environ.get(CONFIG_FILE_ENV)
+    if configured:
+        return Path(configured).expanduser()
+    return Path(__file__).with_name(CONFIG_FILE_NAME)
+
+
+def load_agent_config(config_path=None):
+    """Load agent settings from JSON while preserving safe defaults."""
+    path = Path(config_path).expanduser() if config_path is not None else default_config_path()
+    config = {
+        "server_url": DEFAULT_SERVER_URL,
+        "poll_interval": DEFAULT_POLL_INTERVAL,
+        "pc_id": DEFAULT_PC_ID,
+    }
+
+    if not path.is_file():
+        return config
+
+    with path.open(encoding="utf-8") as config_file:
+        loaded = json.load(config_file)
+
+    if not isinstance(loaded, dict):
+        raise ValueError(f"Reflection config must contain a JSON object: {path}")
+
+    if "server_url" in loaded:
+        server_url = str(loaded["server_url"]).strip()
+        if server_url:
+            config["server_url"] = server_url
+
+    if "poll_interval" in loaded:
+        poll_interval = int(loaded["poll_interval"])
+        if poll_interval <= 0:
+            raise ValueError("poll_interval must be greater than zero.")
+        config["poll_interval"] = poll_interval
+
+    if "pc_id" in loaded:
+        pc_id = str(loaded["pc_id"]).strip()
+        if pc_id:
+            config["pc_id"] = pc_id
+
+    return config
+
+
 def _resolve_git_dir(start_path):
     """Return the repository Git directory by reading Git metadata files."""
     current = Path(start_path).resolve()
@@ -87,9 +139,10 @@ def get_git_commit_id(start_path=__file__):
 
 
 VERSION = get_git_commit_id()
-SERVER_URL = "http://your-server-domain.com/farm_api.php"  # Target PHP endpoint
-POLL_INTERVAL = 10  # Seconds to wait before checking for new jobs if idle
-PC_ID = socket.gethostname()  # Unique identifier for this node
+AGENT_CONFIG = load_agent_config()
+SERVER_URL = AGENT_CONFIG["server_url"]  # Target PHP endpoint
+POLL_INTERVAL = AGENT_CONFIG["poll_interval"]  # Seconds to wait before checking for new jobs if idle
+PC_ID = AGENT_CONFIG["pc_id"]  # Unique identifier for this node
 TASKS_DIR = Path(__file__).with_name("tasks")
 
 # Setup logging to see what the farm bot is doing
