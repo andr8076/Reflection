@@ -4,18 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
 from Reflection import (
     DEFAULT_PC_ID,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_SERVER_URL,
+    DEFAULT_TRANSFER_AUTH,
     TaskDefinition,
     default_config_path,
     discover_tasks,
@@ -36,6 +38,16 @@ def _prompt_value(prompt: str, default: str, *, interactive: bool) -> str:
 
     value = input(f"{prompt} [{default}]: ").strip()
     return value or default
+
+
+def _prompt_secret(prompt: str, default: str, *, interactive: bool) -> str:
+    """Ask for one secret config value without echoing newly typed input."""
+    if not interactive:
+        return default
+
+    default_label = "configured" if default else "blank"
+    value = getpass.getpass(f"{prompt} [{default_label}]: ")
+    return value if value else default
 
 
 def _validate_server_url(value: str) -> str:
@@ -66,11 +78,106 @@ def _validate_pc_id(value: str) -> str:
     return pc_id
 
 
+def _default_transfer_port(scheme: str) -> int:
+    """Return the conventional port for a transfer protocol."""
+    return 22 if scheme == "sftp" else 21
+
+
+def _validate_transfer_scheme(value: str) -> str:
+    """Validate the optional worker transfer protocol."""
+    scheme = value.strip().lower()
+    if scheme in {"", "none", "disabled", "off"}:
+        return "none"
+    if scheme not in {"ftp", "sftp"}:
+        raise ValueError("Transfer protocol must be ftp, sftp, or none.")
+    return scheme
+
+
+def _validate_transfer_port(value: str, scheme: str) -> int:
+    """Validate and normalize the transfer port."""
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise ValueError("Transfer port must be a whole number.") from exc
+    if port <= 0:
+        raise ValueError("Transfer port must be greater than zero.")
+    return port
+
+
+def _current_transfer_auth(current_config: Mapping[str, Any]) -> dict[str, str | int]:
+    """Return transfer defaults for setup prompts."""
+    configured = current_config.get("transfer_auth")
+    if not isinstance(configured, Mapping):
+        configured = {}
+
+    scheme = str(configured.get("scheme") or DEFAULT_TRANSFER_AUTH["scheme"]).lower()
+    if scheme not in {"ftp", "sftp"}:
+        scheme = DEFAULT_TRANSFER_AUTH["scheme"]
+
+    return {
+        "scheme": scheme,
+        "host": str(configured.get("host") or DEFAULT_TRANSFER_AUTH["host"]),
+        "port": int(configured.get("port") or _default_transfer_port(scheme)),
+        "username": str(configured.get("username") or DEFAULT_PC_ID),
+        "password": str(configured.get("password") or DEFAULT_TRANSFER_AUTH["password"]),
+    }
+
+
+def collect_transfer_auth(
+    current_config: Mapping[str, Any],
+    *,
+    interactive: bool,
+) -> dict[str, str | int] | None:
+    """Prompt for optional local FTP/SFTP credentials used by file transfers."""
+    current_transfer = _current_transfer_auth(current_config)
+    scheme = _validate_transfer_scheme(
+        _prompt_value(
+            "File transfer protocol (ftp, sftp, or none)",
+            str(current_transfer["scheme"]),
+            interactive=interactive,
+        )
+    )
+    if scheme == "none":
+        return None
+
+    host = _prompt_value(
+        "Default transfer host (blank means use host from task URL)",
+        str(current_transfer["host"]),
+        interactive=interactive,
+    ).strip()
+    port = _validate_transfer_port(
+        _prompt_value(
+            "Default transfer port",
+            str(current_transfer.get("port") or _default_transfer_port(scheme)),
+            interactive=interactive,
+        ),
+        scheme,
+    )
+    username = _prompt_value(
+        "Default transfer login username",
+        str(current_transfer.get("username") or DEFAULT_PC_ID),
+        interactive=interactive,
+    ).strip()
+    password = _prompt_secret(
+        "Default transfer login password",
+        str(current_transfer.get("password") or ""),
+        interactive=interactive,
+    )
+
+    return {
+        "scheme": scheme,
+        "host": host,
+        "port": port,
+        "username": username,
+        "password": password,
+    }
+
+
 def collect_agent_config(
     config_path: Path | None = None,
     *,
     interactive: bool | None = None,
-) -> dict[str, str | int]:
+) -> dict[str, Any]:
     """Prompt for every agent setting needed by Reflection.py."""
     path = config_path or default_config_path()
     try:
@@ -112,14 +219,18 @@ def collect_agent_config(
         )
     )
 
-    return {
+    config: dict[str, str | int | dict[str, str | int]] = {
         "server_url": server_url,
         "poll_interval": poll_interval,
         "pc_id": pc_id,
     }
+    transfer_auth = collect_transfer_auth(current_config, interactive=should_prompt)
+    if transfer_auth is not None:
+        config["transfer_auth"] = transfer_auth
+    return config
 
 
-def write_agent_config(config: Mapping[str, str | int], config_path: Path | None = None) -> Path:
+def write_agent_config(config: Mapping[str, Any], config_path: Path | None = None) -> Path:
     """Persist agent configuration for Reflection.py."""
     path = config_path or default_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
