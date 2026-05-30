@@ -4,18 +4,137 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Mapping, Sequence
+from urllib.parse import urlparse
 
-from Reflection import TaskDefinition, discover_tasks
+from Reflection import (
+    DEFAULT_PC_ID,
+    DEFAULT_POLL_INTERVAL,
+    DEFAULT_SERVER_URL,
+    TaskDefinition,
+    default_config_path,
+    discover_tasks,
+    load_agent_config,
+)
 
 EXIT_OK = 0
 EXIT_INSTALL_FAILED = 1
 EXIT_BAD_TASK = 2
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _prompt_value(prompt: str, default: str, *, interactive: bool) -> str:
+    """Ask for one config value, returning the default when input is blank."""
+    if not interactive:
+        return default
+
+    value = input(f"{prompt} [{default}]: ").strip()
+    return value or default
+
+
+def _validate_server_url(value: str) -> str:
+    """Validate and normalize the master API URL."""
+    server_url = value.strip()
+    parsed = urlparse(server_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Server URL must be an absolute http:// or https:// URL.")
+    return server_url
+
+
+def _validate_poll_interval(value: str) -> int:
+    """Validate and normalize the idle polling interval."""
+    try:
+        poll_interval = int(value)
+    except ValueError as exc:
+        raise ValueError("Poll interval must be a whole number of seconds.") from exc
+    if poll_interval <= 0:
+        raise ValueError("Poll interval must be greater than zero.")
+    return poll_interval
+
+
+def _validate_pc_id(value: str) -> str:
+    """Validate and normalize the worker identifier sent to the master."""
+    pc_id = value.strip()
+    if not pc_id:
+        raise ValueError("PC ID cannot be empty.")
+    return pc_id
+
+
+def collect_agent_config(
+    config_path: Path | None = None,
+    *,
+    interactive: bool | None = None,
+) -> dict[str, str | int]:
+    """Prompt for every agent setting needed by Reflection.py."""
+    path = config_path or default_config_path()
+    try:
+        current_config = load_agent_config(path)
+    except Exception as exc:  # noqa: BLE001 - bad config should not prevent repair.
+        LOGGER.warning("Could not read existing config %s: %s", path, exc)
+        current_config = {
+            "server_url": DEFAULT_SERVER_URL,
+            "poll_interval": DEFAULT_POLL_INTERVAL,
+            "pc_id": DEFAULT_PC_ID,
+        }
+
+    should_prompt = sys.stdin.isatty() if interactive is None else interactive
+    if should_prompt:
+        print("Reflection agent configuration")
+        print("Press Enter to keep the value shown in brackets.\n")
+    else:
+        LOGGER.info("No interactive stdin available; writing current/default agent config.")
+
+    server_url = _validate_server_url(
+        _prompt_value(
+            "Master API URL",
+            str(current_config.get("server_url") or DEFAULT_SERVER_URL),
+            interactive=should_prompt,
+        )
+    )
+    poll_interval = _validate_poll_interval(
+        _prompt_value(
+            "Idle poll interval in seconds",
+            str(current_config.get("poll_interval") or DEFAULT_POLL_INTERVAL),
+            interactive=should_prompt,
+        )
+    )
+    pc_id = _validate_pc_id(
+        _prompt_value(
+            "Worker PC ID",
+            str(current_config.get("pc_id") or DEFAULT_PC_ID),
+            interactive=should_prompt,
+        )
+    )
+
+    return {
+        "server_url": server_url,
+        "poll_interval": poll_interval,
+        "pc_id": pc_id,
+    }
+
+
+def write_agent_config(config: Mapping[str, str | int], config_path: Path | None = None) -> Path:
+    """Persist agent configuration for Reflection.py."""
+    path = config_path or default_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    temporary_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    temporary_path.replace(path)
+    return path
+
+
+def configure_agent(config_path: Path | None = None, *, interactive: bool | None = None) -> Path:
+    """Collect and save Reflection.py runtime configuration."""
+    config = collect_agent_config(config_path, interactive=interactive)
+    path = write_agent_config(config, config_path)
+    LOGGER.info("Saved Reflection agent config to %s", path)
+    return path
 
 
 @dataclass(frozen=True)
@@ -133,6 +252,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="List discovered tasks and exit without running installers.",
     )
     parser.add_argument(
+        "--config-file",
+        type=Path,
+        default=None,
+        help="Path for the Reflection.py agent config file.",
+    )
+    parser.add_argument(
+        "--config-only",
+        action="store_true",
+        help="Write the agent config file and exit without running task installers.",
+    )
+    parser.add_argument(
+        "--skip-agent-config",
+        action="store_true",
+        help="Do not prompt for or write Reflection.py agent configuration.",
+    )
+    parser.add_argument(
+        "--accept-defaults",
+        action="store_true",
+        help="Write current/default config values without prompting.",
+    )
+    parser.add_argument(
         "--stop-on-error",
         action="store_true",
         help="Stop after the first failed installer instead of reporting all failures.",
@@ -160,6 +300,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.list:
         print_task_list()
+        return EXIT_OK
+
+    if not args.skip_agent_config:
+        try:
+            configure_agent(args.config_file, interactive=False if args.accept_defaults else None)
+        except ValueError as exc:
+            print(f"Invalid agent configuration: {exc}", file=sys.stderr)
+            return EXIT_BAD_TASK
+
+    if args.config_only:
         return EXIT_OK
 
     try:
