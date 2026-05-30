@@ -1,6 +1,7 @@
 import argparse
 import contextlib
 import ftplib
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -583,8 +584,36 @@ def _ensure_ftp_directory(ftp, remote_directory):
             ftp.mkd(current)
 
 
+def _file_md5(path):
+    """Return an MD5 checksum for a local file."""
+    digest = hashlib.md5()
+    with Path(path).open("rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _ftp_remote_md5(ftp, remote_path):
+    """Return an MD5 checksum for a remote FTP/FTPS file by reading it back."""
+    digest = hashlib.md5()
+    ftp.retrbinary(f"RETR {remote_path}", digest.update)
+    return digest.hexdigest()
+
+
+def _verify_ftp_upload_md5(ftp, local_path, remote_path):
+    """Verify an FTP/FTPS upload by comparing local and remote MD5 checksums."""
+    local_md5 = _file_md5(local_path)
+    remote_md5 = _ftp_remote_md5(ftp, remote_path)
+    if remote_md5 != local_md5:
+        raise RuntimeError(
+            "FTP delivery upload verification failed: "
+            f"MD5 mismatch for {remote_path} (local {local_md5}, remote {remote_md5})."
+        )
+    logging.info("FTP delivery upload verified by MD5: %s", remote_path)
+
+
 def _upload_ftp_file(local_path, uri, transfer_auth):
-    """Upload one local file to an FTP/FTPS URI."""
+    """Upload one local file to an FTP/FTPS URI and verify it by MD5."""
     parsed = urlparse(str(uri))
     remote_path = _ftp_uri_path(parsed)
     source_path = Path(local_path)
@@ -597,6 +626,7 @@ def _upload_ftp_file(local_path, uri, transfer_auth):
         _ensure_ftp_directory(ftp, str(Path(remote_path).parent))
         with source_path.open("rb") as source_file:
             ftp.storbinary(f"STOR {remote_path}", source_file)
+        _verify_ftp_upload_md5(ftp, source_path, remote_path)
 
 
 def _ensure_sftp_directory(client, remote_directory):
@@ -617,8 +647,29 @@ def _ensure_sftp_directory(client, remote_directory):
             client.mkdir(current_path)
 
 
+def _sftp_remote_md5(client, remote_path):
+    """Return an MD5 checksum for a remote SFTP file by reading it back."""
+    digest = hashlib.md5()
+    with client.open(remote_path, "rb") as remote_file:
+        for chunk in iter(lambda: remote_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_sftp_upload_md5(client, local_path, remote_path):
+    """Verify an SFTP upload by comparing local and remote MD5 checksums."""
+    local_md5 = _file_md5(local_path)
+    remote_md5 = _sftp_remote_md5(client, remote_path)
+    if remote_md5 != local_md5:
+        raise RuntimeError(
+            "SFTP delivery upload verification failed: "
+            f"MD5 mismatch for {remote_path} (local {local_md5}, remote {remote_md5})."
+        )
+    logging.info("SFTP delivery upload verified by MD5: %s", remote_path)
+
+
 def _upload_sftp_file(local_path, uri, transfer_auth):
-    """Upload one local file to an SFTP URI."""
+    """Upload one local file to an SFTP URI and verify it by MD5."""
     parsed = urlparse(str(uri))
     remote_path = _transfer_uri_path(parsed)
     source_path = Path(local_path)
@@ -631,6 +682,7 @@ def _upload_sftp_file(local_path, uri, transfer_auth):
     try:
         _ensure_sftp_directory(client, str(Path(remote_path).parent))
         client.put(str(source_path), remote_path)
+        _verify_sftp_upload_md5(client, source_path, remote_path)
     finally:
         client.close()
         transport.close()
@@ -667,7 +719,7 @@ def _transfer_delivery_target(delivery, prepared_source, temp_path):
         delivery_name = Path(remote_path or "delivery").name or source_name
         upload_delivery = delivery
 
-    return str(temp_path / delivery_name), upload_delivery
+    return str(temp_path / "delivery" / delivery_name), upload_delivery
 
 
 def _prepare_transfer_paths(source, delivery, task_id, transfer_auth):

@@ -218,6 +218,7 @@ class TransferHandlingTest(unittest.TestCase):
         class FakeAgent:
             def run_task(self, module_name, source, delivery, overwrite_allowed):
                 self.seen_delivery = delivery
+                Path(delivery).parent.mkdir(parents=True, exist_ok=True)
                 Path(delivery).write_text("result", encoding="utf-8")
                 return Reflection.TaskOutcome(success=True, message="task succeeded")
 
@@ -247,11 +248,58 @@ class TransferHandlingTest(unittest.TestCase):
             upload_calls[0][1],
             "ftp://192.168.1.35/System/images_dump/local-source.jpg",
         )
-        self.assertEqual(Path(fake_agent.seen_delivery).name, "local-source.jpg")
+        seen_delivery = Path(fake_agent.seen_delivery)
+        self.assertEqual(seen_delivery.name, "local-source.jpg")
+        self.assertEqual(seen_delivery.parent.name, "delivery")
+
+    def test_ftp_delivery_file_uses_separate_local_output_path_when_names_match(self):
+        class FakeAgent:
+            def run_task(self, module_name, source, delivery, overwrite_allowed):
+                self.seen_source = source
+                self.seen_delivery = delivery
+                self.source_exists_during_run = Path(source).exists()
+                self.delivery_exists_before_write = Path(delivery).exists()
+                Path(delivery).parent.mkdir(parents=True, exist_ok=True)
+                Path(delivery).write_text("result", encoding="utf-8")
+                return Reflection.TaskOutcome(success=True, message="task succeeded")
+
+        fake_agent = FakeAgent()
+        original_download = Reflection._download_ftp_file
+        original_upload = Reflection._upload_ftp_file
+        try:
+            def fake_download(uri, transfer_auth, local_directory):
+                source_path = Path(local_directory) / "DSC_4562.jpg"
+                source_path.write_text("source", encoding="utf-8")
+                return str(source_path)
+
+            def fake_upload(local_path, uri, transfer_auth):
+                self.assertEqual(Path(local_path).read_text(encoding="utf-8"), "result")
+
+            Reflection._download_ftp_file = fake_download
+            Reflection._upload_ftp_file = fake_upload
+            outcome = Reflection._run_task_with_transfer_handling(
+                fake_agent,
+                "invert_image",
+                "ftp://192.168.1.35/System/images/DSC_4562.jpg",
+                "ftp://192.168.1.35/System/images_dump/DSC_4562.jpg",
+                False,
+                "job_1017",
+                {},
+            )
+        finally:
+            Reflection._download_ftp_file = original_download
+            Reflection._upload_ftp_file = original_upload
+
+        self.assertTrue(outcome.success)
+        self.assertTrue(fake_agent.source_exists_during_run)
+        self.assertFalse(fake_agent.delivery_exists_before_write)
+        self.assertNotEqual(fake_agent.seen_source, fake_agent.seen_delivery)
+        self.assertEqual(Path(fake_agent.seen_delivery).parent.name, "delivery")
 
     def test_ftp_upload_failure_marks_task_failed(self):
         class FakeAgent:
             def run_task(self, module_name, source, delivery, overwrite_allowed):
+                Path(delivery).parent.mkdir(parents=True, exist_ok=True)
                 Path(delivery).write_text("result", encoding="utf-8")
                 return Reflection.TaskOutcome(success=True, message="task succeeded")
 
@@ -275,6 +323,80 @@ class TransferHandlingTest(unittest.TestCase):
 
         self.assertFalse(outcome.success)
         self.assertEqual(outcome.message, "553 /System/output.jpg: Permission denied.")
+
+    def test_ftp_upload_verifies_remote_md5_after_store(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local_path = Path(temp_dir) / "output.txt"
+            local_path.write_text("verified result", encoding="utf-8")
+
+            class FakeFtp:
+                def __init__(self):
+                    self.files = {}
+                    self.verified = False
+
+                def pwd(self):
+                    return "/"
+
+                def mkd(self, path):
+                    return None
+
+                def storbinary(self, command, file_obj):
+                    self.files[command.removeprefix("STOR ")] = file_obj.read()
+
+                def retrbinary(self, command, callback):
+                    self.verified = True
+                    callback(self.files[command.removeprefix("RETR ")])
+
+                def close(self):
+                    return None
+
+            fake_ftp = FakeFtp()
+            original_connection = Reflection._ftp_connection
+            try:
+                Reflection._ftp_connection = lambda parsed, transfer_auth: fake_ftp
+                Reflection._upload_ftp_file(
+                    local_path,
+                    "ftp://user:pass@files.example.test/System/output.txt",
+                    {},
+                )
+            finally:
+                Reflection._ftp_connection = original_connection
+
+            self.assertTrue(fake_ftp.verified)
+            self.assertEqual(fake_ftp.files["/System/output.txt"], b"verified result")
+
+    def test_ftp_upload_md5_mismatch_raises_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local_path = Path(temp_dir) / "output.txt"
+            local_path.write_text("expected result", encoding="utf-8")
+
+            class FakeFtp:
+                def pwd(self):
+                    return "/"
+
+                def mkd(self, path):
+                    return None
+
+                def storbinary(self, command, file_obj):
+                    file_obj.read()
+
+                def retrbinary(self, command, callback):
+                    callback(b"different result")
+
+                def close(self):
+                    return None
+
+            original_connection = Reflection._ftp_connection
+            try:
+                Reflection._ftp_connection = lambda parsed, transfer_auth: FakeFtp()
+                with self.assertRaisesRegex(RuntimeError, "MD5 mismatch"):
+                    Reflection._upload_ftp_file(
+                        local_path,
+                        "ftp://user:pass@files.example.test/System/output.txt",
+                        {},
+                    )
+            finally:
+                Reflection._ftp_connection = original_connection
 
 
 if __name__ == "__main__":
