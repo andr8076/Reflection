@@ -209,7 +209,27 @@ assertSameValue(true, $response['shutdown_after_task'], 'SOC below minimum shoul
 $store->updateSettings([
     'ess_soc_percent' => 100,
     'ess_min_soc_percent' => 20,
+    'idle_shutdown_after_no_job_checks' => 2,
 ]);
+$response = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'test-version',
+    'pc_id' => 'node-idle',
+], $store, $config);
+assertSameValue('no_jobs', $response['status'], 'Idle workers should receive no_jobs while the queue is empty.');
+assertSameValue(false, $response['shutdown_after_task'], 'Idle workers should keep polling before the no-job limit is reached.');
+assertSameValue(1, $response['idle_no_job_checkins'], 'No-job check-ins should be counted per worker.');
+
+$response = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'test-version',
+    'pc_id' => 'node-idle',
+], $store, $config);
+assertSameValue('no_jobs', $response['status'], 'Idle workers should still receive no_jobs at the no-job limit.');
+assertSameValue(true, $response['shutdown_after_task'], 'Idle workers should be told to stop at the configured no-job limit.');
+assertSameValue('idle_no_job_check_limit', $response['reason'], 'No-job limit shutdowns should explain the reason.');
+assertSameValue(2, $response['idle_shutdown_after_no_job_checks'], 'No-job limit responses should publish the configured limit.');
+
 $retryJob = $store->createJob('dummy_task', 'incoming/retry.dat', 'outputs/retry.txt', false);
 assertSameValue(true, $store->markJobRunning($retryJob['task_id'], 'node-04'), 'Retry test job should lock.');
 assertSameValue(true, $store->finishJob($retryJob['task_id'], 'node-04', 'failed', 'simulated'), 'Retry test job should finish as failed.');
