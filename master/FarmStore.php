@@ -5,6 +5,7 @@ declare(strict_types=1);
 final class FarmStore
 {
     private string $path;
+    private string $lockPath;
     private string $eventLogPath;
     private string $fileHistoryPath;
     private array $configuredDefaultSettings;
@@ -12,6 +13,7 @@ final class FarmStore
     public function __construct(string $path, array $defaultSettings = [])
     {
         $this->path = $path;
+        $this->lockPath = $this->path . '.lock';
         $this->configuredDefaultSettings = $defaultSettings;
         $directory = dirname($this->path);
         $this->eventLogPath = $directory . DIRECTORY_SEPARATOR . 'farm_events.log';
@@ -161,9 +163,12 @@ final class FarmStore
             $finishedJob = null;
             $retryJob = null;
             foreach ($data['jobs'] as &$job) {
-                if (($job['task_id'] ?? '') === $taskId && ($job['status'] ?? '') === 'running') {
+                if (
+                    ($job['task_id'] ?? '') === $taskId
+                    && ($job['status'] ?? '') === 'running'
+                    && ($job['worker'] ?? '') === $pcId
+                ) {
                     $job['status'] = $status === 'success' ? 'success' : 'failed';
-                    $job['worker'] = $pcId;
                     $job['error'] = $error;
                     $job['finished_at'] = gmdate(DATE_ATOM);
                     $finishedJob = $job;
@@ -231,6 +236,11 @@ final class FarmStore
                     $job['status'] = 'stale';
                     $job['error'] = 'Worker did not finish before the stale timeout.';
                     $job['finished_at'] = gmdate(DATE_ATOM);
+                    $workerId = (string) ($job['worker'] ?? '');
+                    if ($workerId !== '' && isset($data['workers'][$workerId])) {
+                        $data['workers'][$workerId]['last_check_in'] = gmdate(DATE_ATOM);
+                        $data['workers'][$workerId]['current_job'] = null;
+                    }
                     $staleJobs[] = $job;
                 }
             }
@@ -477,37 +487,96 @@ final class FarmStore
         ];
 
         $history[$path][] = $entry;
-        @file_put_contents($this->fileHistoryPath, json_encode($history, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL, LOCK_EX);
+        $this->atomicWriteJson($this->fileHistoryPath, $history);
     }
 
     private function withLock(callable $callback, bool $write = false)
     {
-        $handle = @fopen($this->path, 'c+');
+        $handle = @fopen($this->lockPath, 'c+');
         if ($handle === false) {
-            throw new RuntimeException(sprintf('Unable to open farm store: %s', $this->path));
+            throw new RuntimeException(sprintf('Unable to open farm store lock: %s', $this->lockPath));
         }
 
-        flock($handle, $write ? LOCK_EX : LOCK_SH);
-        rewind($handle);
-        $contents = stream_get_contents($handle);
-        $data = $this->normalizeData($contents ? json_decode($contents, true) : null);
-
-        $callbackResult = $callback($data);
-        $result = $callbackResult;
-
-        if ($write) {
-            $dataToWrite = $callbackResult['data'] ?? $data;
-            $result = $callbackResult['result'] ?? null;
-            rewind($handle);
-            ftruncate($handle, 0);
-            fwrite($handle, json_encode($this->normalizeData($dataToWrite), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
-            fflush($handle);
+        if (!flock($handle, $write ? LOCK_EX : LOCK_SH)) {
+            fclose($handle);
+            throw new RuntimeException(sprintf('Unable to lock farm store: %s', $this->lockPath));
         }
 
-        flock($handle, LOCK_UN);
-        fclose($handle);
+        try {
+            $contents = is_file($this->path) ? (string) file_get_contents($this->path) : '';
+            $decoded = null;
+            if (trim($contents) !== '') {
+                $decoded = json_decode($contents, true);
+                if (json_last_error() !== JSON_ERROR_NONE) {
+                    $this->preserveCorruptStore($contents);
+                    throw new RuntimeException(sprintf(
+                        'Farm store JSON is invalid: %s. A corrupt backup was written beside the store.',
+                        json_last_error_msg(),
+                    ));
+                }
+            }
 
-        return $result;
+            $data = $this->normalizeData($decoded);
+            $callbackResult = $callback($data);
+            $result = $callbackResult;
+
+            if ($write) {
+                $dataToWrite = $callbackResult['data'] ?? $data;
+                $result = $callbackResult['result'] ?? null;
+                $this->atomicWriteJson($this->path, $this->normalizeData($dataToWrite));
+            }
+
+            return $result;
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
+    private function atomicWriteJson(string $path, array $data): void
+    {
+        $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            throw new RuntimeException('Unable to encode farm JSON data.');
+        }
+
+        $directory = dirname($path);
+        if (!is_dir($directory) && !@mkdir($directory, 0775, true) && !is_dir($directory)) {
+            throw new RuntimeException(sprintf('Unable to create JSON directory: %s', $directory));
+        }
+
+        $temporaryPath = tempnam($directory, basename($path) . '.tmp.');
+        if ($temporaryPath === false) {
+            throw new RuntimeException(sprintf('Unable to create temporary JSON file in: %s', $directory));
+        }
+
+        try {
+            $temporaryHandle = fopen($temporaryPath, 'wb');
+            if ($temporaryHandle === false) {
+                throw new RuntimeException(sprintf('Unable to open temporary JSON file: %s', $temporaryPath));
+            }
+
+            fwrite($temporaryHandle, $json . PHP_EOL);
+            fflush($temporaryHandle);
+            if (function_exists('fsync')) {
+                fsync($temporaryHandle);
+            }
+            fclose($temporaryHandle);
+
+            if (!@rename($temporaryPath, $path)) {
+                throw new RuntimeException(sprintf('Unable to replace JSON file atomically: %s', $path));
+            }
+        } finally {
+            if (is_file($temporaryPath)) {
+                @unlink($temporaryPath);
+            }
+        }
+    }
+
+    private function preserveCorruptStore(string $contents): void
+    {
+        $backupPath = $this->path . '.corrupt-' . gmdate('Ymd-His');
+        @file_put_contents($backupPath, $contents, LOCK_EX);
     }
 
     private function normalizeData($data): array

@@ -12,8 +12,32 @@ function reflection_json_response(array $payload, int $statusCode = 200): void
     echo json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL;
 }
 
+function reflection_request_api_token(array $payload): string
+{
+    $headerToken = (string) ($_SERVER['HTTP_X_REFLECTION_API_TOKEN'] ?? '');
+    if ($headerToken !== '') {
+        return $headerToken;
+    }
+
+    return (string) ($payload['api_token'] ?? '');
+}
+
+function reflection_api_token_is_valid(array $payload, array $config): bool
+{
+    $requiredToken = (string) ($config['api_token'] ?? '');
+    if ($requiredToken === '') {
+        return true;
+    }
+
+    return hash_equals($requiredToken, reflection_request_api_token($payload));
+}
+
 function reflection_handle_farm_api(array $payload, FarmStore $store, array $config): array
 {
+    if (!reflection_api_token_is_valid($payload, $config)) {
+        return ['status' => 'unauthorized', 'error' => 'Invalid or missing API token.'];
+    }
+
     $action = (string) ($payload['action'] ?? '');
     $pcId = trim((string) ($payload['pc_id'] ?? ''));
     $version = trim((string) ($payload['version'] ?? ''));

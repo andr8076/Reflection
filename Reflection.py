@@ -21,6 +21,8 @@ from urllib.parse import quote, unquote, urlparse
 DEFAULT_SERVER_URL = "http://your-server-domain.com/farm_api.php"
 DEFAULT_POLL_INTERVAL = 10
 DEFAULT_PC_ID = socket.gethostname()
+DEFAULT_API_TOKEN = os.environ.get("REFLECTION_API_TOKEN", "")
+DEFAULT_CLEANUP_ROOTS = []
 DEFAULT_TRANSFER_AUTH = {
     "scheme": "ftp",
     "host": "",
@@ -47,7 +49,12 @@ def load_agent_config(config_path=None):
         "server_url": DEFAULT_SERVER_URL,
         "poll_interval": DEFAULT_POLL_INTERVAL,
         "pc_id": DEFAULT_PC_ID,
+        "api_token": DEFAULT_API_TOKEN,
+        "cleanup_roots": list(DEFAULT_CLEANUP_ROOTS),
     }
+    env_cleanup_roots = _cleanup_roots_from_env()
+    if env_cleanup_roots:
+        config["cleanup_roots"] = env_cleanup_roots
 
     if not path.is_file():
         return config
@@ -74,12 +81,53 @@ def load_agent_config(config_path=None):
         if pc_id:
             config["pc_id"] = pc_id
 
+    if "api_token" in loaded:
+        config["api_token"] = str(loaded["api_token"])
+
+    cleanup_roots = _normalize_cleanup_roots(loaded.get("cleanup_roots", []))
+    env_cleanup_roots = _cleanup_roots_from_env()
+    if cleanup_roots or env_cleanup_roots:
+        config["cleanup_roots"] = cleanup_roots + env_cleanup_roots
+
     if isinstance(loaded.get("transfer_auth"), dict):
         transfer_auth = _normalize_transfer_auth(loaded["transfer_auth"])
         if transfer_auth is not None:
             config["transfer_auth"] = transfer_auth
 
     return config
+
+
+def _cleanup_roots_from_env():
+    """Return cleanup roots from REFLECTION_CLEANUP_ROOTS when configured."""
+    raw_roots = os.environ.get("REFLECTION_CLEANUP_ROOTS", "")
+    if not raw_roots.strip():
+        return []
+    return _normalize_cleanup_roots(raw_roots.split(os.pathsep))
+
+
+def _normalize_cleanup_roots(value):
+    """Normalize directories where task source cleanup is allowed."""
+    if value in (None, ""):
+        return []
+    if isinstance(value, (str, os.PathLike)):
+        value = [value]
+    if not isinstance(value, list):
+        raise ValueError("cleanup_roots must be a string or list of directory paths.")
+
+    roots = []
+    for entry in value:
+        root = Path(entry).expanduser().resolve()
+        roots.append(str(root))
+    return roots
+
+
+def _path_is_within(path, root):
+    """Return true when path is inside root or equal to root."""
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def _normalize_transfer_auth(value):
@@ -189,6 +237,8 @@ SERVER_URL = AGENT_CONFIG["server_url"]  # Target PHP endpoint
 POLL_INTERVAL = AGENT_CONFIG["poll_interval"]  # Seconds to wait before checking for new jobs if idle
 PC_ID = AGENT_CONFIG["pc_id"]  # Unique identifier for this node
 LOCAL_TRANSFER_AUTH = AGENT_CONFIG.get("transfer_auth", {})
+API_TOKEN = str(AGENT_CONFIG.get("api_token", ""))
+CLEANUP_ROOTS = tuple(AGENT_CONFIG.get("cleanup_roots", []))
 TASKS_DIR = Path(__file__).with_name("tasks")
 
 # Setup logging to see what the farm bot is doing
@@ -215,7 +265,7 @@ class TaskOutcome:
     success: bool
     stop_agent: bool = False
     reload_tasks: bool = False
-    cleanup_source: bool = True
+    cleanup_source: bool = False
     message: str = ""
 
 
@@ -294,7 +344,7 @@ def _normalize_task_result(result):
             success=bool(result.get("success", False)),
             stop_agent=bool(result.get("stop_agent", False)),
             reload_tasks=bool(result.get("reload_tasks", False)),
-            cleanup_source=bool(result.get("cleanup_source", True)),
+            cleanup_source=bool(result.get("cleanup_source", False)),
             message=str(result.get("message", "")),
         )
 
@@ -804,6 +854,10 @@ class FarmAgent:
 
     def post_to_server(self, payload):
         """Helper to handle API communication safely."""
+        if API_TOKEN:
+            payload = dict(payload)
+            payload["api_token"] = API_TOKEN
+            self.session.headers.update({"X-Reflection-Api-Token": API_TOKEN})
         try:
             response = self.session.post(SERVER_URL, json=payload, timeout=30)
             if response.status_code == 200:
@@ -847,14 +901,35 @@ class FarmAgent:
         return self.post_to_server(payload)
 
     def cleanup_files(self, source_path):
-        """Step 7: Local cleanup of source files if requested or necessary."""
-        logging.info("Cleaning up local files: %s", source_path)
+        """Step 7: Local cleanup of source files if explicitly allowed and safe."""
+        path = Path(source_path).expanduser()
+        if not CLEANUP_ROOTS:
+            logging.warning(
+                "Skipping cleanup for %s because no cleanup_roots are configured.",
+                source_path,
+            )
+            return
+
         try:
-            if os.path.exists(source_path):
-                if os.path.isdir(source_path):
-                    shutil.rmtree(source_path)
+            resolved_path = path.resolve()
+        except OSError as exc:
+            logging.error("Failed to resolve cleanup path %s: %s", source_path, exc)
+            return
+
+        if not any(_path_is_within(resolved_path, root) for root in CLEANUP_ROOTS):
+            logging.warning(
+                "Skipping cleanup for %s because it is outside configured cleanup_roots.",
+                resolved_path,
+            )
+            return
+
+        logging.info("Cleaning up local files: %s", resolved_path)
+        try:
+            if resolved_path.exists():
+                if resolved_path.is_dir():
+                    shutil.rmtree(resolved_path)
                 else:
-                    os.remove(source_path)
+                    resolved_path.unlink()
                 logging.info("Cleanup successful.")
         except Exception as e:
             logging.error("Failed to cleanup files: %s", e)

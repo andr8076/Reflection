@@ -7,6 +7,7 @@ import argparse
 import getpass
 import json
 import logging
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,8 @@ from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
 from Reflection import (
+    DEFAULT_API_TOKEN,
+    DEFAULT_CLEANUP_ROOTS,
     DEFAULT_PC_ID,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_SERVER_URL,
@@ -76,6 +79,16 @@ def _validate_pc_id(value: str) -> str:
     if not pc_id:
         raise ValueError("PC ID cannot be empty.")
     return pc_id
+
+
+def _parse_cleanup_roots(value: str | Sequence[str]) -> list[str]:
+    """Normalize cleanup roots from prompt/config values."""
+    if isinstance(value, str):
+        raw_roots = [part.strip() for part in value.split(os.pathsep)]
+    else:
+        raw_roots = [str(part).strip() for part in value]
+
+    return [str(Path(root).expanduser().resolve()) for root in raw_roots if root]
 
 
 def _default_transfer_port(scheme: str) -> int:
@@ -188,6 +201,8 @@ def collect_agent_config(
             "server_url": DEFAULT_SERVER_URL,
             "poll_interval": DEFAULT_POLL_INTERVAL,
             "pc_id": DEFAULT_PC_ID,
+            "api_token": DEFAULT_API_TOKEN,
+            "cleanup_roots": list(DEFAULT_CLEANUP_ROOTS),
         }
 
     should_prompt = sys.stdin.isatty() if interactive is None else interactive
@@ -219,10 +234,28 @@ def collect_agent_config(
         )
     )
 
-    config: dict[str, str | int | dict[str, str | int]] = {
+    api_token = _prompt_secret(
+        "Worker API token (blank disables token use)",
+        str(current_config.get("api_token") or DEFAULT_API_TOKEN),
+        interactive=should_prompt,
+    )
+    current_cleanup_roots = _parse_cleanup_roots(
+        current_config.get("cleanup_roots") or DEFAULT_CLEANUP_ROOTS
+    )
+    cleanup_roots = _parse_cleanup_roots(
+        _prompt_value(
+            f"Allowed cleanup roots, separated by {os.pathsep!r} (blank disables source cleanup)",
+            os.pathsep.join(current_cleanup_roots),
+            interactive=should_prompt,
+        )
+    )
+
+    config: dict[str, Any] = {
         "server_url": server_url,
         "poll_interval": poll_interval,
         "pc_id": pc_id,
+        "api_token": api_token,
+        "cleanup_roots": cleanup_roots,
     }
     transfer_auth = collect_transfer_auth(current_config, interactive=should_prompt)
     if transfer_auth is not None:

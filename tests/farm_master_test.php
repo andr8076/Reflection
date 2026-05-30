@@ -39,21 +39,22 @@ assertSameValue(
     array_key_exists('default_login', $defaultConfig),
     'Master website login should not be configured.'
 );
-assertSameValue(
-    'reflection',
-    $defaultConfig['transfer_auth']['username'],
-    'Default FTP username should come from farm settings.'
-);
-assertSameValue(
-    'reflection',
-    $defaultConfig['transfer_auth']['password'],
-    'Default FTP password should come from farm settings.'
-);
+assertSameValue('', $defaultConfig['api_token'], 'Default API token should be blank until configured.');
+assertSameValue('', $defaultConfig['transfer_auth']['username'], 'Default FTP username should be blank until configured.');
+assertSameValue('', $defaultConfig['transfer_auth']['password'], 'Default FTP password should be blank until configured.');
+
+$localSettingsPath = __DIR__ . '/../master/farm_settings.local.php';
+file_put_contents($localSettingsPath, "<?php
+return ['api_token' => 'local-token'];
+");
+assertSameValue('local-token', reflection_load_farm_settings()['api_token'], 'Local untracked settings should override farm_settings.php.');
+unlink($localSettingsPath);
 
 $customStorePath = sys_get_temp_dir() . '/reflection_custom_defaults_' . bin2hex(random_bytes(6)) . '.json';
 $customConfig = reflection_master_config([
     'farm_id' => 'paint-farm',
     'farm_name' => 'Paint Farm',
+    'api_token' => 'paint-token',
     'transfer_auth' => [
         'scheme' => 'ftps',
         'host' => 'ftp.example.test',
@@ -69,6 +70,7 @@ $customConfig = reflection_master_config([
 ]);
 assertSameValue('paint-farm', $customConfig['farm_id'], 'Custom farm id should be loaded from farm settings.');
 assertSameValue('Paint Farm', $customConfig['farm_name'], 'Custom farm name should be loaded from farm settings.');
+assertSameValue('paint-token', $customConfig['api_token'], 'Custom API token should be loaded from farm settings.');
 assertSameValue('paint-user', $customConfig['transfer_auth']['username'], 'Custom FTP username should be loaded from farm settings.');
 assertSameValue('paint-pass', $customConfig['transfer_auth']['password'], 'Custom FTP password should be loaded from farm settings.');
 assertSameValue('ftp.example.test', $customConfig['transfer_auth']['host'], 'Custom FTP host should be loaded from farm settings.');
@@ -116,6 +118,26 @@ assertSameValue(97, $socStore->effectiveSettings()['ess_soc_percent'], 'Parsed S
 unlink($socStorePath);
 unlink($socEndpointPath);
 
+$tokenStorePath = sys_get_temp_dir() . '/reflection_token_store_' . bin2hex(random_bytes(6)) . '.json';
+$tokenStore = new FarmStore($tokenStorePath);
+$tokenStore->updateSettings(['ess_soc_url' => '']);
+$tokenConfig = ['api_token' => 'expected-token', 'required_version' => 'token-version'];
+$response = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'token-version',
+    'pc_id' => 'node-token',
+], $tokenStore, $tokenConfig);
+assertSameValue('unauthorized', $response['status'], 'Configured API tokens should reject missing tokens.');
+$response = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'token-version',
+    'pc_id' => 'node-token',
+    'api_token' => 'expected-token',
+], $tokenStore, $tokenConfig);
+assertSameValue('no_jobs', $response['status'], 'Configured API tokens should accept matching tokens.');
+unlink($tokenStorePath);
+@unlink($tokenStorePath . '.lock');
+
 function assertSameValue($expected, $actual, string $message): void
 {
     if ($expected !== $actual) {
@@ -151,8 +173,20 @@ $response = reflection_handle_farm_api([
 assertSameValue('task_available', $response['status'], 'Queued jobs should be offered to workers.');
 assertSameValue('dummy_task', $response['task']['module'], 'API should expose the queued module.');
 assertSameValue(false, $response['task']['overwrite_allowed'], 'API should preserve overwrite policy.');
-assertSameValue('reflection', $response['task']['transfer_auth']['username'], 'Workers should receive FTP username for file transfers.');
-assertSameValue('reflection', $response['task']['transfer_auth']['password'], 'Workers should receive FTP password for file transfers.');
+assertSameValue(false, array_key_exists('transfer_auth', $response['task']), 'Workers should not receive blank transfer credentials.');
+assertSameValue(
+    'files-user',
+    reflection_worker_transfer_auth([
+        'transfer_auth' => [
+            'scheme' => 'ftps',
+            'host' => 'files.example.test',
+            'port' => 990,
+            'username' => 'files-user',
+            'password' => 'files-pass',
+        ],
+    ])['username'],
+    'Configured transfer credentials should still be available to workers.'
+);
 
 $response = reflection_handle_farm_api([
     'action' => 'confirm_taken',
@@ -169,6 +203,16 @@ $response = reflection_handle_farm_api([
     'task_id' => 'job_1001',
 ], $store, $config);
 assertSameValue('not_available', $response['status'], 'A locked job should not be locked twice.');
+
+$response = reflection_handle_farm_api([
+    'action' => 'report_done',
+    'version' => 'test-version',
+    'pc_id' => 'node-02',
+    'task_id' => 'job_1001',
+    'status' => 'success',
+    'error' => '',
+], $store, $config);
+assertSameValue('not_available', $response['status'], 'Workers should not be able to finish jobs owned by another worker.');
 
 $response = reflection_handle_farm_api([
     'action' => 'report_done',
@@ -236,6 +280,21 @@ assertSameValue(true, $store->finishJob($retryJob['task_id'], 'node-04', 'failed
 $data = $store->read();
 assertSameValue('queued', $data['jobs'][2]['status'], 'Failed jobs should be retried to the end of the queue.');
 assertSameValue(1, $data['jobs'][2]['attempt'], 'Retried jobs should increment attempt count.');
+
+$staleJob = $store->createJob('dummy_task', 'incoming/stale.dat', 'outputs/stale.txt', false);
+assertSameValue(true, $store->markJobRunning($staleJob['task_id'], 'node-stale'), 'Stale test job should lock.');
+$data = $store->read();
+foreach ($data['jobs'] as &$jobForStaleTest) {
+    if (($jobForStaleTest['task_id'] ?? '') === $staleJob['task_id']) {
+        $jobForStaleTest['started_at'] = gmdate(DATE_ATOM, time() - 3600);
+    }
+}
+unset($jobForStaleTest);
+file_put_contents($storePath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+assertSameValue(1, $store->requeueStaleJobs(60), 'Stale running jobs should be detected.');
+$data = $store->read();
+assertSameValue('stale', $data['jobs'][3]['status'], 'Stale jobs should be marked stale.');
+assertSameValue(null, $data['workers']['node-stale']['current_job'], 'Stale jobs should clear the worker current_job field.');
 
 unlink($storePath);
 @unlink($eventLogPath);

@@ -2,8 +2,10 @@
 
 import json
 import logging
+import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -63,7 +65,7 @@ def run(source, delivery, overwrite_allowed):
     allowed_extensions = _normalize_extensions(options.get("extensions"))
     recursive = _option_enabled(options.get("recursive", False))
     skip_hevc = _option_enabled(options.get("skip_hevc", True))
-    encoder_args = _choose_encoder(str(options.get("mode", "software")).lower())
+    encoder_args, pixel_format_args = _choose_encoder(str(options.get("mode", "software")).lower())
     delivery_path = Path(delivery).expanduser() if delivery else None
 
     input_files = _collect_files(input_path, allowed_extensions, recursive)
@@ -88,7 +90,7 @@ def run(source, delivery, overwrite_allowed):
             logging.warning("%s is %sp; keeping original resolution.", input_file, analysis["height"])
 
         output_file.parent.mkdir(parents=True, exist_ok=True)
-        _encode_file(input_file, output_file, encoder_args)
+        _encode_file(input_file, output_file, encoder_args, pixel_format_args)
         encoded_count += 1
 
     message = f"Encoded {encoded_count} file(s); skipped {skipped_count} already-HEVC file(s)."
@@ -173,10 +175,11 @@ def _choose_encoder(mode):
         hardware_name = _detected_hardware()
         if hardware_name != "none":
             logging.info("Using %s hardware HEVC encoder.", hardware_name)
-            return HARDWARE_ENCODERS[hardware_name]["args"]
+            # Hardware encoders can reject yuv420p10le even when HEVC itself is available.
+            return HARDWARE_ENCODERS[hardware_name]["args"], []
         logging.warning("Hardware HEVC encoder was requested but none was detected; using libx265.")
 
-    return SOFTWARE_ARGS
+    return SOFTWARE_ARGS, PIXEL_FORMAT_ARGS
 
 
 def _analyze_video(input_file):
@@ -225,7 +228,19 @@ def _output_path(input_file, input_root, delivery_path, input_count):
     return delivery_path / f"{input_file.stem}_h265.mp4"
 
 
-def _encode_file(input_file, output_file, encoder_args):
+def _temporary_output_path(output_file):
+    suffix = output_file.suffix or ".mp4"
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{output_file.stem}.",
+        suffix=suffix,
+        dir=output_file.parent,
+        delete=False,
+    ) as temp_file:
+        return Path(temp_file.name)
+
+
+def _encode_file(input_file, output_file, encoder_args, pixel_format_args):
+    temp_output = _temporary_output_path(output_file)
     command = [
         "ffmpeg",
         "-hide_banner",
@@ -233,9 +248,14 @@ def _encode_file(input_file, output_file, encoder_args):
         "-i",
         str(input_file),
         *encoder_args,
-        *PIXEL_FORMAT_ARGS,
+        *pixel_format_args,
         *AUDIO_ARGS,
-        str(output_file),
+        str(temp_output),
     ]
     logging.info("Encoding %s -> %s", input_file, output_file)
-    subprocess.run(command, check=True)
+    try:
+        subprocess.run(command, check=True)
+        os.replace(temp_output, output_file)
+    except Exception:
+        temp_output.unlink(missing_ok=True)
+        raise

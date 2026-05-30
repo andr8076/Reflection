@@ -29,6 +29,8 @@ class AgentConfigTest(unittest.TestCase):
                     "server_url": "https://farm.example.test/farm_api.php",
                     "poll_interval": 15,
                     "pc_id": "worker-01",
+                    "api_token": "",
+                    "cleanup_roots": [],
                 },
             )
 
@@ -40,6 +42,8 @@ class AgentConfigTest(unittest.TestCase):
                     "server_url": "http://localhost/farm_api.php",
                     "poll_interval": 5,
                     "pc_id": "local-worker",
+                    "api_token": "",
+                    "cleanup_roots": [],
                 },
                 config_path,
             )
@@ -50,8 +54,32 @@ class AgentConfigTest(unittest.TestCase):
                     "server_url": "http://localhost/farm_api.php",
                     "poll_interval": 5,
                     "pc_id": "local-worker",
+                    "api_token": "",
+                    "cleanup_roots": [],
                 },
             )
+
+    def test_load_agent_config_accepts_api_token_and_cleanup_roots(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cleanup_root = Path(temp_dir) / "worker-input"
+            config_path = Path(temp_dir) / "agent.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "server_url": "https://farm.example.test/farm_api.php",
+                        "poll_interval": 15,
+                        "pc_id": "worker-01",
+                        "api_token": "shared-secret",
+                        "cleanup_roots": [str(cleanup_root)],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = Reflection.load_agent_config(config_path)
+
+            self.assertEqual(loaded["api_token"], "shared-secret")
+            self.assertEqual(loaded["cleanup_roots"], [str(cleanup_root.resolve())])
 
     def test_load_agent_config_accepts_local_transfer_auth(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -211,6 +239,20 @@ class AgentConfigTest(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 Reflection.load_agent_config(config_path)
+
+
+class TaskOutcomeTest(unittest.TestCase):
+    def test_plain_true_task_result_does_not_cleanup_source_by_default(self):
+        outcome = Reflection._normalize_task_result(True)
+
+        self.assertTrue(outcome.success)
+        self.assertFalse(outcome.cleanup_source)
+
+    def test_dict_task_result_does_not_cleanup_source_by_default(self):
+        outcome = Reflection._normalize_task_result({"success": True})
+
+        self.assertTrue(outcome.success)
+        self.assertFalse(outcome.cleanup_source)
 
 
 class TransferHandlingTest(unittest.TestCase):

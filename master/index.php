@@ -352,7 +352,7 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
     <main>
         <section class="panel submit-panel">
             <h2>General options</h2>
-            <p class="api-note">The master website is open on your trusted network. FTP credentials for worker file transfers are loaded from <code>farm_settings.php</code> and are sent only with worker task assignments.</p>
+            <p class="api-note">Protect this dashboard with your web server or VPN. Worker API requests can require <code>REFLECTION_API_TOKEN</code>; file-transfer credentials should come from environment variables or a local untracked settings override.</p>
             <form method="post">
                 <input type="hidden" name="form_action" value="settings">
                 <label class="check-row">

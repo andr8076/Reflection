@@ -3,7 +3,7 @@ set -eu
 
 usage() {
     cat <<'USAGE'
-Usage: reflection-file-list-friendly.sh [options] [PATTERN ...]
+Usage: reflection-file-list.sh [options] [PATTERN ...]
 
 Create a newline-delimited file list for Reflection Farm Master bulk import.
 
@@ -31,10 +31,10 @@ expand them before this script sees them, for example:
   'frame_????.exr'
 
 Examples:
-  tools/reflection-file-list-friendly.sh
-  tools/reflection-file-list-friendly.sh -r incoming '*.png' '*.jpg' -o images.list
-  tools/reflection-file-list-friendly.sh -r incoming -b incoming -a -o import.list
-  tools/reflection-file-list-friendly.sh --no-prompt -r incoming '*.mp4' > mp4.list
+  tools/reflection-file-list.sh
+  tools/reflection-file-list.sh -r incoming '*.png' '*.jpg' -o images.list
+  tools/reflection-file-list.sh -r incoming -b incoming -a -o import.list
+  tools/reflection-file-list.sh --no-prompt -r incoming '*.mp4' > mp4.list
 USAGE
 }
 

@@ -8,14 +8,19 @@ return [
     'farm_id' => 'default',
     'farm_name' => 'Default Reflection Farm',
 
+    // Optional shared secret for worker API requests. REFLECTION_API_TOKEN overrides this value.
+    // Leave blank only on a trusted private network while testing.
+    'api_token' => '',
+
     // Credentials workers use when source/delivery paths point at the farm FTP server.
-    // REFLECTION_FTP_* environment variables override these values.
+    // REFLECTION_FTP_* environment variables override these values. Keep blanks here and
+    // provide real credentials through environment variables or a local untracked override.
     'transfer_auth' => [
         'scheme' => 'ftp',
         'host' => '',
         'port' => 21,
-        'username' => 'reflection',
-        'password' => 'reflection',
+        'username' => '',
+        'password' => '',
     ],
 
     // Persistent farm data. REFLECTION_MASTER_STORE still overrides this value.

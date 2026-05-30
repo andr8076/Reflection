@@ -101,12 +101,13 @@ function reflection_default_farm_settings(): array
     return [
         'farm_id' => 'default',
         'farm_name' => 'Default Reflection Farm',
+        'api_token' => '',
         'transfer_auth' => [
             'scheme' => 'ftp',
             'host' => '',
             'port' => 21,
-            'username' => 'reflection',
-            'password' => 'reflection',
+            'username' => '',
+            'password' => '',
         ],
         'storage_path' => __DIR__ . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'farm_store.json',
         'required_version' => null,
@@ -138,22 +139,35 @@ function reflection_load_farm_settings(?string $settingsPath = null): array
 {
     $defaults = reflection_default_farm_settings();
     $path = $settingsPath ?? (__DIR__ . DIRECTORY_SEPARATOR . 'farm_settings.php');
-    if (!is_file($path)) {
-        return $defaults;
+    $settings = $defaults;
+
+    if (is_file($path)) {
+        $loaded = require $path;
+        if (is_array($loaded)) {
+            $settings = array_replace_recursive($settings, $loaded);
+        }
     }
 
-    $loaded = require $path;
-    if (!is_array($loaded)) {
-        return $defaults;
+    $localPath = __DIR__ . DIRECTORY_SEPARATOR . 'farm_settings.local.php';
+    if ($settingsPath === null && is_file($localPath)) {
+        $loadedLocal = require $localPath;
+        if (is_array($loadedLocal)) {
+            $settings = array_replace_recursive($settings, $loadedLocal);
+        }
     }
 
-    return array_replace_recursive($defaults, $loaded);
+    return $settings;
 }
 
 function reflection_env_string(string $name): ?string
 {
     $value = getenv($name);
     return $value !== false && $value !== '' ? $value : null;
+}
+
+function reflection_api_token_config(array $settings): string
+{
+    return reflection_env_string('REFLECTION_API_TOKEN') ?? (string) ($settings['api_token'] ?? '');
 }
 
 function reflection_transfer_auth_config(array $settings): array
@@ -202,6 +216,7 @@ function reflection_master_config(?array $farmSettings = null): array
     return [
         'farm_id' => (string) ($settings['farm_id'] ?? 'default'),
         'farm_name' => (string) ($settings['farm_name'] ?? 'Default Reflection Farm'),
+        'api_token' => reflection_api_token_config($settings),
         'transfer_auth' => reflection_transfer_auth_config($settings),
         'storage_path' => $storeConfig['storage_path'],
         'storage_warning' => $storeConfig['storage_warning'],
