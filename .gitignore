@@ -1,3 +1,14 @@
+# Python / worker
 __pycache__/
 *.py[cod]
 reflection_config.json
+
+# Master website runtime/local files
+/data/*
+!/data/.gitkeep
+!/data/.htaccess
+farm_settings.local.php
+
+# Local/package noise
+.DS_Store
+__MACOSX/

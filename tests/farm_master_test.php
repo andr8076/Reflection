@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 define('REFLECTION_TESTING', true);
 
-require_once __DIR__ . '/../master/farm_api.php';
+require_once __DIR__ . '/../farm_api.php';
 
 $storePath = sys_get_temp_dir() . '/reflection_farm_store_' . bin2hex(random_bytes(6)) . '.json';
 $eventLogPath = dirname($storePath) . DIRECTORY_SEPARATOR . 'farm_events.log';
@@ -20,9 +20,9 @@ $config = [
 putenv('REFLECTION_MASTER_STORE');
 $defaultConfig = reflection_master_config();
 assertSameValue(
-    realpath(__DIR__ . '/../master') . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'farm_store.json',
+    realpath(__DIR__ . '/..') . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'farm_store.json',
     $defaultConfig['storage_path'],
-    'Default farm store should live beside the deployed farm master files.'
+    'Default farm store should live beside the deployed master website files.'
 );
 assertSameValue(
     true,
@@ -43,7 +43,7 @@ assertSameValue('', $defaultConfig['api_token'], 'Default API token should be bl
 assertSameValue('', $defaultConfig['transfer_auth']['username'], 'Default FTP username should be blank until configured.');
 assertSameValue('', $defaultConfig['transfer_auth']['password'], 'Default FTP password should be blank until configured.');
 
-$localSettingsPath = __DIR__ . '/../master/farm_settings.local.php';
+$localSettingsPath = __DIR__ . '/../farm_settings.local.php';
 file_put_contents($localSettingsPath, "<?php
 return ['api_token' => 'local-token'];
 ");

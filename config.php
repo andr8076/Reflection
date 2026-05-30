@@ -194,7 +194,7 @@ function reflection_transfer_auth_config(array $settings): array
 
 function reflection_master_config(?array $farmSettings = null): array
 {
-    $repoRoot = dirname(__DIR__);
+    $repoRoot = __DIR__;
     $settings = $farmSettings ?? reflection_load_farm_settings();
     $fallbackDirectory = sys_get_temp_dir()
         . DIRECTORY_SEPARATOR
