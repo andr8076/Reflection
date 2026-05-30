@@ -20,6 +20,13 @@ from urllib.parse import unquote, urlparse
 DEFAULT_SERVER_URL = "http://your-server-domain.com/farm_api.php"
 DEFAULT_POLL_INTERVAL = 10
 DEFAULT_PC_ID = socket.gethostname()
+DEFAULT_TRANSFER_AUTH = {
+    "scheme": "ftp",
+    "host": "",
+    "port": 21,
+    "username": DEFAULT_PC_ID,
+    "password": "",
+}
 CONFIG_FILE_ENV = "REFLECTION_CONFIG_FILE"
 CONFIG_FILE_NAME = "reflection_config.json"
 
@@ -66,7 +73,44 @@ def load_agent_config(config_path=None):
         if pc_id:
             config["pc_id"] = pc_id
 
+    if isinstance(loaded.get("transfer_auth"), dict):
+        transfer_auth = _normalize_transfer_auth(loaded["transfer_auth"])
+        if transfer_auth is not None:
+            config["transfer_auth"] = transfer_auth
+
     return config
+
+
+def _normalize_transfer_auth(value):
+    """Validate local transfer auth defaults from agent configuration."""
+    if not isinstance(value, dict):
+        return None
+
+    scheme = str(value.get("scheme", DEFAULT_TRANSFER_AUTH["scheme"])).strip().lower()
+    if scheme in {"", "none", "disabled", "off"}:
+        return None
+    if scheme not in {"ftp", "ftps", "sftp"}:
+        raise ValueError("transfer_auth.scheme must be one of: ftp, ftps, sftp.")
+
+    host = str(value.get("host", DEFAULT_TRANSFER_AUTH["host"])).strip()
+    username = str(value.get("username", DEFAULT_TRANSFER_AUTH["username"])).strip()
+    password = str(value.get("password", DEFAULT_TRANSFER_AUTH["password"]))
+    default_port = 22 if scheme == "sftp" else (990 if scheme == "ftps" else 21)
+    port_value = value.get("port", default_port)
+    try:
+        port = int(port_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("transfer_auth.port must be a whole number.") from exc
+    if port <= 0:
+        raise ValueError("transfer_auth.port must be greater than zero.")
+
+    return {
+        "scheme": scheme,
+        "host": host,
+        "port": port,
+        "username": username,
+        "password": password,
+    }
 
 
 def _resolve_git_dir(start_path):
@@ -143,10 +187,24 @@ AGENT_CONFIG = load_agent_config()
 SERVER_URL = AGENT_CONFIG["server_url"]  # Target PHP endpoint
 POLL_INTERVAL = AGENT_CONFIG["poll_interval"]  # Seconds to wait before checking for new jobs if idle
 PC_ID = AGENT_CONFIG["pc_id"]  # Unique identifier for this node
+LOCAL_TRANSFER_AUTH = AGENT_CONFIG.get("transfer_auth", {})
 TASKS_DIR = Path(__file__).with_name("tasks")
 
 # Setup logging to see what the farm bot is doing
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
+
+
+def _merge_transfer_auth(task_transfer_auth):
+    """Merge master-supplied transfer auth with local setup defaults."""
+    merged = dict(task_transfer_auth) if isinstance(task_transfer_auth, dict) else {}
+    if not isinstance(LOCAL_TRANSFER_AUTH, dict):
+        return merged
+
+    for key, value in LOCAL_TRANSFER_AUTH.items():
+        if value in (None, ""):
+            continue
+        merged[key] = value
+    return merged
 
 
 @dataclass(frozen=True)
@@ -393,6 +451,13 @@ def discover_tasks():
     return registry
 
 
+def _is_transfer_uri(value):
+    """Return true when value is a supported transfer URI string."""
+    if not value:
+        return False
+    return urlparse(str(value)).scheme.lower() in {"ftp", "ftps", "sftp"}
+
+
 def _is_ftp_uri(value):
     """Return true when value is an FTP/FTPS URI string."""
     if not value:
@@ -400,23 +465,39 @@ def _is_ftp_uri(value):
     return urlparse(str(value)).scheme.lower() in {"ftp", "ftps"}
 
 
-def _ftp_connection(parsed_uri, transfer_auth):
-    """Open an FTP/FTPS connection using URI credentials first, then task auth."""
+def _is_sftp_uri(value):
+    """Return true when value is an SFTP URI string."""
+    if not value:
+        return False
+    return urlparse(str(value)).scheme.lower() == "sftp"
+
+
+def _transfer_connection_details(parsed_uri, transfer_auth):
+    """Resolve transfer connection settings using URI values first, then auth defaults."""
     auth = transfer_auth if isinstance(transfer_auth, dict) else {}
-    scheme = parsed_uri.scheme.lower() or str(auth.get("scheme", "ftp")).lower()
-    ftp_class = ftplib.FTP_TLS if scheme == "ftps" else ftplib.FTP
+    scheme = (parsed_uri.scheme or str(auth.get("scheme", "ftp"))).lower()
     host = parsed_uri.hostname or str(auth.get("host", ""))
     if not host:
         raise ValueError(
-            "FTP URI must include a host or transfer_auth.host must be configured."
+            "Transfer URI must include a host or transfer_auth.host must be configured."
         )
 
-    default_port = 990 if scheme == "ftps" else 21
+    default_port = 22 if scheme == "sftp" else (990 if scheme == "ftps" else 21)
     port = parsed_uri.port or int(auth.get("port") or default_port)
     username = unquote(parsed_uri.username or str(auth.get("username", "")))
     password = unquote(parsed_uri.password or str(auth.get("password", "")))
     if not username or not password:
-        raise ValueError("FTP transfer credentials are required for farm file transfers.")
+        raise ValueError("Transfer credentials are required for farm file transfers.")
+
+    return scheme, host, port, username, password
+
+
+def _ftp_connection(parsed_uri, transfer_auth):
+    """Open an FTP/FTPS connection using URI credentials first, then task auth."""
+    scheme, host, port, username, password = _transfer_connection_details(parsed_uri, transfer_auth)
+    if scheme not in {"ftp", "ftps"}:
+        raise ValueError(f"Unsupported FTP scheme: {scheme}")
+    ftp_class = ftplib.FTP_TLS if scheme == "ftps" else ftplib.FTP
 
     ftp = ftp_class()
     ftp.connect(host, port, timeout=30)
@@ -426,12 +507,33 @@ def _ftp_connection(parsed_uri, transfer_auth):
     return ftp
 
 
-def _ftp_uri_path(parsed_uri):
-    """Decode and validate the path component from an FTP URI."""
+def _sftp_client(parsed_uri, transfer_auth):
+    """Open an SFTP client using URI credentials first, then task auth."""
+    if importlib.util.find_spec("paramiko") is None:
+        raise RuntimeError("SFTP transfers require the optional 'paramiko' package.")
+    import paramiko
+
+    scheme, host, port, username, password = _transfer_connection_details(parsed_uri, transfer_auth)
+    if scheme != "sftp":
+        raise ValueError(f"Unsupported SFTP scheme: {scheme}")
+
+    transport = paramiko.Transport((host, port))
+    transport.connect(username=username, password=password)
+    client = paramiko.SFTPClient.from_transport(transport)
+    return client, transport
+
+
+def _transfer_uri_path(parsed_uri):
+    """Decode and validate the path component from a transfer URI."""
     remote_path = unquote(parsed_uri.path or "")
     if remote_path in {"", "/"}:
-        raise ValueError("FTP URI must point at a file path.")
+        raise ValueError("Transfer URI must point at a file path.")
     return remote_path
+
+
+def _ftp_uri_path(parsed_uri):
+    """Decode and validate the path component from an FTP URI."""
+    return _transfer_uri_path(parsed_uri)
 
 
 def _download_ftp_file(uri, transfer_auth, local_directory):
@@ -446,6 +548,24 @@ def _download_ftp_file(uri, transfer_auth, local_directory):
     with contextlib.closing(_ftp_connection(parsed, transfer_auth)) as ftp:
         with local_path.open("wb") as local_file:
             ftp.retrbinary(f"RETR {remote_path}", local_file.write)
+    return str(local_path)
+
+
+def _download_sftp_file(uri, transfer_auth, local_directory):
+    """Download one SFTP file into local_directory and return the local path."""
+    parsed = urlparse(str(uri))
+    remote_path = _transfer_uri_path(parsed)
+    local_name = Path(remote_path).name or "source"
+    local_path = local_directory / local_name
+
+    safe_uri = parsed._replace(netloc=parsed.hostname or "").geturl()
+    logging.info("Downloading SFTP source %s to local worker storage.", safe_uri)
+    client, transport = _sftp_client(parsed, transfer_auth)
+    try:
+        client.get(remote_path, str(local_path))
+    finally:
+        client.close()
+        transport.close()
     return str(local_path)
 
 
@@ -479,13 +599,50 @@ def _upload_ftp_file(local_path, uri, transfer_auth):
             ftp.storbinary(f"STOR {remote_path}", source_file)
 
 
+def _ensure_sftp_directory(client, remote_directory):
+    """Create remote SFTP directories when they are missing."""
+    if remote_directory in {"", "/", "."}:
+        return
+
+    current = "" if remote_directory.startswith("/") else "."
+    for part in remote_directory.strip("/").split("/"):
+        if not part:
+            continue
+        current = f"{current}/{part}" if current not in {"", "."} else part
+        if remote_directory.startswith("/"):
+            current_path = f"/{current}".replace("//", "/")
+        else:
+            current_path = current
+        with contextlib.suppress(OSError):
+            client.mkdir(current_path)
+
+
+def _upload_sftp_file(local_path, uri, transfer_auth):
+    """Upload one local file to an SFTP URI."""
+    parsed = urlparse(str(uri))
+    remote_path = _transfer_uri_path(parsed)
+    source_path = Path(local_path)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"SFTP delivery upload expected a file: {source_path}")
+
+    safe_uri = parsed._replace(netloc=parsed.hostname or "").geturl()
+    logging.info("Uploading task delivery to SFTP target %s.", safe_uri)
+    client, transport = _sftp_client(parsed, transfer_auth)
+    try:
+        _ensure_sftp_directory(client, str(Path(remote_path).parent))
+        client.put(str(source_path), remote_path)
+    finally:
+        client.close()
+        transport.close()
+
+
 def _prepare_transfer_paths(source, delivery, task_id, transfer_auth):
     """Convert FTP source/delivery URIs into local paths for task execution."""
     temp_directory = None
     prepared_source = source
     prepared_delivery = delivery
 
-    if _is_ftp_uri(source) or _is_ftp_uri(delivery):
+    if _is_transfer_uri(source) or _is_transfer_uri(delivery):
         temp_directory = tempfile.TemporaryDirectory(
             prefix=f"reflection-{task_id or 'task'}-"
         )
@@ -493,8 +650,10 @@ def _prepare_transfer_paths(source, delivery, task_id, transfer_auth):
 
     if _is_ftp_uri(source):
         prepared_source = _download_ftp_file(source, transfer_auth, temp_path)
+    elif _is_sftp_uri(source):
+        prepared_source = _download_sftp_file(source, transfer_auth, temp_path)
 
-    if _is_ftp_uri(delivery):
+    if _is_transfer_uri(delivery):
         parsed_delivery = urlparse(str(delivery))
         delivery_name = Path(unquote(parsed_delivery.path or "delivery")).name or "delivery"
         prepared_delivery = str(temp_path / delivery_name)
@@ -614,7 +773,7 @@ class FarmAgent:
             source = task.get("source")
             delivery = task.get("delivery")
             overwrite_allowed = task.get("overwrite_allowed", False)
-            transfer_auth = task.get("transfer_auth", {})
+            transfer_auth = _merge_transfer_auth(task.get("transfer_auth", {}))
 
             # 3. Confirm task taken
             if not self.confirm_task_taken(task_id):
@@ -643,6 +802,8 @@ class FarmAgent:
                 )
                 if task_outcome.success and _is_ftp_uri(delivery):
                     _upload_ftp_file(prepared_delivery, delivery, transfer_auth)
+                elif task_outcome.success and _is_sftp_uri(delivery):
+                    _upload_sftp_file(prepared_delivery, delivery, transfer_auth)
                 error_message = task_outcome.message
             except Exception as e:
                 error_message = str(e)
