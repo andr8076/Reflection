@@ -119,6 +119,7 @@ function reflection_default_farm_settings(): array
             'ess_soc_url' => 'http://192.168.1.245:8076',
             'ess_min_soc_percent' => 20,
             'ess_shutdown_below_minimum' => true,
+            'idle_shutdown_after_no_job_checks' => 0,
         ],
         'allowed_tasks' => [
             'dummy_task' => 'Placeholder pipeline test task.',

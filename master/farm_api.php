@@ -33,7 +33,7 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
 
     switch ($action) {
         case 'request_task':
-            return reflection_api_request_task($store, $config);
+            return reflection_api_request_task($store, $config, $pcId);
         case 'confirm_taken':
             return reflection_api_confirm_taken($payload, $store, $pcId);
         case 'report_done':
@@ -69,26 +69,24 @@ function reflection_worker_transfer_auth(array $config): ?array
     ];
 }
 
-function reflection_api_request_task(FarmStore $store, array $config): array
+function reflection_api_request_task(FarmStore $store, array $config, string $pcId): array
 {
     $allowedWorkers = $store->allowedActiveWorkers();
     $settings = $store->effectiveSettings();
     if ($allowedWorkers <= 0) {
-        return [
-            'status' => 'no_jobs',
-            'shutdown_after_task' => !empty($settings['ess_shutdown_below_minimum']),
-            'reason' => 'ess_soc_below_minimum',
-        ];
+        return reflection_api_no_jobs_response($store, $pcId, $settings, 'ess_soc_below_minimum', !empty($settings['ess_shutdown_below_minimum']));
     }
 
     if ($allowedWorkers !== PHP_INT_MAX && $store->runningWorkerCount() >= $allowedWorkers) {
-        return ['status' => 'no_jobs', 'reason' => 'ess_worker_limit'];
+        return reflection_api_no_jobs_response($store, $pcId, $settings, 'ess_worker_limit');
     }
 
     $job = $store->nextQueuedJob();
     if ($job === null) {
-        return ['status' => 'no_jobs'];
+        return reflection_api_no_jobs_response($store, $pcId, $settings, 'queue_empty');
     }
+
+    $store->resetWorkerNoJobCheckIns($pcId);
 
     $task = [
         'task_id' => $job['task_id'],
@@ -107,6 +105,22 @@ function reflection_api_request_task(FarmStore $store, array $config): array
     return [
         'status' => 'task_available',
         'task' => $task,
+    ];
+}
+
+
+function reflection_api_no_jobs_response(FarmStore $store, string $pcId, array $settings, string $reason, bool $forceShutdown = false): array
+{
+    $idleCheckIns = $store->recordWorkerNoJobCheckIn($pcId);
+    $shutdownLimit = max(0, (int) ($settings['idle_shutdown_after_no_job_checks'] ?? 0));
+    $limitReached = $shutdownLimit > 0 && $idleCheckIns >= $shutdownLimit;
+
+    return [
+        'status' => 'no_jobs',
+        'shutdown_after_task' => $forceShutdown || $limitReached,
+        'reason' => $limitReached ? 'idle_no_job_check_limit' : $reason,
+        'idle_no_job_checkins' => $idleCheckIns,
+        'idle_shutdown_after_no_job_checks' => $shutdownLimit,
     ];
 }
 

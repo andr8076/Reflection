@@ -83,6 +83,29 @@ final class FarmStore
         }, true);
     }
 
+    public function recordWorkerNoJobCheckIn(string $pcId): int
+    {
+        return $this->withLock(function (array $data) use ($pcId): array {
+            $worker = $data['workers'][$pcId] ?? ['pc_id' => $pcId];
+            $worker['idle_no_job_checkins'] = max(0, (int) ($worker['idle_no_job_checkins'] ?? 0)) + 1;
+            $worker['current_job'] = null;
+            $data['workers'][$pcId] = $worker;
+
+            return ['data' => $data, 'result' => $worker['idle_no_job_checkins']];
+        }, true);
+    }
+
+    public function resetWorkerNoJobCheckIns(string $pcId): void
+    {
+        $this->withLock(function (array $data) use ($pcId): array {
+            if (isset($data['workers'][$pcId])) {
+                $data['workers'][$pcId]['idle_no_job_checkins'] = 0;
+            }
+
+            return ['data' => $data, 'result' => null];
+        }, true);
+    }
+
     public function nextQueuedJob(): ?array
     {
         return $this->withLock(function (array $data): ?array {
@@ -116,6 +139,7 @@ final class FarmStore
                     'pc_id' => $pcId,
                     'last_check_in' => gmdate(DATE_ATOM),
                     'current_job' => $taskId,
+                    'idle_no_job_checkins' => 0,
                 ]);
             }
 
@@ -231,6 +255,7 @@ final class FarmStore
             $data['settings']['max_retries'] = max(0, (int) ($data['settings']['max_retries'] ?? 0));
             $data['settings']['ess_soc_percent'] = max(0, min(100, (int) ($data['settings']['ess_soc_percent'] ?? 100)));
             $data['settings']['ess_min_soc_percent'] = max(0, min(100, (int) ($data['settings']['ess_min_soc_percent'] ?? 20)));
+            $data['settings']['idle_shutdown_after_no_job_checks'] = max(0, (int) ($data['settings']['idle_shutdown_after_no_job_checks'] ?? 0));
             return ['data' => $data, 'result' => $data['settings']];
         }, true);
     }
@@ -534,6 +559,7 @@ final class FarmStore
             'ess_soc_url' => 'http://192.168.1.245:8076',
             'ess_min_soc_percent' => 20,
             'ess_shutdown_below_minimum' => true,
+            'idle_shutdown_after_no_job_checks' => 0,
         ], $this->configuredDefaultSettings);
     }
 

@@ -160,6 +160,7 @@ function reflection_worker_cards(array $workers, array $machines): array
             'version' => '—',
             'current_job' => null,
             'last_check_in' => null,
+            'idle_no_job_checkins' => 0,
             'state' => 'configured',
         ];
     }
@@ -182,6 +183,7 @@ function reflection_worker_cards(array $workers, array $machines): array
             'version' => $worker['version'] ?? '—',
             'current_job' => $worker['current_job'] ?? null,
             'last_check_in' => $worker['last_check_in'] ?? null,
+            'idle_no_job_checkins' => max(0, (int) ($worker['idle_no_job_checkins'] ?? 0)),
             'state' => $state,
         ]);
     }
@@ -219,6 +221,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'ess_soc_url' => trim((string) ($_POST['ess_soc_url'] ?? '')),
             'ess_min_soc_percent' => (int) ($_POST['ess_min_soc_percent'] ?? 20),
             'ess_shutdown_below_minimum' => isset($_POST['ess_shutdown_below_minimum']),
+            'idle_shutdown_after_no_job_checks' => (int) ($_POST['idle_shutdown_after_no_job_checks'] ?? 0),
         ]);
         $store->updateMachines(reflection_parse_machine_list((string) ($_POST['machines'] ?? '')));
         $message = 'Saved general options.';
@@ -385,6 +388,11 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
                 <label class="check-row">
                     <input type="checkbox" name="ess_shutdown_below_minimum" value="1" <?= !empty($settings['ess_shutdown_below_minimum']) ? 'checked' : '' ?>>
                     Tell workers to shut down after current task when SOC is below minimum
+                </label>
+                <label>
+                    Idle no-job check-ins before shutdown
+                    <input type="number" name="idle_shutdown_after_no_job_checks" min="0" value="<?= (int) ($settings['idle_shutdown_after_no_job_checks'] ?? 0) ?>">
+                    <small>Set to <code>0</code> to keep idle workers polling forever. Any positive value tells a worker to stop after that many consecutive <code>no_jobs</code> check-ins.</small>
                 </label>
                 <label>
                     Farm computers available for Wake-on-LAN
@@ -603,6 +611,7 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
                     <dl>
                         <div><dt>Current job</dt><dd><?= reflection_h($card['current_job'] ?? '—') ?></dd></div>
                         <div><dt>Last check-in</dt><dd><?= reflection_h($card['last_check_in'] ?? '—') ?></dd></div>
+                        <div><dt>No-job check-ins</dt><dd><?= (int) ($card['idle_no_job_checkins'] ?? 0) ?></dd></div>
                         <div><dt>Version</dt><dd><code><?= reflection_h($card['version'] ?? '—') ?></code></dd></div>
                         <div><dt>Wake</dt><dd><?= !empty($card['wake_enabled']) ? 'enabled' : 'disabled' ?><?= !empty($card['mac']) ? ' · ' . reflection_h($card['mac']) : '' ?></dd></div>
                         <div><dt>SOC margin</dt><dd><?= (int) ($card['soc_margin_percent'] ?? 0) ?>%</dd></div>
@@ -618,18 +627,20 @@ $statusCounts = array_count_values(array_map(static fn (array $job): string => (
                         <th>Worker</th>
                         <th>Version</th>
                         <th>Current job</th>
+                        <th>No-job check-ins</th>
                         <th>Last check-in</th>
                     </tr>
                 </thead>
                 <tbody>
                 <?php if ($workers === []): ?>
-                    <tr><td colspan="4" class="empty">No worker check-ins yet.</td></tr>
+                    <tr><td colspan="5" class="empty">No worker check-ins yet.</td></tr>
                 <?php endif; ?>
                 <?php foreach ($workers as $worker): ?>
                     <tr>
                         <td><?= reflection_h($worker['pc_id'] ?? '—') ?></td>
                         <td><code><?= reflection_h($worker['version'] ?? '—') ?></code></td>
                         <td><?= reflection_h($worker['current_job'] ?? '—') ?></td>
+                        <td><?= max(0, (int) ($worker['idle_no_job_checkins'] ?? 0)) ?></td>
                         <td><?= reflection_h($worker['last_check_in'] ?? '—') ?></td>
                     </tr>
                 <?php endforeach; ?>

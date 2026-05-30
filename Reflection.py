@@ -888,7 +888,8 @@ class FarmAgent:
 
             if response.get("status") == "no_jobs":
                 if response.get("shutdown_after_task"):
-                    logging.info("Server requested idle shutdown due to SOC policy. Stopping agent.")
+                    reason = response.get("reason", "server_policy")
+                    logging.info("Server requested idle shutdown (%s). Stopping agent.", reason)
                     return
                 logging.info("Server has no jobs. Sleeping for %ss...", POLL_INTERVAL)
                 time.sleep(POLL_INTERVAL)
