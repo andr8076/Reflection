@@ -466,6 +466,11 @@ final class FarmStore
             $data['settings']['ess_soc_error'] = $this->limitString((string) ($data['settings']['ess_soc_error'] ?? ''), 500);
             $data['settings']['ess_soc_raw_sample'] = $this->limitString((string) ($data['settings']['ess_soc_raw_sample'] ?? ''), 500);
             $data['settings']['idle_shutdown_after_no_job_checks'] = max(0, (int) ($data['settings']['idle_shutdown_after_no_job_checks'] ?? 0));
+            $data['settings']['auto_wake_for_queued_jobs'] = !empty($data['settings']['auto_wake_for_queued_jobs']);
+            $data['settings']['auto_wake_cooldown_seconds'] = max(0, (int) ($data['settings']['auto_wake_cooldown_seconds'] ?? 300));
+            $data['settings']['auto_wake_max_targets_per_run'] = max(0, (int) ($data['settings']['auto_wake_max_targets_per_run'] ?? 20));
+            $data['settings']['wake_broadcast_address'] = $this->limitString(trim((string) ($data['settings']['wake_broadcast_address'] ?? '255.255.255.255')), 100) ?: '255.255.255.255';
+            $data['settings']['wake_udp_port'] = max(1, min(65535, (int) ($data['settings']['wake_udp_port'] ?? 9)));
             $data['settings']['job_history_keep_completed'] = max(0, (int) ($data['settings']['job_history_keep_completed'] ?? 500));
             $data['settings']['event_log_keep_lines'] = max(0, (int) ($data['settings']['event_log_keep_lines'] ?? 1000));
             $data['settings']['file_history_keep_paths'] = max(0, (int) ($data['settings']['file_history_keep_paths'] ?? 500));
@@ -616,33 +621,172 @@ final class FarmStore
         return $count;
     }
 
-    public function wakeTargetsForCurrentSoc(): array
+
+    public function queuedWorkCount(): int
+    {
+        $data = $this->read();
+        $count = 0;
+        foreach ($data['jobs'] as $job) {
+            if (($job['status'] ?? '') === 'queued' && !$this->isControlModule((string) ($job['module'] ?? ''))) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    public function idleOnlineWorkerCount(int $staleAfterSeconds): int
+    {
+        $data = $this->read();
+        $workers = $this->onlineWorkersFromData($data, $staleAfterSeconds);
+        $count = 0;
+        foreach ($workers as $worker) {
+            if (trim((string) ($worker['current_job'] ?? '')) === '') {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    public function demandWakePlan(int $staleAfterSeconds): array
+    {
+        $data = $this->read();
+        $settings = array_merge($this->defaultSettings(), $data['settings'] ?? []);
+        $queuedWork = 0;
+        foreach ($data['jobs'] as $job) {
+            if (($job['status'] ?? '') === 'queued' && !$this->isControlModule((string) ($job['module'] ?? ''))) {
+                $queuedWork++;
+            }
+        }
+
+        $onlineWorkers = $this->onlineWorkersFromData($data, $staleAfterSeconds);
+        $idleOnlineWorkers = 0;
+        foreach ($onlineWorkers as $worker) {
+            if (trim((string) ($worker['current_job'] ?? '')) === '') {
+                $idleOnlineWorkers++;
+            }
+        }
+
+        $needed = max(0, $queuedWork - $idleOnlineWorkers);
+        $eligibleTargets = $this->wakeTargetsFromData($data, $settings, $staleAfterSeconds, true, false);
+        $cooldownSeconds = max(0, (int) ($settings['auto_wake_cooldown_seconds'] ?? 300));
+        $readyTargets = $this->filterWakeTargetsByCooldown($eligibleTargets, $data['wake_history'] ?? [], $cooldownSeconds);
+        $maxTargets = max(0, (int) ($settings['auto_wake_max_targets_per_run'] ?? 20));
+        $targets = array_slice($readyTargets, 0, $maxTargets > 0 ? min($needed, $maxTargets) : 0);
+
+        return [
+            'enabled' => !empty($settings['auto_wake_for_queued_jobs']),
+            'queued_work' => $queuedWork,
+            'online_workers' => count($onlineWorkers),
+            'idle_online_workers' => $idleOnlineWorkers,
+            'needed' => $needed,
+            'eligible_targets' => count($eligibleTargets),
+            'ready_targets' => count($readyTargets),
+            'cooldown_seconds' => $cooldownSeconds,
+            'max_targets_per_run' => $maxTargets,
+            'targets' => $targets,
+        ];
+    }
+
+    public function autoWakeForQueuedJobs(int $staleAfterSeconds, string $reason = 'auto_demand'): array
+    {
+        $plan = $this->demandWakePlan($staleAfterSeconds);
+        if (empty($plan['enabled']) || ($plan['targets'] ?? []) === []) {
+            $plan['wake_result'] = [
+                'sent' => 0,
+                'failed' => 0,
+                'errors' => [],
+            ];
+            return $plan;
+        }
+
+        $plan['wake_result'] = $this->sendWakePackets($plan['targets'], $reason);
+        return $plan;
+    }
+
+    public function wakeTargetsForCurrentSoc(bool $excludeOnline = false, int $staleAfterSeconds = 900): array
+    {
+        $data = $this->read();
+        $settings = array_merge($this->defaultSettings(), $data['settings'] ?? []);
+        return $this->wakeTargetsFromData($data, $settings, $staleAfterSeconds, false, $excludeOnline);
+    }
+
+    public function sendWakePackets(array $targets, string $reason = 'manual'): array
     {
         $settings = $this->effectiveSettings();
-        $machines = array_values(array_filter($this->machines(), static function (array $machine): bool {
-            return !empty($machine['wake_enabled']) && !empty($machine['mac']);
-        }));
-        usort($machines, static function (array $a, array $b): int {
-            return ((int) ($a['soc_margin_percent'] ?? 5)) <=> ((int) ($b['soc_margin_percent'] ?? 5));
-        });
+        $broadcast = trim((string) ($settings['wake_broadcast_address'] ?? '255.255.255.255')) ?: '255.255.255.255';
+        $port = max(1, min(65535, (int) ($settings['wake_udp_port'] ?? 9)));
+        $sent = [];
+        $errors = [];
+        $attempts = [];
 
-        if (!$this->essSocCanLimitWorkers($settings)) {
-            return $machines;
-        }
-
-        $budget = max(0, (int) ($settings['ess_soc_percent'] ?? 100) - (int) ($settings['ess_min_soc_percent'] ?? 20));
-        $targets = [];
-        foreach ($machines as $machine) {
-            $margin = max(1, (int) ($machine['soc_margin_percent'] ?? 5));
-            if ($budget < $margin) {
-                break;
+        foreach ($targets as $target) {
+            $target = is_array($target) ? $target : ['mac' => (string) $target];
+            $mac = trim((string) ($target['mac'] ?? ''));
+            $key = $this->wakeTargetKey($target);
+            try {
+                $this->sendWakePacket($mac, $broadcast, $port);
+                $sent[] = $target;
+                $attempts[$key] = [
+                    'pc_id' => (string) ($target['pc_id'] ?? ''),
+                    'mac' => $mac,
+                    'last_wake_at' => gmdate(DATE_ATOM),
+                    'reason' => $reason,
+                    'success' => true,
+                    'error' => '',
+                ];
+            } catch (Throwable $exception) {
+                $errors[] = [
+                    'pc_id' => (string) ($target['pc_id'] ?? ''),
+                    'mac' => $mac,
+                    'error' => $exception->getMessage(),
+                ];
+                $attempts[$key] = [
+                    'pc_id' => (string) ($target['pc_id'] ?? ''),
+                    'mac' => $mac,
+                    'last_wake_at' => gmdate(DATE_ATOM),
+                    'reason' => $reason,
+                    'success' => false,
+                    'error' => $this->limitString($exception->getMessage(), 300),
+                ];
             }
-
-            $budget -= $margin;
-            $targets[] = $machine;
         }
 
-        return $targets;
+        if ($attempts !== []) {
+            $this->withLock(function (array $data) use ($attempts): array {
+                $history = is_array($data['wake_history'] ?? null) ? $data['wake_history'] : [];
+                foreach ($attempts as $key => $attempt) {
+                    $history[$key] = $attempt;
+                }
+                uasort($history, static function (array $a, array $b): int {
+                    return strcmp((string) ($b['last_wake_at'] ?? ''), (string) ($a['last_wake_at'] ?? ''));
+                });
+                $data['wake_history'] = array_slice($history, 0, 500, true);
+                return ['data' => $data, 'result' => null];
+            }, true);
+        }
+
+        if ($sent !== []) {
+            $this->recordSystemEvent('wake_sent', '', [
+                'reason' => $reason,
+                'targets' => array_map(static function (array $target): array {
+                    return [
+                        'pc_id' => (string) ($target['pc_id'] ?? ''),
+                        'mac' => (string) ($target['mac'] ?? ''),
+                    ];
+                }, $sent),
+            ]);
+        }
+        foreach ($errors as $error) {
+            $this->recordSystemEvent('wake_failed', (string) ($error['error'] ?? ''), $error);
+        }
+
+        return [
+            'sent' => count($sent),
+            'failed' => count($errors),
+            'errors' => $errors,
+        ];
     }
 
     public function readRecentEvents(int $limit = 50): array
@@ -938,8 +1082,164 @@ final class FarmStore
             'workers' => $data['workers'] ?? [],
             'settings' => array_merge($this->defaultSettings(), $data['settings'] ?? []),
             'machines' => array_values($data['machines'] ?? []),
+            'wake_history' => is_array($data['wake_history'] ?? null) ? $data['wake_history'] : [],
             'last_job_number' => (int) ($data['last_job_number'] ?? 1000),
         ];
+    }
+
+
+    private function isControlModule(string $module): bool
+    {
+        return in_array($module, ['noop', 'status', 'reload_tasks', 'shutdown', 'wake_farm'], true);
+    }
+
+    private function onlineWorkersFromData(array $data, int $staleAfterSeconds): array
+    {
+        $staleAfterSeconds = max(1, $staleAfterSeconds);
+        $cutoff = time() - $staleAfterSeconds;
+        $online = [];
+        foreach (($data['workers'] ?? []) as $worker) {
+            if (!is_array($worker)) {
+                continue;
+            }
+            $lastCheckIn = strtotime((string) ($worker['last_check_in'] ?? ''));
+            if ($lastCheckIn !== false && $lastCheckIn >= $cutoff) {
+                $pcId = trim((string) ($worker['pc_id'] ?? ''));
+                if ($pcId !== '') {
+                    $online[$pcId] = $worker;
+                }
+            }
+        }
+
+        return $online;
+    }
+
+    private function wakeTargetsFromData(array $data, array $settings, int $staleAfterSeconds, bool $excludeOnline, bool $ignoreCooldown): array
+    {
+        $onlineWorkers = $this->onlineWorkersFromData($data, $staleAfterSeconds);
+        $machines = [];
+        foreach (($data['machines'] ?? []) as $machine) {
+            if (!is_array($machine) || empty($machine['wake_enabled']) || trim((string) ($machine['mac'] ?? '')) === '') {
+                continue;
+            }
+            $pcId = trim((string) ($machine['pc_id'] ?? ''));
+            if ($excludeOnline && $pcId !== '' && isset($onlineWorkers[$pcId])) {
+                continue;
+            }
+            $machine['soc_margin_percent'] = max(1, (int) ($machine['soc_margin_percent'] ?? 5));
+            $machines[] = $machine;
+        }
+
+        usort($machines, static function (array $a, array $b): int {
+            return ((int) ($a['soc_margin_percent'] ?? 5)) <=> ((int) ($b['soc_margin_percent'] ?? 5));
+        });
+
+        if (!$this->essSocCanLimitWorkers($settings)) {
+            return $machines;
+        }
+
+        $budget = max(0, (int) ($settings['ess_soc_percent'] ?? 100) - (int) ($settings['ess_min_soc_percent'] ?? 20));
+        foreach (($data['machines'] ?? []) as $machine) {
+            if (!is_array($machine) || empty($machine['wake_enabled'])) {
+                continue;
+            }
+            $pcId = trim((string) ($machine['pc_id'] ?? ''));
+            if ($pcId !== '' && isset($onlineWorkers[$pcId])) {
+                $budget -= max(1, (int) ($machine['soc_margin_percent'] ?? 5));
+            }
+        }
+        $budget = max(0, $budget);
+
+        $targets = [];
+        foreach ($machines as $machine) {
+            $margin = max(1, (int) ($machine['soc_margin_percent'] ?? 5));
+            if ($budget < $margin) {
+                break;
+            }
+            $budget -= $margin;
+            $targets[] = $machine;
+        }
+
+        return $targets;
+    }
+
+    private function filterWakeTargetsByCooldown(array $targets, array $history, int $cooldownSeconds): array
+    {
+        if ($cooldownSeconds <= 0) {
+            return $targets;
+        }
+
+        $now = time();
+        $ready = [];
+        foreach ($targets as $target) {
+            $key = $this->wakeTargetKey($target);
+            $lastWakeAt = strtotime((string) ($history[$key]['last_wake_at'] ?? ''));
+            if ($lastWakeAt !== false && ($now - $lastWakeAt) < $cooldownSeconds) {
+                continue;
+            }
+            $ready[] = $target;
+        }
+
+        return $ready;
+    }
+
+    private function wakeTargetKey(array $target): string
+    {
+        $pcId = trim((string) ($target['pc_id'] ?? ''));
+        if ($pcId !== '') {
+            return 'pc:' . $pcId;
+        }
+
+        return 'mac:' . strtolower(preg_replace('/[^a-fA-F0-9]/', '', (string) ($target['mac'] ?? '')) ?? '');
+    }
+
+    private function sendWakePacket(string $macAddress, string $broadcastAddress, int $port): void
+    {
+        $cleanMac = preg_replace('/[^a-fA-F0-9]/', '', $macAddress) ?? '';
+        if (strlen($cleanMac) !== 12) {
+            throw new RuntimeException('Invalid MAC address: ' . $macAddress);
+        }
+
+        $macBytes = hex2bin($cleanMac);
+        if ($macBytes === false) {
+            throw new RuntimeException('Invalid MAC address: ' . $macAddress);
+        }
+        $payload = str_repeat(chr(255), 6) . str_repeat($macBytes, 16);
+
+        if (function_exists('socket_create') && defined('AF_INET') && defined('SOCK_DGRAM') && defined('SOL_UDP')) {
+            $socket = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+            if ($socket === false) {
+                throw new RuntimeException('Unable to create UDP socket for Wake-on-LAN.');
+            }
+            try {
+                if (defined('SOL_SOCKET') && defined('SO_BROADCAST')) {
+                    @socket_set_option($socket, SOL_SOCKET, SO_BROADCAST, 1);
+                }
+                $sent = @socket_sendto($socket, $payload, strlen($payload), 0, $broadcastAddress, $port);
+                if ($sent === false) {
+                    $message = function_exists('socket_last_error') && function_exists('socket_strerror')
+                        ? socket_strerror(socket_last_error($socket))
+                        : 'unknown socket error';
+                    throw new RuntimeException('Unable to send Wake-on-LAN packet: ' . $message);
+                }
+            } finally {
+                @socket_close($socket);
+            }
+            return;
+        }
+
+        $stream = @fsockopen('udp://' . $broadcastAddress, $port, $errorNumber, $errorString, 2.0);
+        if ($stream === false) {
+            throw new RuntimeException('Unable to open UDP stream for Wake-on-LAN: ' . $errorString . ' (' . $errorNumber . ')');
+        }
+        try {
+            $written = @fwrite($stream, $payload);
+            if ($written === false || $written < strlen($payload)) {
+                throw new RuntimeException('Unable to write complete Wake-on-LAN packet.');
+            }
+        } finally {
+            @fclose($stream);
+        }
     }
 
     private function parseSocResponse(string $body): array
@@ -1113,6 +1413,11 @@ final class FarmStore
             'ess_soc_last_success_at' => null,
             'ess_soc_last_failure_at' => null,
             'idle_shutdown_after_no_job_checks' => 0,
+            'auto_wake_for_queued_jobs' => true,
+            'auto_wake_cooldown_seconds' => 300,
+            'auto_wake_max_targets_per_run' => 20,
+            'wake_broadcast_address' => '255.255.255.255',
+            'wake_udp_port' => 9,
             'job_history_keep_completed' => 500,
             'event_log_keep_lines' => 1000,
             'file_history_keep_paths' => 500,

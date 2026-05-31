@@ -32,6 +32,7 @@ assertSameValue(
 assertSameValue(null, $defaultConfig['storage_warning'], 'Writable default farm store should not warn.');
 assertSameValue(true, array_key_exists('wake_farm', $defaultConfig['allowed_tasks']), 'Wake-on-LAN should be an allowed master task.');
 assertSameValue(true, array_key_exists('h265_encode', $defaultConfig['allowed_tasks']), 'H.265 encoder should be an allowed master task.');
+assertSameValue(true, $defaultConfig['runtime_defaults']['auto_wake_for_queued_jobs'], 'Demand-based Wake-on-LAN should default to enabled.');
 
 assertSameValue('default', $defaultConfig['farm_id'], 'Default farm id should come from farm settings.');
 assertSameValue(
@@ -130,6 +131,36 @@ assertSameValue('offline', $socStore->effectiveSettings()['ess_soc_status'], 'Co
 assertSameValue(PHP_INT_MAX, $socStore->allowedActiveWorkers(), 'Offline ESS SOC should be ignored until connection returns.');
 unlink($socStorePath);
 unlink($socEndpointPath);
+
+
+
+$wakeStorePath = sys_get_temp_dir() . '/reflection_wake_store_' . bin2hex(random_bytes(6)) . '.json';
+$wakeStore = new FarmStore($wakeStorePath);
+$wakeStore->updateSettings([
+    'ess_soc_url' => '',
+    'ess_soc_percent' => 100,
+    'ess_min_soc_percent' => 20,
+    'auto_wake_for_queued_jobs' => true,
+    'auto_wake_cooldown_seconds' => 0,
+    'auto_wake_max_targets_per_run' => 10,
+]);
+$wakeStore->updateMachines([
+    ['pc_id' => 'node-wake-1', 'mac' => 'AA:BB:CC:DD:EE:01', 'soc_margin_percent' => 40, 'wake_enabled' => true],
+    ['pc_id' => 'node-wake-2', 'mac' => 'AA:BB:CC:DD:EE:02', 'soc_margin_percent' => 40, 'wake_enabled' => true],
+    ['pc_id' => 'node-wake-3', 'mac' => 'AA:BB:CC:DD:EE:03', 'soc_margin_percent' => 40, 'wake_enabled' => true],
+]);
+$wakeStore->recordWorkerCheckIn('node-wake-1', 'test-version');
+$wakeStore->createJob('dummy_task', 'incoming/wake-1.dat', null, false);
+$wakeStore->createJob('dummy_task', 'incoming/wake-2.dat', null, false);
+$wakeStore->createJob('dummy_task', 'incoming/wake-3.dat', null, false);
+$wakePlan = $wakeStore->demandWakePlan(900);
+assertSameValue(3, $wakePlan['queued_work'], 'Demand wake should count queued non-control jobs.');
+assertSameValue(1, $wakePlan['idle_online_workers'], 'Demand wake should treat idle online workers as existing capacity.');
+assertSameValue(2, $wakePlan['needed'], 'Demand wake should only request workers for queued jobs not covered by idle online workers.');
+assertSameValue(1, count($wakePlan['targets']), 'Demand wake should still respect SOC margins after existing online workers consume budget.');
+assertSameValue('node-wake-2', $wakePlan['targets'][0]['pc_id'], 'Demand wake should choose the cheapest eligible offline machine first.');
+@unlink($wakeStorePath);
+@unlink($wakeStorePath . '.lock');
 
 $tokenStorePath = sys_get_temp_dir() . '/reflection_token_store_' . bin2hex(random_bytes(6)) . '.json';
 $tokenStore = new FarmStore($tokenStorePath);

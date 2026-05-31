@@ -51,10 +51,17 @@ try {
         $queued += (int) ($result['queued'] ?? 0);
     }
 
+    $autoWake = null;
+    if ($queued > 0) {
+        $farmStore->refreshEssSocFromConfiguredEndpoint();
+        $autoWake = $farmStore->autoWakeForQueuedJobs((int) ($config['stale_after_seconds'] ?? 900), 'automation_tick');
+    }
+
     reflection_tick_output([
         'status' => 'ok',
         'rules_run' => count($results),
         'jobs_queued' => $queued,
+        'auto_wake' => $autoWake,
         'results' => $results,
     ]);
 } catch (Throwable $exception) {

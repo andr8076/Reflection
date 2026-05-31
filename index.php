@@ -326,6 +326,45 @@ function reflection_run_store_maintenance(FarmStore $store, array $settings): ar
     ];
 }
 
+
+function reflection_append_message(?string $message, string $addition): string
+{
+    $addition = trim($addition);
+    if ($addition === '') {
+        return (string) ($message ?? '');
+    }
+
+    $current = trim((string) ($message ?? ''));
+    return $current === '' ? $addition : $current . ' ' . $addition;
+}
+
+function reflection_auto_wake_notice(FarmStore $store, int $staleAfterSeconds, string $reason): ?string
+{
+    $store->refreshEssSocFromConfiguredEndpoint();
+    $plan = $store->autoWakeForQueuedJobs($staleAfterSeconds, $reason);
+    if (empty($plan['enabled'])) {
+        return null;
+    }
+
+    $sent = (int) ($plan['wake_result']['sent'] ?? 0);
+    $failed = (int) ($plan['wake_result']['failed'] ?? 0);
+    $needed = (int) ($plan['needed'] ?? 0);
+    $ready = (int) ($plan['ready_targets'] ?? 0);
+    if ($sent > 0) {
+        $notice = 'Demand wake sent to ' . $sent . ' computer' . ($sent === 1 ? '' : 's') . ' for ' . (int) ($plan['queued_work'] ?? 0) . ' queued job' . ((int) ($plan['queued_work'] ?? 0) === 1 ? '' : 's') . '.';
+        if ($failed > 0) {
+            $notice .= ' ' . $failed . ' wake attempt' . ($failed === 1 ? '' : 's') . ' failed.';
+        }
+        return $notice;
+    }
+
+    if ($needed > 0 && $ready === 0) {
+        return 'Demand wake wanted ' . $needed . ' more worker' . ($needed === 1 ? '' : 's') . ', but no eligible Wake-on-LAN target is ready right now.';
+    }
+
+    return null;
+}
+
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $formAction = (string) ($_POST['form_action'] ?? 'single');
     $module = trim((string) ($_POST['module'] ?? ''));
@@ -345,6 +384,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'ess_shutdown_below_minimum' => isset($_POST['ess_shutdown_below_minimum']),
             'ess_ignore_when_unavailable' => isset($_POST['ess_ignore_when_unavailable']),
             'idle_shutdown_after_no_job_checks' => (int) ($_POST['idle_shutdown_after_no_job_checks'] ?? 0),
+            'auto_wake_for_queued_jobs' => isset($_POST['auto_wake_for_queued_jobs']),
+            'auto_wake_cooldown_seconds' => (int) ($_POST['auto_wake_cooldown_seconds'] ?? 300),
+            'auto_wake_max_targets_per_run' => (int) ($_POST['auto_wake_max_targets_per_run'] ?? 20),
+            'wake_broadcast_address' => trim((string) ($_POST['wake_broadcast_address'] ?? '255.255.255.255')),
+            'wake_udp_port' => (int) ($_POST['wake_udp_port'] ?? 9),
             'job_history_keep_completed' => (int) ($_POST['job_history_keep_completed'] ?? 500),
             'event_log_keep_lines' => (int) ($_POST['event_log_keep_lines'] ?? 1000),
             'file_history_keep_paths' => (int) ($_POST['file_history_keep_paths'] ?? 500),
@@ -357,12 +401,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $maintenance = reflection_run_store_maintenance($store, $store->effectiveSettings());
         $message = 'Maintenance complete. Archived ' . $maintenance['archived_jobs'] . ' old completed job(s), trimmed ' . $maintenance['trimmed_events'] . ' event(s), and compacted ' . $maintenance['trimmed_file_history'] . ' file-history item(s).';
     } elseif ($formAction === 'wake_farm') {
-        $targets = $store->wakeTargetsForCurrentSoc();
+        $targets = $store->wakeTargetsForCurrentSoc(true, (int) ($config['stale_after_seconds'] ?? 900));
         if ($targets === []) {
-            $error = 'No Wake-on-LAN targets are currently eligible. Check configured machines, MAC addresses, and SOC margins.';
+            $error = 'No Wake-on-LAN targets are currently eligible. Check configured machines, MAC addresses, SOC margins, and current online workers.';
         } else {
-            $job = $store->createJob('wake_farm', json_encode($targets, JSON_UNESCAPED_SLASHES), null, true);
-            $message = 'Queued ' . $job['task_id'] . ' to wake ' . count($targets) . ' computer(s).';
+            $wakeResult = $store->sendWakePackets($targets, 'manual');
+            $message = 'Sent Wake-on-LAN packets to ' . (int) ($wakeResult['sent'] ?? 0) . ' computer(s).';
+            if ((int) ($wakeResult['failed'] ?? 0) > 0) {
+                $error = (int) ($wakeResult['failed'] ?? 0) . ' Wake-on-LAN attempt(s) failed. Check recent events for details.';
+            }
         }
     } elseif ($formAction === 'bulk') {
         $importText = (string) ($_POST['source_list'] ?? '');
@@ -409,6 +456,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             } elseif ($queued === 0) {
                 $error = 'No importable source paths found.';
             }
+            if ($queued > 0 && !$isControlTask) {
+                $notice = reflection_auto_wake_notice($store, (int) ($config['stale_after_seconds'] ?? 900), 'queue_bulk');
+                if ($notice !== null) {
+                    $message = reflection_append_message($message, $notice);
+                }
+            }
         }
     } else {
         $source = trim((string) ($_POST['single_source'] ?? ''));
@@ -424,6 +477,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $overwriteAllowed,
             );
             $message = 'Queued ' . $job['task_id'] . ' for ' . $job['module'] . '.';
+            if (!$isControlTask) {
+                $notice = reflection_auto_wake_notice($store, (int) ($config['stale_after_seconds'] ?? 900), 'queue_single');
+                if ($notice !== null) {
+                    $message = reflection_append_message($message, $notice);
+                }
+            }
         }
     }
 }
@@ -439,7 +498,7 @@ $events = $store->readRecentEvents(20);
 $fileHistory = array_slice($store->readFileHistory(), 0, 25, true);
 $machines = $store->machines();
 $allowedActiveWorkers = $store->allowedActiveWorkers();
-$wakeTargets = $store->wakeTargetsForCurrentSoc();
+$wakeTargets = $store->wakeTargetsForCurrentSoc(true, (int) ($config['stale_after_seconds'] ?? 900));
 $wakeTargetCount = count($wakeTargets);
 $wakeEnabledMachineCount = 0;
 foreach ($machines as $machine) {
@@ -447,6 +506,7 @@ foreach ($machines as $machine) {
         $wakeEnabledMachineCount++;
     }
 }
+$demandWakePlan = $store->demandWakePlan((int) ($config['stale_after_seconds'] ?? 900));
 $wakeButtonDisabled = $wakeTargetCount === 0;
 $workerLimitDisplay = $essSocIgnored
     ? 'paused'
@@ -668,6 +728,11 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                         <strong><?= reflection_h($workerLimitDisplay) ?></strong>
                         <small><?= reflection_h($workerLimitHelp) ?></small>
                     </div>
+                    <div class="power-summary-item">
+                        <span>Demand wake</span>
+                        <strong><?= !empty($demandWakePlan['enabled']) ? (int) ($demandWakePlan['needed'] ?? 0) : 'off' ?></strong>
+                        <small><?= (int) ($demandWakePlan['queued_work'] ?? 0) ?> queued · <?= (int) ($demandWakePlan['idle_online_workers'] ?? 0) ?> idle online</small>
+                    </div>
                 </div>
 
                 <?php if ($wakeEnabledMachineCount === 0): ?>
@@ -680,6 +745,13 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                     <p class="api-note">SOC is not currently capping workers. All configured wake targets are eligible.</p>
                 <?php else: ?>
                     <p class="api-note">Current SOC allows <?= (int) $allowedActiveWorkers ?> active worker<?= $allowedActiveWorkers === 1 ? '' : 's' ?>. <?= (int) $wakeTargetCount ?> of <?= (int) $wakeEnabledMachineCount ?> configured wake target<?= $wakeEnabledMachineCount === 1 ? '' : 's' ?> are eligible.</p>
+                <?php endif; ?>
+                <?php if (empty($demandWakePlan['enabled'])): ?>
+                    <p class="api-note">Automatic demand wake is disabled. Jobs can still be queued normally, but machines will only wake when you press the button.</p>
+                <?php elseif ((int) ($demandWakePlan['needed'] ?? 0) > 0): ?>
+                    <p class="api-note">Demand wake currently wants <?= (int) ($demandWakePlan['needed'] ?? 0) ?> more worker<?= (int) ($demandWakePlan['needed'] ?? 0) === 1 ? '' : 's' ?>. <?= (int) ($demandWakePlan['ready_targets'] ?? 0) ?> eligible target<?= (int) ($demandWakePlan['ready_targets'] ?? 0) === 1 ? '' : 's' ?> are ready after cooldown.</p>
+                <?php else: ?>
+                    <p class="api-note">Demand wake is satisfied: queued jobs are covered by currently idle online workers or there is no queued work.</p>
                 <?php endif; ?>
 
                 <form method="post" class="bare-form maintenance-form">
@@ -941,6 +1013,22 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                         <input type="number" name="idle_shutdown_after_no_job_checks" min="0" value="<?= (int) ($settings['idle_shutdown_after_no_job_checks'] ?? 0) ?>">
                     </label>
                     <label>
+                        Demand wake cooldown seconds
+                        <input type="number" name="auto_wake_cooldown_seconds" min="0" value="<?= (int) ($settings['auto_wake_cooldown_seconds'] ?? 300) ?>">
+                    </label>
+                    <label>
+                        Max demand wakes per run
+                        <input type="number" name="auto_wake_max_targets_per_run" min="0" value="<?= (int) ($settings['auto_wake_max_targets_per_run'] ?? 20) ?>">
+                    </label>
+                    <label>
+                        WOL broadcast address
+                        <input name="wake_broadcast_address" value="<?= reflection_h($settings['wake_broadcast_address'] ?? '255.255.255.255') ?>">
+                    </label>
+                    <label>
+                        WOL UDP port
+                        <input type="number" name="wake_udp_port" min="1" max="65535" value="<?= (int) ($settings['wake_udp_port'] ?? 9) ?>">
+                    </label>
+                    <label>
                         Completed jobs to keep in live store
                         <input type="number" name="job_history_keep_completed" min="0" value="<?= (int) ($settings['job_history_keep_completed'] ?? 500) ?>">
                     </label>
@@ -977,6 +1065,10 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                 <label class="check-row">
                     <input type="checkbox" name="ess_shutdown_below_minimum" value="1" <?= !empty($settings['ess_shutdown_below_minimum']) ? 'checked' : '' ?>>
                     Tell workers to shut down after current task when SOC is below minimum
+                </label>
+                <label class="check-row">
+                    <input type="checkbox" name="auto_wake_for_queued_jobs" value="1" <?= !empty($settings['auto_wake_for_queued_jobs']) ? 'checked' : '' ?>>
+                    Automatically wake enough eligible machines for queued work
                 </label>
                 <label>
                     Farm computers available for Wake-on-LAN

@@ -86,6 +86,35 @@ function reflection_auto_summary(array $summary): string
     );
 }
 
+
+function reflection_auto_append(?string $message, string $addition): string
+{
+    $addition = trim($addition);
+    if ($addition === '') {
+        return (string) ($message ?? '');
+    }
+    $current = trim((string) ($message ?? ''));
+    return $current === '' ? $addition : $current . ' ' . $addition;
+}
+
+function reflection_automation_wake_notice(FarmStore $store, int $staleAfterSeconds, string $reason): ?string
+{
+    $store->refreshEssSocFromConfiguredEndpoint();
+    $plan = $store->autoWakeForQueuedJobs($staleAfterSeconds, $reason);
+    if (empty($plan['enabled'])) {
+        return null;
+    }
+    $sent = (int) ($plan['wake_result']['sent'] ?? 0);
+    if ($sent > 0) {
+        return 'Demand wake sent to ' . $sent . ' computer' . ($sent === 1 ? '' : 's') . '.';
+    }
+    $needed = (int) ($plan['needed'] ?? 0);
+    if ($needed > 0 && (int) ($plan['ready_targets'] ?? 0) === 0) {
+        return 'Demand wake wanted ' . $needed . ' more worker' . ($needed === 1 ? '' : 's') . ', but no eligible target is ready right now.';
+    }
+    return null;
+}
+
 $selectedId = (string) ($_GET['edit'] ?? '');
 $editingRule = null;
 
@@ -124,6 +153,12 @@ try {
             $selectedId = $id;
             $editingRule = $automationStore->rule($id);
             $message = 'Automation scan finished. ' . reflection_auto_summary($runResult);
+            if ((int) ($runResult['queued'] ?? 0) > 0) {
+                $notice = reflection_automation_wake_notice($farmStore, (int) ($config['stale_after_seconds'] ?? 900), 'automation_rule');
+                if ($notice !== null) {
+                    $message = reflection_auto_append($message, $notice);
+                }
+            }
         } elseif ($action === 'run_due') {
             $results = $automationStore->runDueRules($farmStore, false);
             $queued = 0;
@@ -131,6 +166,12 @@ try {
                 $queued += (int) ($result['queued'] ?? 0);
             }
             $message = count($results) . ' due automation rule(s) scanned; ' . $queued . ' job(s) queued.';
+            if ($queued > 0) {
+                $notice = reflection_automation_wake_notice($farmStore, (int) ($config['stale_after_seconds'] ?? 900), 'automation_due');
+                if ($notice !== null) {
+                    $message = reflection_auto_append($message, $notice);
+                }
+            }
         } elseif ($action === 'delete_rule') {
             $id = (string) ($_POST['rule_id'] ?? '');
             if ($automationStore->deleteRule($id)) {
