@@ -8,6 +8,7 @@ final class FarmStore
     private string $lockPath;
     private string $eventLogPath;
     private string $fileHistoryPath;
+    private string $jobArchivePath;
     private array $configuredDefaultSettings;
 
     public function __construct(string $path, array $defaultSettings = [])
@@ -18,6 +19,7 @@ final class FarmStore
         $directory = dirname($this->path);
         $this->eventLogPath = $directory . DIRECTORY_SEPARATOR . 'farm_events.log';
         $this->fileHistoryPath = $directory . DIRECTORY_SEPARATOR . 'farm_file_history.json';
+        $this->jobArchivePath = $directory . DIRECTORY_SEPARATOR . 'farm_job_archive.jsonl';
         if (!is_dir($directory) && !@mkdir($directory, 0775, true) && !is_dir($directory)) {
             $parentDirectory = dirname($directory);
             throw new RuntimeException(sprintf(
@@ -40,6 +42,176 @@ final class FarmStore
         return $this->withLock(function (array $data): array {
             return $data;
         });
+    }
+
+    public function jobPage(int $page = 1, int $perPage = 50, string $statusFilter = 'all'): array
+    {
+        $data = $this->read();
+        $jobs = $data['jobs'] ?? [];
+        $statusCounts = [];
+        foreach ($jobs as $job) {
+            $status = (string) ($job['status'] ?? 'unknown');
+            $statusCounts[$status] = ($statusCounts[$status] ?? 0) + 1;
+        }
+
+        $filteredJobs = array_values(array_filter($jobs, static function (array $job) use ($statusFilter): bool {
+            $status = (string) ($job['status'] ?? 'unknown');
+            if ($statusFilter === 'all') {
+                return true;
+            }
+
+            if ($statusFilter === 'active') {
+                return in_array($status, ['queued', 'running'], true);
+            }
+
+            if ($statusFilter === 'finished') {
+                return !in_array($status, ['queued', 'running'], true);
+            }
+
+            return $status === $statusFilter;
+        }));
+
+        $filteredJobs = array_reverse($filteredJobs);
+        $perPage = max(10, min(200, $perPage));
+        $total = count($filteredJobs);
+        $pages = max(1, (int) ceil($total / $perPage));
+        $page = max(1, min($page, $pages));
+        $offset = ($page - 1) * $perPage;
+
+        return [
+            'jobs' => array_slice($filteredJobs, $offset, $perPage),
+            'page' => $page,
+            'per_page' => $perPage,
+            'total' => $total,
+            'pages' => $pages,
+            'status_filter' => $statusFilter,
+            'status_counts' => $statusCounts,
+        ];
+    }
+
+    public function archiveOldCompletedJobs(int $keepCompleted): int
+    {
+        $keepCompleted = max(0, $keepCompleted);
+        $archivedJobs = $this->withLock(function (array $data) use ($keepCompleted): array {
+            $completedIndexes = [];
+            foreach ($data['jobs'] as $index => $job) {
+                $status = (string) ($job['status'] ?? 'unknown');
+                if (!in_array($status, ['queued', 'running'], true)) {
+                    $completedIndexes[] = $index;
+                }
+            }
+
+            $archiveCount = max(0, count($completedIndexes) - $keepCompleted);
+            if ($archiveCount === 0) {
+                return ['data' => $data, 'result' => []];
+            }
+
+            $indexesToArchive = array_flip(array_slice($completedIndexes, 0, $archiveCount));
+            $remainingJobs = [];
+            $jobsToArchive = [];
+            foreach ($data['jobs'] as $index => $job) {
+                if (isset($indexesToArchive[$index])) {
+                    $job['archived_at'] = gmdate(DATE_ATOM);
+                    $jobsToArchive[] = $job;
+                    continue;
+                }
+
+                $remainingJobs[] = $job;
+            }
+
+            if ($jobsToArchive !== []) {
+                $this->appendArchivedJobs($jobsToArchive);
+            }
+
+            $data['jobs'] = $remainingJobs;
+            return ['data' => $data, 'result' => $jobsToArchive];
+        }, true);
+
+        return is_array($archivedJobs) ? count($archivedJobs) : 0;
+    }
+
+    public function trimEventLog(int $keepLines): int
+    {
+        $keepLines = max(0, $keepLines);
+        if (!is_file($this->eventLogPath)) {
+            return 0;
+        }
+
+        if ($keepLines === 0) {
+            $removed = $this->countFileLines($this->eventLogPath);
+            @file_put_contents($this->eventLogPath, '', LOCK_EX);
+            return $removed;
+        }
+
+        $lineCount = $this->countFileLines($this->eventLogPath);
+        if ($lineCount <= $keepLines) {
+            return 0;
+        }
+
+        $tail = $this->tailLines($this->eventLogPath, $keepLines);
+        @file_put_contents($this->eventLogPath, implode(PHP_EOL, $tail) . PHP_EOL, LOCK_EX);
+        return $lineCount - count($tail);
+    }
+
+    public function compactFileHistory(int $maxPaths, int $entriesPerPath): int
+    {
+        $maxPaths = max(0, $maxPaths);
+        $entriesPerPath = max(0, $entriesPerPath);
+        if (!is_file($this->fileHistoryPath)) {
+            return 0;
+        }
+
+        $history = $this->readFileHistory();
+        if ($history === []) {
+            return 0;
+        }
+
+        $removed = 0;
+        $compacted = [];
+        foreach ($history as $path => $touches) {
+            if (!is_array($touches) || $entriesPerPath === 0) {
+                $removed += is_array($touches) ? count($touches) : 1;
+                continue;
+            }
+
+            $removed += max(0, count($touches) - $entriesPerPath);
+            $keptTouches = array_slice($touches, -$entriesPerPath);
+            $latestTimestamp = (string) ($keptTouches[count($keptTouches) - 1]['timestamp'] ?? '');
+            $compacted[$path] = [
+                'latest' => $latestTimestamp,
+                'touches' => $keptTouches,
+            ];
+        }
+
+        uasort($compacted, static function (array $a, array $b): int {
+            return strcmp((string) ($b['latest'] ?? ''), (string) ($a['latest'] ?? ''));
+        });
+
+        if ($maxPaths === 0) {
+            $removed += count($compacted);
+            $compacted = [];
+        } elseif (count($compacted) > $maxPaths) {
+            $removed += count($compacted) - $maxPaths;
+            $compacted = array_slice($compacted, 0, $maxPaths, true);
+        }
+
+        $newHistory = [];
+        foreach ($compacted as $path => $entry) {
+            $newHistory[$path] = $entry['touches'];
+        }
+
+        $this->atomicWriteJson($this->fileHistoryPath, $newHistory);
+        return $removed;
+    }
+
+    public function archiveInfo(): array
+    {
+        return [
+            'path' => $this->jobArchivePath,
+            'exists' => is_file($this->jobArchivePath),
+            'size_bytes' => is_file($this->jobArchivePath) ? (int) filesize($this->jobArchivePath) : 0,
+            'jobs' => is_file($this->jobArchivePath) ? $this->countFileLines($this->jobArchivePath) : 0,
+        ];
     }
 
     public function createJob(string $module, ?string $source, ?string $delivery, bool $overwriteAllowed): array
@@ -266,6 +438,10 @@ final class FarmStore
             $data['settings']['ess_soc_percent'] = max(0, min(100, (int) ($data['settings']['ess_soc_percent'] ?? 100)));
             $data['settings']['ess_min_soc_percent'] = max(0, min(100, (int) ($data['settings']['ess_min_soc_percent'] ?? 20)));
             $data['settings']['idle_shutdown_after_no_job_checks'] = max(0, (int) ($data['settings']['idle_shutdown_after_no_job_checks'] ?? 0));
+            $data['settings']['job_history_keep_completed'] = max(0, (int) ($data['settings']['job_history_keep_completed'] ?? 500));
+            $data['settings']['event_log_keep_lines'] = max(0, (int) ($data['settings']['event_log_keep_lines'] ?? 1000));
+            $data['settings']['file_history_keep_paths'] = max(0, (int) ($data['settings']['file_history_keep_paths'] ?? 500));
+            $data['settings']['file_history_keep_entries_per_path'] = max(0, (int) ($data['settings']['file_history_keep_entries_per_path'] ?? 10));
             return ['data' => $data, 'result' => $data['settings']];
         }, true);
     }
@@ -422,8 +598,7 @@ final class FarmStore
             return [];
         }
 
-        $lines = file($this->eventLogPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
-        $lines = array_slice($lines, -$limit);
+        $lines = $this->tailLines($this->eventLogPath, max(0, $limit));
         $events = [];
 
         foreach ($lines as $line) {
@@ -447,7 +622,11 @@ final class FarmStore
             return [];
         }
 
-        ksort($history);
+        uasort($history, static function (array $a, array $b): int {
+            $latestA = (string) ($a[count($a) - 1]['timestamp'] ?? '');
+            $latestB = (string) ($b[count($b) - 1]['timestamp'] ?? '');
+            return strcmp($latestB, $latestA);
+        });
         return $history;
     }
 
@@ -486,8 +665,107 @@ final class FarmStore
             'error' => $job['error'] ?? '',
         ];
 
+        $settings = $this->effectiveSettings();
+        $entriesPerPath = max(1, (int) ($settings['file_history_keep_entries_per_path'] ?? 10));
+        $maxPaths = max(1, (int) ($settings['file_history_keep_paths'] ?? 500));
+
         $history[$path][] = $entry;
+        $history[$path] = array_slice($history[$path], -$entriesPerPath);
+
+        uasort($history, static function (array $a, array $b): int {
+            $latestA = (string) ($a[count($a) - 1]['timestamp'] ?? '');
+            $latestB = (string) ($b[count($b) - 1]['timestamp'] ?? '');
+            return strcmp($latestB, $latestA);
+        });
+
+        if (count($history) > $maxPaths) {
+            $history = array_slice($history, 0, $maxPaths, true);
+        }
+
         $this->atomicWriteJson($this->fileHistoryPath, $history);
+    }
+
+    private function appendArchivedJobs(array $jobs): void
+    {
+        if ($jobs === []) {
+            return;
+        }
+
+        $lines = [];
+        foreach ($jobs as $job) {
+            $encoded = json_encode($job, JSON_UNESCAPED_SLASHES);
+            if ($encoded !== false) {
+                $lines[] = $encoded;
+            }
+        }
+
+        if ($lines !== []) {
+            $written = @file_put_contents($this->jobArchivePath, implode(PHP_EOL, $lines) . PHP_EOL, FILE_APPEND | LOCK_EX);
+            if ($written === false) {
+                throw new RuntimeException(sprintf('Unable to append archived jobs to: %s', $this->jobArchivePath));
+            }
+        }
+    }
+
+    private function tailLines(string $path, int $limit): array
+    {
+        if ($limit <= 0 || !is_file($path)) {
+            return [];
+        }
+
+        $size = filesize($path);
+        if ($size === false || $size <= 0) {
+            return [];
+        }
+
+        $handle = @fopen($path, 'rb');
+        if ($handle === false) {
+            return [];
+        }
+
+        $buffer = '';
+        $position = $size;
+        $chunkSize = 8192;
+        try {
+            while ($position > 0 && substr_count($buffer, "\n") <= $limit) {
+                $readSize = min($chunkSize, $position);
+                $position -= $readSize;
+                if (fseek($handle, $position) !== 0) {
+                    break;
+                }
+
+                $chunk = fread($handle, $readSize);
+                if ($chunk === false) {
+                    break;
+                }
+
+                $buffer = $chunk . $buffer;
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        $lines = preg_split('/\r\n|\r|\n/', $buffer) ?: [];
+        $lines = array_values(array_filter($lines, static fn (string $line): bool => trim($line) !== ''));
+        return array_slice($lines, -$limit);
+    }
+
+    private function countFileLines(string $path): int
+    {
+        if (!is_file($path)) {
+            return 0;
+        }
+
+        $count = 0;
+        $file = new SplFileObject($path, 'r');
+        while (!$file->eof()) {
+            $line = trim((string) $file->fgets());
+            if ($line !== '') {
+                $count++;
+            }
+        }
+
+        return $count;
     }
 
     private function withLock(callable $callback, bool $write = false)
@@ -629,6 +907,10 @@ final class FarmStore
             'ess_min_soc_percent' => 20,
             'ess_shutdown_below_minimum' => true,
             'idle_shutdown_after_no_job_checks' => 0,
+            'job_history_keep_completed' => 500,
+            'event_log_keep_lines' => 1000,
+            'file_history_keep_paths' => 500,
+            'file_history_keep_entries_per_path' => 10,
         ], $this->configuredDefaultSettings);
     }
 

@@ -121,6 +121,10 @@ function reflection_default_farm_settings(): array
             'ess_min_soc_percent' => 20,
             'ess_shutdown_below_minimum' => true,
             'idle_shutdown_after_no_job_checks' => 0,
+            'job_history_keep_completed' => 500,
+            'event_log_keep_lines' => 1000,
+            'file_history_keep_paths' => 500,
+            'file_history_keep_entries_per_path' => 10,
         ],
         'allowed_tasks' => [
             'dummy_task' => 'Placeholder pipeline test task.',
