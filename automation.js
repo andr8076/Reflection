@@ -2,16 +2,16 @@
     'use strict';
 
     var PLACEHOLDERS = {
-        path: 'Full path to the file',
-        root: 'Matched scan root',
-        relative: 'Path relative to the root',
-        dir: 'Directory containing the file',
-        basename: 'Filename with extension',
-        name: 'Filename without extension',
-        ext: 'Extension without dot',
-        dot_ext: 'Extension with dot',
-        size: 'File size in bytes',
-        mtime: 'Modified time as Unix timestamp'
+        path: { label: 'Full file path', description: 'The absolute path of the matched file.' },
+        root: { label: 'Scan root', description: 'The scan root that matched the file.' },
+        relative: { label: 'Relative path', description: 'The file path below the matched scan root.' },
+        dir: { label: 'Parent folder', description: 'The folder containing the matched file.' },
+        basename: { label: 'Filename', description: 'The filename including the extension.' },
+        name: { label: 'Name only', description: 'The filename without the final extension.' },
+        ext: { label: 'Extension', description: 'The final extension without the dot.' },
+        dot_ext: { label: 'Dot extension', description: 'The final extension including the dot.' },
+        size: { label: 'File size', description: 'The file size in bytes. The browser preview uses an example size.' },
+        mtime: { label: 'Modified time', description: 'The modified time as a Unix timestamp. The browser preview uses an example timestamp.' }
     };
 
     function byId(id) {
@@ -85,6 +85,32 @@
 
     function shellQuote(value) {
         return "'" + String(value || '').replace(/'/g, "'\\''") + "'";
+    }
+
+    function formatBytes(bytes) {
+        bytes = Number(bytes || 0);
+        if (!isFinite(bytes) || bytes <= 0) {
+            return '0 B';
+        }
+        var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        var index = 0;
+        while (bytes >= 1024 && index < units.length - 1) {
+            bytes /= 1024;
+            index += 1;
+        }
+        return (index === 0 ? String(bytes) : bytes.toFixed(bytes >= 10 ? 1 : 2)) + ' ' + units[index];
+    }
+
+    function formatUnixTime(timestamp) {
+        timestamp = Number(timestamp || 0);
+        if (!isFinite(timestamp) || timestamp <= 0) {
+            return 'invalid timestamp';
+        }
+        var date = new Date(timestamp * 1000);
+        if (isNaN(date.getTime())) {
+            return 'invalid timestamp';
+        }
+        return date.toLocaleString();
     }
 
     function appendSuffixToPath(path, suffix) {
@@ -254,7 +280,8 @@
             return;
         }
         row.innerHTML = Object.keys(PLACEHOLDERS).map(function (name) {
-            return '<button type="button" class="placeholder-chip" data-placeholder="{' + escapeHtml(name) + '}" title="' + escapeHtml(PLACEHOLDERS[name]) + '">{' + escapeHtml(name) + '}</button>';
+            var info = PLACEHOLDERS[name];
+            return '<button type="button" class="placeholder-chip" data-placeholder="{' + escapeHtml(name) + '}" title="' + escapeHtml(info.description) + '">{' + escapeHtml(name) + '}</button>';
         }).join('');
         row.querySelectorAll('.placeholder-chip').forEach(function (chip) {
             chip.addEventListener('click', function () {
@@ -332,8 +359,22 @@
 
         var grid = byId('placeholder-preview-grid');
         if (grid) {
-            grid.innerHTML = Object.keys(candidate).map(function (key) {
-                return '<div><span>' + escapeHtml(key) + '</span><code>' + escapeHtml(candidate[key]) + '</code></div>';
+            grid.innerHTML = Object.keys(PLACEHOLDERS).map(function (name) {
+                var key = '{' + name + '}';
+                var value = candidate[key];
+                var extra = '';
+                if (name === 'size') {
+                    extra = '<em>' + escapeHtml(formatBytes(value)) + '</em>';
+                } else if (name === 'mtime') {
+                    extra = '<em>' + escapeHtml(formatUnixTime(value)) + '</em>';
+                }
+                return '<div class="placeholder-value-card">'
+                    + '<div class="placeholder-value-head"><code>' + escapeHtml(key) + '</code><strong>' + escapeHtml(PLACEHOLDERS[name].label) + '</strong></div>'
+                    + '<p>' + escapeHtml(PLACEHOLDERS[name].description) + '</p>'
+                    + '<span>Example value</span>'
+                    + '<code>' + escapeHtml(value) + '</code>'
+                    + extra
+                    + '</div>';
             }).join('');
         }
 

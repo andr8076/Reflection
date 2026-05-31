@@ -445,8 +445,9 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                                 <code id="preview-delivery">—</code>
                             </div>
                         </div>
-                        <details class="placeholder-preview-details">
-                            <summary>Show placeholder values for the example file</summary>
+                        <details class="placeholder-preview-details" open>
+                            <summary>Placeholder values for the example file</summary>
+                            <p class="placeholder-preview-note">These are the actual example values used in the live preview above. Change the example path to update every placeholder.</p>
                             <div class="placeholder-preview-grid" id="placeholder-preview-grid"></div>
                         </details>
                     </div>

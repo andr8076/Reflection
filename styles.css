@@ -1467,3 +1467,48 @@ pre {
         grid-template-columns: 1fr;
     }
 }
+
+.placeholder-preview-note {
+    color: #c7d2e2;
+    font-size: 0.83rem;
+    font-weight: 650;
+    margin: 0.45rem 0 0.85rem;
+}
+
+.placeholder-value-card {
+    align-content: start;
+}
+
+.placeholder-value-head {
+    align-items: baseline;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+}
+
+.placeholder-value-head code {
+    background: rgba(15, 23, 42, 0.16);
+    border-radius: 8px;
+    padding: 0.12rem 0.3rem;
+}
+
+.placeholder-value-head strong {
+    color: #f8fafc;
+    font-size: 0.82rem;
+}
+
+.placeholder-value-card p {
+    color: #c7d2e2;
+    font-size: 0.78rem;
+    font-weight: 650;
+    line-height: 1.35;
+    margin: 0;
+}
+
+.placeholder-value-card em {
+    color: #dbeafe;
+    font-size: 0.76rem;
+    font-style: normal;
+    font-weight: 800;
+    overflow-wrap: anywhere;
+}
