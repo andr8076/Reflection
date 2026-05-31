@@ -100,7 +100,7 @@ function reflection_default_farm_settings(): array
 {
     return [
         'farm_id' => 'default',
-        'farm_name' => 'Default Reflection Farm',
+        'farm_name' => 'Reflection Farm',
         'api_token' => '',
         'transfer_auth' => [
             'scheme' => 'ftp',
@@ -226,7 +226,7 @@ function reflection_master_config(?array $farmSettings = null): array
 
     return [
         'farm_id' => (string) ($settings['farm_id'] ?? 'default'),
-        'farm_name' => (string) ($settings['farm_name'] ?? 'Default Reflection Farm'),
+        'farm_name' => (string) ($settings['farm_name'] ?? 'Reflection Farm'),
         'api_token' => reflection_api_token_config($settings),
         'transfer_auth' => reflection_transfer_auth_config($settings),
         'storage_path' => $storeConfig['storage_path'],

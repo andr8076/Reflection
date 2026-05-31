@@ -359,7 +359,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     } elseif ($formAction === 'wake_farm') {
         $targets = $store->wakeTargetsForCurrentSoc();
         if ($targets === []) {
-            $error = 'No wake-enabled computers fit the current SOC budget.';
+            $error = 'No Wake-on-LAN targets are currently eligible. Check configured machines, MAC addresses, and SOC margins.';
         } else {
             $job = $store->createJob('wake_farm', json_encode($targets, JSON_UNESCAPED_SLASHES), null, true);
             $message = 'Queued ' . $job['task_id'] . ' to wake ' . count($targets) . ' computer(s).';
@@ -439,7 +439,21 @@ $events = $store->readRecentEvents(20);
 $fileHistory = array_slice($store->readFileHistory(), 0, 25, true);
 $machines = $store->machines();
 $allowedActiveWorkers = $store->allowedActiveWorkers();
-$wakeTargetCount = count($store->wakeTargetsForCurrentSoc());
+$wakeTargets = $store->wakeTargetsForCurrentSoc();
+$wakeTargetCount = count($wakeTargets);
+$wakeEnabledMachineCount = 0;
+foreach ($machines as $machine) {
+    if (!empty($machine['wake_enabled']) && trim((string) ($machine['mac'] ?? '')) !== '') {
+        $wakeEnabledMachineCount++;
+    }
+}
+$wakeButtonDisabled = $wakeTargetCount === 0;
+$workerLimitDisplay = $essSocIgnored
+    ? 'paused'
+    : ($allowedActiveWorkers === PHP_INT_MAX ? 'off' : (string) (int) $allowedActiveWorkers);
+$workerLimitHelp = $essSocIgnored
+    ? 'ESS unavailable'
+    : ($allowedActiveWorkers === PHP_INT_MAX ? 'no SOC cap' : 'allowed active workers');
 $workerCards = reflection_worker_cards($workers, $machines);
 $workerStateCounts = reflection_count_worker_states($workerCards);
 $archiveInfo = $store->archiveInfo();
@@ -481,6 +495,10 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                 <span>API <code><?= reflection_h($apiPath) ?></code></span>
                 <span><?= $config['api_token'] !== '' ? 'API token enabled' : 'API token not set' ?></span>
             </div>
+            <nav class="top-nav">
+                <a class="active" href="index.php">Dashboard</a>
+                <a href="automation.php">Automation</a>
+            </nav>
         </div>
         <div class="version-card">
             <span>Required worker version</span>
@@ -524,10 +542,10 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                 <small><?= reflection_h(reflection_ess_status_label($settings)) ?> · minimum <?= (int) ($settings['ess_min_soc_percent'] ?? 20) ?>%</small>
             <?php endif; ?>
         </article>
-        <article class="metric">
-            <span>Worker budget</span>
-            <strong><?= $allowedActiveWorkers === PHP_INT_MAX ? '∞' : (int) $allowedActiveWorkers ?></strong>
-            <small><?= $essSocIgnored ? 'SOC limit paused' : (int) $wakeTargetCount . ' wake target(s)' ?></small>
+        <article class="metric <?= $essSocIgnored ? 'warning-metric' : '' ?>">
+            <span>SOC worker limit</span>
+            <strong><?= reflection_h($workerLimitDisplay) ?></strong>
+            <small><?= reflection_h($workerLimitHelp) ?> · <?= (int) $wakeTargetCount ?>/<?= (int) $wakeEnabledMachineCount ?> wake target(s)</small>
         </article>
         <article class="metric">
             <span>Completed kept</span>
@@ -627,22 +645,43 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                 </div>
             </section>
 
-            <section class="panel compact-panel">
-                <div class="panel-head">
+            <section class="panel compact-panel power-panel">
+                <div class="panel-head power-head">
                     <div>
                         <p class="eyebrow">Power</p>
-                        <h2>Farm control</h2>
+                        <h2>Wake control</h2>
                     </div>
                     <form method="post" class="bare-form">
                         <input type="hidden" name="form_action" value="wake_farm">
-                        <button type="submit" class="secondary-button">Wake farm</button>
+                        <button type="submit" class="secondary-button" <?= $wakeButtonDisabled ? 'disabled' : '' ?>>Wake <?= (int) $wakeTargetCount ?> target<?= $wakeTargetCount === 1 ? '' : 's' ?></button>
                     </form>
                 </div>
-                <?php if ($essSocIgnored): ?>
-                    <p class="api-note">ESS SOC is currently unavailable or unreadable, so SOC-based worker limiting is paused. All wake-enabled machines are considered eligible until a valid value is received again.</p>
+
+                <div class="power-summary">
+                    <div class="power-summary-item">
+                        <span>Wake targets</span>
+                        <strong><?= (int) $wakeTargetCount ?> / <?= (int) $wakeEnabledMachineCount ?></strong>
+                        <small>eligible / configured</small>
+                    </div>
+                    <div class="power-summary-item">
+                        <span>SOC worker limit</span>
+                        <strong><?= reflection_h($workerLimitDisplay) ?></strong>
+                        <small><?= reflection_h($workerLimitHelp) ?></small>
+                    </div>
+                </div>
+
+                <?php if ($wakeEnabledMachineCount === 0): ?>
+                    <p class="api-note panel-warning-note">No Wake-on-LAN targets are configured. Add machines in the settings panel to use farm wake control.</p>
+                <?php elseif ($essSocIgnored): ?>
+                    <p class="api-note panel-warning-note">ESS SOC is <?= reflection_h(reflection_ess_status_label($settings)) ?>. SOC limiting is paused, so every configured wake target is eligible until valid SOC data returns.</p>
+                <?php elseif ($wakeTargetCount === 0): ?>
+                    <p class="api-note panel-warning-note">No configured machine fits the current SOC margin. Wake control is disabled until SOC rises or the margins are changed.</p>
+                <?php elseif ($allowedActiveWorkers === PHP_INT_MAX): ?>
+                    <p class="api-note">SOC is not currently capping workers. All configured wake targets are eligible.</p>
                 <?php else: ?>
-                    <p class="api-note">Current SOC allows <?= $allowedActiveWorkers === PHP_INT_MAX ? 'unlimited' : (int) $allowedActiveWorkers ?> active worker(s). <?= (int) $wakeTargetCount ?> machine(s) are inside the wake budget.</p>
+                    <p class="api-note">Current SOC allows <?= (int) $allowedActiveWorkers ?> active worker<?= $allowedActiveWorkers === 1 ? '' : 's' ?>. <?= (int) $wakeTargetCount ?> of <?= (int) $wakeEnabledMachineCount ?> configured wake target<?= $wakeEnabledMachineCount === 1 ? '' : 's' ?> are eligible.</p>
                 <?php endif; ?>
+
                 <form method="post" class="bare-form maintenance-form">
                     <input type="hidden" name="form_action" value="maintenance">
                     <button type="submit" class="ghost-button">Run maintenance now</button>

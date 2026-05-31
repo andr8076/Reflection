@@ -6,7 +6,7 @@ return [
     // Give each deployed farm a stable id/name. These values also help derive
     // fallback temporary paths when the configured store is not writable.
     'farm_id' => 'default',
-    'farm_name' => 'Default Reflection Farm',
+    'farm_name' => 'Reflection Farm',
 
     // Optional shared secret for worker API requests. REFLECTION_API_TOKEN overrides this value.
     // Leave blank only on a trusted private network while testing.
