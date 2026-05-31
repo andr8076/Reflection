@@ -236,12 +236,12 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
     <title>Automation · Reflection Farm Master</title>
     <link rel="stylesheet" href="styles.css">
 </head>
-<body>
+<body class="automation-page">
     <header class="hero compact-hero">
         <div class="hero-main">
             <p class="eyebrow">Reflection farm master</p>
             <h1>Automation</h1>
-            <p class="lede">Create universal scan rules that turn matching files into queued worker jobs. Rules can target any task and any filesystem location the master can read.</p>
+            <p class="lede">Build scan rules with live previews, validation, and safe job creation for any worker task.</p>
             <div class="hero-pills">
                 <span>Rules <code><?= count($rules) ?></code></span>
                 <span>Tick endpoint <code><?= reflection_h($tickPath) ?></code></span>
@@ -322,14 +322,14 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                 <?php endif; ?>
             </div>
 
-            <form method="post" class="automation-form">
+            <form method="post" class="automation-form rf-form" id="automation-rule-form" novalidate>
                 <input type="hidden" name="rule_id" value="<?= reflection_h($editingRule['id'] ?? '') ?>">
                 <input type="hidden" name="last_scan_at" value="<?= reflection_h($editingRule['last_scan_at'] ?? '') ?>">
                 <input type="hidden" name="created_at" value="<?= reflection_h($editingRule['created_at'] ?? '') ?>">
                 <input type="hidden" name="updated_at" value="<?= reflection_h($editingRule['updated_at'] ?? '') ?>">
 
                 <section class="form-block">
-                    <h3>Identity and task</h3>
+                    <div class="form-section-header"><span class="section-number">1</span><div><h3>Identity and task</h3><p>Name the rule, choose the worker task, and decide whether scheduled scans may run it.</p></div></div>
                     <div class="settings-grid">
                         <label>
                             Rule name
@@ -352,7 +352,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                 </section>
 
                 <section class="form-block">
-                    <h3>Locations</h3>
+                    <div class="form-section-header"><span class="section-number">2</span><div><h3>Locations</h3><p>Choose where the master scans and which common file types should be considered.</p></div></div>
                     <label>
                         Scan roots
                         <textarea id="scan-roots-input" name="scan_roots" rows="4" placeholder="/volume1/video/Movies"><?= reflection_h(implode(PHP_EOL, $editingRule['scan_roots'] ?? [])) ?></textarea>
@@ -377,13 +377,14 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                 </section>
 
                 <section class="form-block">
-                    <h3>Job templates</h3>
+                    <div class="form-section-header"><span class="section-number">3</span><div><h3>Job templates</h3><p>Define exactly what source and delivery paths are sent when jobs are created.</p></div></div>
                     <div class="settings-grid">
                         <label>
                             Source template
-                            <input id="source-template-input" name="source_template" value="<?= reflection_h($editingRule['source_template'] ?? '{path}') ?>">
+                            <input id="source-template-input" class="template-input" data-template-label="Source template" name="source_template" value="<?= reflection_h($editingRule['source_template'] ?? '{path}') ?>">
                             <small>What the worker receives as the source. Usually <code>{path}</code>.</small>
                             <output class="inline-template-preview" id="source-template-preview">—</output>
+                            <div class="field-status" id="source-template-status"></div>
                         </label>
                         <label>
                             Delivery target
@@ -395,9 +396,10 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                         </label>
                         <label>
                             Delivery template
-                            <input id="delivery-template-input" name="delivery_template" value="<?= reflection_h($editingRule['delivery_template'] ?? '') ?>" placeholder="/output/{relative}">
+                            <input id="delivery-template-input" class="template-input" data-template-label="Delivery template" name="delivery_template" value="<?= reflection_h($editingRule['delivery_template'] ?? '') ?>" placeholder="/output/{relative}">
                             <small>Used only when the delivery target is custom.</small>
                             <output class="inline-template-preview" id="delivery-template-preview">—</output>
+                            <div class="field-status" id="delivery-template-status"></div>
                         </label>
                         <label>
                             Output suffix when not overwriting
@@ -406,7 +408,14 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                             <output class="inline-template-preview" id="suffix-template-preview">—</output>
                         </label>
                     </div>
-                    <p class="api-note">Available placeholders: <code>{path}</code>, <code>{root}</code>, <code>{relative}</code>, <code>{dir}</code>, <code>{basename}</code>, <code>{name}</code>, <code>{ext}</code>, <code>{dot_ext}</code>, <code>{size}</code>, <code>{mtime}</code>.</p>
+                    <div class="template-helper-card">
+                        <div>
+                            <strong>Template validation</strong>
+                            <p>Known placeholders are checked while you type. Unknown names, like <code>{relatiive}</code>, are shown before you save.</p>
+                        </div>
+                        <div class="placeholder-chip-row" id="placeholder-chip-row" aria-label="Available template placeholders"></div>
+                        <div class="template-validation-summary" id="template-validation-summary">All active templates look valid.</div>
+                    </div>
                     <div class="live-template-panel" aria-live="polite">
                         <div class="live-template-head">
                             <div>
@@ -456,7 +465,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                 </section>
 
                 <section class="form-block">
-                    <h3>Filter</h3>
+                    <div class="form-section-header"><span class="section-number">4</span><div><h3>Filter</h3><p>Use globs, regex, size limits, and age checks to keep rules precise.</p></div></div>
                     <div class="settings-grid">
                         <label>
                             Include globs
@@ -497,12 +506,12 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                 </section>
 
                 <section class="form-block">
-                    <h3>Optional command filter</h3>
+                    <div class="form-section-header"><span class="section-number">5</span><div><h3>Optional command filter</h3><p>Run a custom check per file, such as ffprobe, before the file is queued.</p></div></div>
                     <p class="api-note">Use this for custom checks while keeping the automation system universal. The command runs per candidate file; the selected mode decides whether its exit code or output includes/skips the file.</p>
                     <div class="settings-grid">
                         <label>
                             Command mode
-                            <select name="command_filter_mode">
+                            <select id="command-mode-input" name="command_filter_mode">
                                 <?php foreach ([
                                     'disabled' => 'Disabled',
                                     'exit_zero' => 'Include if command exits 0',
@@ -520,9 +529,10 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                     </div>
                     <label>
                         Command
-                        <input id="command-template-input" name="command_filter_command" value="<?= reflection_h($editingRule['command_filter_command'] ?? '') ?>" placeholder="ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 {path}">
+                        <input id="command-template-input" class="template-input" data-template-label="Command template" name="command_filter_command" value="<?= reflection_h($editingRule['command_filter_command'] ?? '') ?>" placeholder="ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 {path}">
                         <small>Placeholders are shell-escaped before being inserted.</small>
                         <output class="inline-template-preview" id="command-template-preview">—</output>
+                        <div class="field-status" id="command-template-status"></div>
                     </label>
                     <label>
                         Command output regex
@@ -538,7 +548,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                 </section>
 
                 <section class="form-block">
-                    <h3>Limits and schedule</h3>
+                    <div class="form-section-header"><span class="section-number">6</span><div><h3>Limits and schedule</h3><p>Control how much work a scan can create and how often scheduled scans are due.</p></div></div>
                     <div class="settings-grid">
                         <label>
                             Max files checked per scan
@@ -562,14 +572,14 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                 </section>
 
                 <section class="form-block">
-                    <h3>Test filter</h3>
+                    <div class="form-section-header"><span class="section-number">7</span><div><h3>Test filter</h3><p>Paste examples or scan the configured roots before creating real jobs.</p></div></div>
                     <label>
                         Optional sample paths
                         <textarea name="sample_paths" rows="5" placeholder="Leave blank to test by scanning the configured roots. Or paste a few paths here, one per line."><?= reflection_h((string) ($_POST['sample_paths'] ?? '')) ?></textarea>
                     </label>
                 </section>
 
-                <div class="button-row sticky-actions">
+                <div class="button-row sticky-actions" id="automation-action-bar">
                     <button type="submit" name="automation_action" value="save_rule">Save rule</button>
                     <button type="submit" name="automation_action" value="test_filter" class="ghost-button">Test filter</button>
                     <button type="submit" name="automation_action" value="dry_run_rule" class="ghost-button">Dry run</button>
@@ -663,199 +673,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
         <?php endif; ?>
     </section>
 
-    <script>
-        (function () {
-            function byId(id) {
-                return document.getElementById(id);
-            }
-
-            function valueOf(id) {
-                var element = byId(id);
-                return element ? String(element.value || '') : '';
-            }
-
-            function checked(id) {
-                var element = byId(id);
-                return !!(element && element.checked);
-            }
-
-            function firstScanRoot() {
-                return valueOf('scan-roots-input')
-                    .split(/\r?\n/)
-                    .map(function (line) { return line.trim(); })
-                    .filter(Boolean)[0] || '';
-            }
-
-            function normalizeSlashes(path) {
-                return String(path || '').replace(/\\+/g, '/');
-            }
-
-            function dirname(path) {
-                path = normalizeSlashes(path).replace(/\/+$/, '');
-                var index = path.lastIndexOf('/');
-                if (index <= 0) {
-                    return index === 0 ? '/' : '.';
-                }
-                return path.slice(0, index);
-            }
-
-            function basename(path) {
-                path = normalizeSlashes(path).replace(/\/+$/, '');
-                var index = path.lastIndexOf('/');
-                return index === -1 ? path : path.slice(index + 1);
-            }
-
-            function splitNameExtension(fileName) {
-                var index = fileName.lastIndexOf('.');
-                if (index <= 0 || index === fileName.length - 1) {
-                    return { name: fileName, ext: '' };
-                }
-                return { name: fileName.slice(0, index), ext: fileName.slice(index + 1) };
-            }
-
-            function relativePath(path, root) {
-                path = normalizeSlashes(path);
-                root = normalizeSlashes(root).replace(/\/+$/, '');
-                if (root !== '' && (path === root || path.indexOf(root + '/') === 0)) {
-                    return path === root ? '' : path.slice(root.length + 1);
-                }
-                return basename(path);
-            }
-
-            function escapeHtml(value) {
-                return String(value || '').replace(/[&<>"']/g, function (character) {
-                    return {
-                        '&': '&amp;',
-                        '<': '&lt;',
-                        '>': '&gt;',
-                        '"': '&quot;',
-                        "'": '&#039;'
-                    }[character];
-                });
-            }
-
-            function shellQuote(value) {
-                return "'" + String(value || '').replace(/'/g, "'\\''") + "'";
-            }
-
-            function appendSuffixToPath(path, suffix) {
-                path = normalizeSlashes(path);
-                suffix = String(suffix || '').trim() || '_processed';
-                var dir = dirname(path);
-                var base = basename(path);
-                var parts = splitNameExtension(base);
-                var newName = parts.name + suffix + (parts.ext ? '.' + parts.ext : '');
-                return (dir === '' || dir === '.') ? newName : dir.replace(/\/+$/, '') + '/' + newName;
-            }
-
-            function candidateFromExample() {
-                var path = normalizeSlashes(valueOf('template-sample-path').trim() || '/volume1/video/Movies/Example Movie (2024)/Example Movie.mkv');
-                var root = firstScanRoot() || dirname(path);
-                root = normalizeSlashes(root).replace(/\/+$/, '');
-                var rel = relativePath(path, root);
-                var dir = dirname(path);
-                var base = basename(path);
-                var parts = splitNameExtension(base);
-                return {
-                    '{path}': path,
-                    '{root}': root,
-                    '{relative}': rel,
-                    '{dir}': dir,
-                    '{basename}': base,
-                    '{name}': parts.name,
-                    '{ext}': parts.ext,
-                    '{dot_ext}': parts.ext ? '.' + parts.ext : '',
-                    '{mtime}': '1780241000',
-                    '{size}': '7340032000'
-                };
-            }
-
-            function applyTemplate(template, candidate, shellEscaped) {
-                template = String(template || '').trim();
-                if (template === '') {
-                    return '';
-                }
-                Object.keys(candidate).forEach(function (key) {
-                    var replacement = shellEscaped ? shellQuote(candidate[key]) : candidate[key];
-                    template = template.split(key).join(replacement);
-                });
-                return template;
-            }
-
-            function setCode(id, value) {
-                var element = byId(id);
-                if (element) {
-                    element.textContent = value || '—';
-                }
-            }
-
-            function updateTemplatePreview() {
-                var candidate = candidateFromExample();
-                var source = applyTemplate(valueOf('source-template-input') || '{path}', candidate, false) || candidate['{path}'];
-                var deliveryMode = valueOf('delivery-mode-input') || 'template';
-                var delivery = '';
-                if (deliveryMode === 'same_as_source') {
-                    delivery = checked('overwrite-allowed-input')
-                        ? source
-                        : appendSuffixToPath(source, valueOf('output-suffix-input'));
-                } else {
-                    delivery = applyTemplate(valueOf('delivery-template-input'), candidate, false);
-                }
-                var suffixExample = appendSuffixToPath(source, valueOf('output-suffix-input'));
-                var command = applyTemplate(valueOf('command-template-input'), candidate, true);
-
-                setCode('preview-root', candidate['{root}']);
-                setCode('preview-relative', candidate['{relative}']);
-                setCode('preview-source', source);
-                setCode('preview-delivery', delivery || 'No delivery target configured');
-                setCode('source-template-preview', 'Example: ' + source);
-                setCode('delivery-template-preview', deliveryMode === 'template'
-                    ? 'Example: ' + (delivery || 'No delivery target configured')
-                    : 'Ignored while delivery target is “same as source location”');
-                setCode('suffix-template-preview', 'Example if not overwriting: ' + suffixExample);
-                setCode('command-template-preview', command ? 'Example command: ' + command : 'No command template configured');
-
-                var grid = byId('placeholder-preview-grid');
-                if (grid) {
-                    grid.innerHTML = Object.keys(candidate).map(function (key) {
-                        return '<div><span>' + escapeHtml(key) + '</span><code>' + escapeHtml(candidate[key]) + '</code></div>';
-                    }).join('');
-                }
-            }
-
-            document.querySelectorAll('.preset-chip[data-extensions]').forEach(function (button) {
-                button.addEventListener('click', function () {
-                    var input = byId('extensions-input');
-                    if (!input) {
-                        return;
-                    }
-                    input.value = button.getAttribute('data-extensions') || '';
-                    input.focus();
-                    updateTemplatePreview();
-                });
-            });
-
-            [
-                'scan-roots-input',
-                'template-sample-path',
-                'source-template-input',
-                'delivery-mode-input',
-                'delivery-template-input',
-                'output-suffix-input',
-                'overwrite-allowed-input',
-                'command-template-input'
-            ].forEach(function (id) {
-                var element = byId(id);
-                if (!element) {
-                    return;
-                }
-                element.addEventListener('input', updateTemplatePreview);
-                element.addEventListener('change', updateTemplatePreview);
-            });
-
-            updateTemplatePreview();
-        }());
-    </script>
+    <script src="automation.js"></script>
 
     <footer>
         <p>Automation state lives in <code>data/automation_rules.json</code>, <code>data/automation_state.json</code>, and <code>data/automation_runs.jsonl</code>.</p>

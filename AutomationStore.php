@@ -204,6 +204,23 @@ final class AutomationStore
             $errors[] = 'Same-as-source delivery without overwrite requires an output suffix.';
         }
 
+        $errors = array_merge($errors, $this->templateValidationErrors(
+            (string) ($rule['source_template'] ?? '{path}'),
+            'Source template'
+        ));
+        if (($rule['delivery_mode'] ?? 'template') === 'template') {
+            $errors = array_merge($errors, $this->templateValidationErrors(
+                (string) ($rule['delivery_template'] ?? ''),
+                'Delivery template'
+            ));
+        }
+        if (($rule['command_filter_mode'] ?? 'disabled') !== 'disabled') {
+            $errors = array_merge($errors, $this->templateValidationErrors(
+                (string) ($rule['command_filter_command'] ?? ''),
+                'Command template'
+            ));
+        }
+
         return $errors;
     }
 
@@ -861,6 +878,34 @@ final class AutomationStore
         $name = $extension !== '' ? substr($basename, 0, -strlen($extension) - 1) : $basename;
         $newName = $name . $suffix . ($extension !== '' ? '.' . $extension : '');
         return ($directory === '' || $directory === '.') ? $newName : rtrim($directory, '/') . '/' . $newName;
+    }
+
+    private function validTemplatePlaceholders(): array
+    {
+        return ['path', 'root', 'relative', 'dir', 'basename', 'name', 'ext', 'dot_ext', 'mtime', 'size'];
+    }
+
+    private function templateValidationErrors(string $template, string $label): array
+    {
+        $template = trim($template);
+        if ($template === '') {
+            return [];
+        }
+
+        $errors = [];
+        if (substr_count($template, '{') !== substr_count($template, '}')) {
+            $errors[] = $label . ' has unmatched curly braces.';
+        }
+
+        preg_match_all('/\{([^{}]+)\}/', $template, $matches);
+        $valid = array_flip($this->validTemplatePlaceholders());
+        foreach (($matches[1] ?? []) as $placeholder) {
+            if (!isset($valid[$placeholder])) {
+                $errors[] = $label . ' contains unknown placeholder {' . $placeholder . '}.';
+            }
+        }
+
+        return array_values(array_unique($errors));
     }
 
     private function applyPathTemplate(string $template, array $candidate): string

@@ -89,6 +89,17 @@ $siblingRule = $automationStore->saveRule([
 $siblingTest = $automationStore->testRule($siblingRule, $scanDir . DIRECTORY_SEPARATOR . 'one.txt', 10);
 assertSameValue($scanDir . DIRECTORY_SEPARATOR . 'one_converted.txt', $siblingTest['rows'][0]['delivery'], 'Same-as-source without overwrite should add the configured suffix.');
 
+
+$invalidErrors = $automationStore->validateRule($automationStore->normalizeRule([
+    'name' => 'Invalid placeholder',
+    'enabled' => false,
+    'module' => 'dummy_task',
+    'scan_roots' => $scanDir,
+    'source_template' => '{relatiive}',
+]), ['dummy_task' => 'dummy']);
+assertSameValue(true, count($invalidErrors) > 0, 'Invalid template placeholders should be rejected.');
+assertSameValue(true, strpos(implode(' ', $invalidErrors), '{relatiive}') !== false, 'Invalid placeholder error should include the bad placeholder name.');
+
 $result = $automationStore->runRule($automationStore->rule($rule['id']), $farmStore, false);
 assertSameValue(0, $result['queued'], 'Unchanged files should not be queued twice.');
 
