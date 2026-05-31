@@ -984,3 +984,97 @@ pre {
     border-color: rgba(34, 100, 229, 0.35);
     color: var(--accent-dark);
 }
+
+.inline-template-preview {
+    background: rgba(34, 100, 229, 0.08);
+    border: 1px solid rgba(34, 100, 229, 0.18);
+    border-radius: 12px;
+    color: var(--accent-dark);
+    display: block;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 0.82rem;
+    font-weight: 800;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    padding: 0.55rem 0.65rem;
+}
+
+.live-template-panel {
+    background: linear-gradient(135deg, rgba(34, 100, 229, 0.08), rgba(15, 23, 42, 0.035));
+    border: 1px solid rgba(34, 100, 229, 0.18);
+    border-radius: 18px;
+    display: grid;
+    gap: 0.9rem;
+    padding: 0.9rem;
+}
+
+.live-template-head {
+    align-items: end;
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: minmax(0, 1fr) minmax(16rem, 0.85fr);
+}
+
+.live-template-head strong {
+    display: block;
+    font-size: 1rem;
+}
+
+.live-template-head small {
+    color: var(--muted);
+    display: block;
+    font-weight: 650;
+    margin-top: 0.15rem;
+}
+
+.preview-path-label {
+    font-size: 0.82rem;
+}
+
+.template-preview-grid,
+.placeholder-preview-grid {
+    display: grid;
+    gap: 0.65rem;
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+
+.template-preview-card,
+.placeholder-preview-grid > div {
+    background: rgba(255, 255, 255, 0.76);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    display: grid;
+    gap: 0.35rem;
+    min-width: 0;
+    padding: 0.75rem;
+}
+
+.template-preview-card span,
+.placeholder-preview-grid span {
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 950;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+}
+
+.template-preview-card code,
+.placeholder-preview-grid code {
+    background: transparent;
+    overflow-wrap: anywhere;
+    padding: 0;
+}
+
+.placeholder-preview-details {
+    background: rgba(255, 255, 255, 0.55);
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 14px;
+    padding: 0.75rem;
+}
+
+@media (max-width: 760px) {
+    .live-template-head {
+        align-items: stretch;
+        grid-template-columns: 1fr;
+    }
+}

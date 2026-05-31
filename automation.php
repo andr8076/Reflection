@@ -355,7 +355,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                     <h3>Locations</h3>
                     <label>
                         Scan roots
-                        <textarea name="scan_roots" rows="4" placeholder="/volume1/video/Movies"><?= reflection_h(implode(PHP_EOL, $editingRule['scan_roots'] ?? [])) ?></textarea>
+                        <textarea id="scan-roots-input" name="scan_roots" rows="4" placeholder="/volume1/video/Movies"><?= reflection_h(implode(PHP_EOL, $editingRule['scan_roots'] ?? [])) ?></textarea>
                         <small>One path per line. These are paths the master website can read.</small>
                     </label>
                     <div class="settings-grid">
@@ -381,12 +381,13 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                     <div class="settings-grid">
                         <label>
                             Source template
-                            <input name="source_template" value="<?= reflection_h($editingRule['source_template'] ?? '{path}') ?>">
+                            <input id="source-template-input" name="source_template" value="<?= reflection_h($editingRule['source_template'] ?? '{path}') ?>">
                             <small>What the worker receives as the source. Usually <code>{path}</code>.</small>
+                            <output class="inline-template-preview" id="source-template-preview">—</output>
                         </label>
                         <label>
                             Delivery target
-                            <select name="delivery_mode">
+                            <select id="delivery-mode-input" name="delivery_mode">
                                 <option value="template" <?= ($editingRule['delivery_mode'] ?? 'template') === 'template' ? 'selected' : '' ?>>Use custom delivery template</option>
                                 <option value="same_as_source" <?= ($editingRule['delivery_mode'] ?? 'template') === 'same_as_source' ? 'selected' : '' ?>>Same as source location</option>
                             </select>
@@ -394,19 +395,55 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                         </label>
                         <label>
                             Delivery template
-                            <input name="delivery_template" value="<?= reflection_h($editingRule['delivery_template'] ?? '') ?>" placeholder="/output/{relative}">
+                            <input id="delivery-template-input" name="delivery_template" value="<?= reflection_h($editingRule['delivery_template'] ?? '') ?>" placeholder="/output/{relative}">
                             <small>Used only when the delivery target is custom.</small>
+                            <output class="inline-template-preview" id="delivery-template-preview">—</output>
                         </label>
                         <label>
                             Output suffix when not overwriting
-                            <input name="output_suffix" value="<?= reflection_h($editingRule['output_suffix'] ?? '_processed') ?>" placeholder="_processed">
+                            <input id="output-suffix-input" name="output_suffix" value="<?= reflection_h($editingRule['output_suffix'] ?? '_processed') ?>" placeholder="_processed">
                             <small>Example: <code>Movie.mkv</code> becomes <code>Movie_processed.mkv</code>.</small>
+                            <output class="inline-template-preview" id="suffix-template-preview">—</output>
                         </label>
                     </div>
                     <p class="api-note">Available placeholders: <code>{path}</code>, <code>{root}</code>, <code>{relative}</code>, <code>{dir}</code>, <code>{basename}</code>, <code>{name}</code>, <code>{ext}</code>, <code>{dot_ext}</code>, <code>{size}</code>, <code>{mtime}</code>.</p>
+                    <div class="live-template-panel" aria-live="polite">
+                        <div class="live-template-head">
+                            <div>
+                                <strong>Live template preview</strong>
+                                <small>Change this example path to see how every template field will be expanded before a real job is queued.</small>
+                            </div>
+                            <label class="preview-path-label">
+                                Example file path
+                                <input id="template-sample-path" type="text" value="/volume1/video/Movies/Example Movie (2024)/Example Movie.mkv">
+                            </label>
+                        </div>
+                        <div class="template-preview-grid">
+                            <div class="template-preview-card">
+                                <span>Detected root</span>
+                                <code id="preview-root">—</code>
+                            </div>
+                            <div class="template-preview-card">
+                                <span>Relative path</span>
+                                <code id="preview-relative">—</code>
+                            </div>
+                            <div class="template-preview-card">
+                                <span>Source sent to worker</span>
+                                <code id="preview-source">—</code>
+                            </div>
+                            <div class="template-preview-card">
+                                <span>Delivery/result target</span>
+                                <code id="preview-delivery">—</code>
+                            </div>
+                        </div>
+                        <details class="placeholder-preview-details">
+                            <summary>Show placeholder values for the example file</summary>
+                            <div class="placeholder-preview-grid" id="placeholder-preview-grid"></div>
+                        </details>
+                    </div>
                     <div class="settings-grid">
                         <label class="check-row top-check warning-check">
-                            <input type="checkbox" name="overwrite_allowed" value="1" <?= !empty($editingRule['overwrite_allowed']) ? 'checked' : '' ?>>
+                            <input id="overwrite-allowed-input" type="checkbox" name="overwrite_allowed" value="1" <?= !empty($editingRule['overwrite_allowed']) ? 'checked' : '' ?>>
                             Allow worker overwrite/replacement
                             <small>For same-as-source delivery, this means the result replaces the original path after the task succeeds.</small>
                         </label>
@@ -483,8 +520,9 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                     </div>
                     <label>
                         Command
-                        <input name="command_filter_command" value="<?= reflection_h($editingRule['command_filter_command'] ?? '') ?>" placeholder="ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 {path}">
+                        <input id="command-template-input" name="command_filter_command" value="<?= reflection_h($editingRule['command_filter_command'] ?? '') ?>" placeholder="ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 {path}">
                         <small>Placeholders are shell-escaped before being inserted.</small>
+                        <output class="inline-template-preview" id="command-template-preview">—</output>
                     </label>
                     <label>
                         Command output regex
@@ -626,16 +664,197 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
     </section>
 
     <script>
-        document.querySelectorAll('.preset-chip[data-extensions]').forEach(function (button) {
-            button.addEventListener('click', function () {
-                var input = document.getElementById('extensions-input');
-                if (!input) {
+        (function () {
+            function byId(id) {
+                return document.getElementById(id);
+            }
+
+            function valueOf(id) {
+                var element = byId(id);
+                return element ? String(element.value || '') : '';
+            }
+
+            function checked(id) {
+                var element = byId(id);
+                return !!(element && element.checked);
+            }
+
+            function firstScanRoot() {
+                return valueOf('scan-roots-input')
+                    .split(/\r?\n/)
+                    .map(function (line) { return line.trim(); })
+                    .filter(Boolean)[0] || '';
+            }
+
+            function normalizeSlashes(path) {
+                return String(path || '').replace(/\\+/g, '/');
+            }
+
+            function dirname(path) {
+                path = normalizeSlashes(path).replace(/\/+$/, '');
+                var index = path.lastIndexOf('/');
+                if (index <= 0) {
+                    return index === 0 ? '/' : '.';
+                }
+                return path.slice(0, index);
+            }
+
+            function basename(path) {
+                path = normalizeSlashes(path).replace(/\/+$/, '');
+                var index = path.lastIndexOf('/');
+                return index === -1 ? path : path.slice(index + 1);
+            }
+
+            function splitNameExtension(fileName) {
+                var index = fileName.lastIndexOf('.');
+                if (index <= 0 || index === fileName.length - 1) {
+                    return { name: fileName, ext: '' };
+                }
+                return { name: fileName.slice(0, index), ext: fileName.slice(index + 1) };
+            }
+
+            function relativePath(path, root) {
+                path = normalizeSlashes(path);
+                root = normalizeSlashes(root).replace(/\/+$/, '');
+                if (root !== '' && (path === root || path.indexOf(root + '/') === 0)) {
+                    return path === root ? '' : path.slice(root.length + 1);
+                }
+                return basename(path);
+            }
+
+            function escapeHtml(value) {
+                return String(value || '').replace(/[&<>"']/g, function (character) {
+                    return {
+                        '&': '&amp;',
+                        '<': '&lt;',
+                        '>': '&gt;',
+                        '"': '&quot;',
+                        "'": '&#039;'
+                    }[character];
+                });
+            }
+
+            function shellQuote(value) {
+                return "'" + String(value || '').replace(/'/g, "'\\''") + "'";
+            }
+
+            function appendSuffixToPath(path, suffix) {
+                path = normalizeSlashes(path);
+                suffix = String(suffix || '').trim() || '_processed';
+                var dir = dirname(path);
+                var base = basename(path);
+                var parts = splitNameExtension(base);
+                var newName = parts.name + suffix + (parts.ext ? '.' + parts.ext : '');
+                return (dir === '' || dir === '.') ? newName : dir.replace(/\/+$/, '') + '/' + newName;
+            }
+
+            function candidateFromExample() {
+                var path = normalizeSlashes(valueOf('template-sample-path').trim() || '/volume1/video/Movies/Example Movie (2024)/Example Movie.mkv');
+                var root = firstScanRoot() || dirname(path);
+                root = normalizeSlashes(root).replace(/\/+$/, '');
+                var rel = relativePath(path, root);
+                var dir = dirname(path);
+                var base = basename(path);
+                var parts = splitNameExtension(base);
+                return {
+                    '{path}': path,
+                    '{root}': root,
+                    '{relative}': rel,
+                    '{dir}': dir,
+                    '{basename}': base,
+                    '{name}': parts.name,
+                    '{ext}': parts.ext,
+                    '{dot_ext}': parts.ext ? '.' + parts.ext : '',
+                    '{mtime}': '1780241000',
+                    '{size}': '7340032000'
+                };
+            }
+
+            function applyTemplate(template, candidate, shellEscaped) {
+                template = String(template || '').trim();
+                if (template === '') {
+                    return '';
+                }
+                Object.keys(candidate).forEach(function (key) {
+                    var replacement = shellEscaped ? shellQuote(candidate[key]) : candidate[key];
+                    template = template.split(key).join(replacement);
+                });
+                return template;
+            }
+
+            function setCode(id, value) {
+                var element = byId(id);
+                if (element) {
+                    element.textContent = value || '—';
+                }
+            }
+
+            function updateTemplatePreview() {
+                var candidate = candidateFromExample();
+                var source = applyTemplate(valueOf('source-template-input') || '{path}', candidate, false) || candidate['{path}'];
+                var deliveryMode = valueOf('delivery-mode-input') || 'template';
+                var delivery = '';
+                if (deliveryMode === 'same_as_source') {
+                    delivery = checked('overwrite-allowed-input')
+                        ? source
+                        : appendSuffixToPath(source, valueOf('output-suffix-input'));
+                } else {
+                    delivery = applyTemplate(valueOf('delivery-template-input'), candidate, false);
+                }
+                var suffixExample = appendSuffixToPath(source, valueOf('output-suffix-input'));
+                var command = applyTemplate(valueOf('command-template-input'), candidate, true);
+
+                setCode('preview-root', candidate['{root}']);
+                setCode('preview-relative', candidate['{relative}']);
+                setCode('preview-source', source);
+                setCode('preview-delivery', delivery || 'No delivery target configured');
+                setCode('source-template-preview', 'Example: ' + source);
+                setCode('delivery-template-preview', deliveryMode === 'template'
+                    ? 'Example: ' + (delivery || 'No delivery target configured')
+                    : 'Ignored while delivery target is “same as source location”');
+                setCode('suffix-template-preview', 'Example if not overwriting: ' + suffixExample);
+                setCode('command-template-preview', command ? 'Example command: ' + command : 'No command template configured');
+
+                var grid = byId('placeholder-preview-grid');
+                if (grid) {
+                    grid.innerHTML = Object.keys(candidate).map(function (key) {
+                        return '<div><span>' + escapeHtml(key) + '</span><code>' + escapeHtml(candidate[key]) + '</code></div>';
+                    }).join('');
+                }
+            }
+
+            document.querySelectorAll('.preset-chip[data-extensions]').forEach(function (button) {
+                button.addEventListener('click', function () {
+                    var input = byId('extensions-input');
+                    if (!input) {
+                        return;
+                    }
+                    input.value = button.getAttribute('data-extensions') || '';
+                    input.focus();
+                    updateTemplatePreview();
+                });
+            });
+
+            [
+                'scan-roots-input',
+                'template-sample-path',
+                'source-template-input',
+                'delivery-mode-input',
+                'delivery-template-input',
+                'output-suffix-input',
+                'overwrite-allowed-input',
+                'command-template-input'
+            ].forEach(function (id) {
+                var element = byId(id);
+                if (!element) {
                     return;
                 }
-                input.value = button.getAttribute('data-extensions') || '';
-                input.focus();
+                element.addEventListener('input', updateTemplatePreview);
+                element.addEventListener('change', updateTemplatePreview);
             });
-        });
+
+            updateTemplatePreview();
+        }());
     </script>
 
     <footer>
