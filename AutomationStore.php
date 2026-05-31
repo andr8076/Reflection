@@ -67,7 +67,9 @@ final class AutomationStore
             'scan_roots' => [],
             'recursive' => true,
             'source_template' => '{path}',
+            'delivery_mode' => 'template',
             'delivery_template' => '',
+            'output_suffix' => '_processed',
             'overwrite_allowed' => false,
             'extensions' => '',
             'include_globs' => '',
@@ -198,6 +200,9 @@ final class AutomationStore
         if (in_array((string) ($rule['command_filter_mode'] ?? 'disabled'), ['output_matches', 'output_not_matches'], true) && trim((string) ($rule['command_filter_regex'] ?? '')) === '') {
             $errors[] = 'Command output modes require a command output regex.';
         }
+        if (($rule['delivery_mode'] ?? 'template') === 'same_as_source' && empty($rule['overwrite_allowed']) && trim((string) ($rule['output_suffix'] ?? '')) === '') {
+            $errors[] = 'Same-as-source delivery without overwrite requires an output suffix.';
+        }
 
         return $errors;
     }
@@ -215,9 +220,11 @@ final class AutomationStore
                 break;
             }
             $result = $this->evaluateCandidate($rule, $candidate);
+            $source = $result['include'] ? $this->buildSource($rule, $candidate) : '';
+            $delivery = $result['include'] ? $this->buildDelivery($rule, $candidate, $source) : '';
             $rows[] = array_merge($candidate, $result, [
-                'source' => $result['include'] ? $this->applyPathTemplate((string) ($rule['source_template'] ?? '{path}'), $candidate) : '',
-                'delivery' => $result['include'] ? $this->applyPathTemplate((string) ($rule['delivery_template'] ?? ''), $candidate) : '',
+                'source' => $source,
+                'delivery' => $delivery,
             ]);
         }
 
@@ -258,11 +265,8 @@ final class AutomationStore
             }
 
             $summary['matched']++;
-            $source = $this->applyPathTemplate((string) ($rule['source_template'] ?? '{path}'), $candidate);
-            if ($source === '') {
-                $source = (string) ($candidate['path'] ?? '');
-            }
-            $delivery = $this->applyPathTemplate((string) ($rule['delivery_template'] ?? ''), $candidate);
+            $source = $this->buildSource($rule, $candidate);
+            $delivery = $this->buildDelivery($rule, $candidate, $source);
             $delivery = $delivery !== '' ? $delivery : null;
             $fingerprint = $this->candidateFingerprint($candidate);
 
@@ -371,7 +375,11 @@ final class AutomationStore
         $rule['scan_roots'] = $this->cleanLines($rule['scan_roots'] ?? []);
         $rule['recursive'] = !empty($rule['recursive']);
         $rule['source_template'] = trim((string) ($rule['source_template'] ?? '{path}')) ?: '{path}';
+        $rule['delivery_mode'] = in_array((string) ($rule['delivery_mode'] ?? 'template'), ['template', 'same_as_source'], true)
+            ? (string) ($rule['delivery_mode'] ?? 'template')
+            : 'template';
         $rule['delivery_template'] = trim((string) ($rule['delivery_template'] ?? ''));
+        $rule['output_suffix'] = $this->normalizeOutputSuffix($rule['output_suffix'] ?? '_processed');
         $rule['overwrite_allowed'] = !empty($rule['overwrite_allowed']);
         $rule['extensions'] = $this->cleanCommaList((string) ($rule['extensions'] ?? ''));
         $rule['include_globs'] = implode("\n", $this->cleanLines($rule['include_globs'] ?? []));
@@ -408,7 +416,9 @@ final class AutomationStore
             'scan_roots' => [],
             'recursive' => true,
             'source_template' => '{path}',
+            'delivery_mode' => 'template',
             'delivery_template' => '',
+            'output_suffix' => '_processed',
             'overwrite_allowed' => false,
             'extensions' => '',
             'include_globs' => '',
@@ -790,6 +800,69 @@ final class AutomationStore
         return false;
     }
 
+    private function buildSource(array $rule, array $candidate): string
+    {
+        $source = $this->applyPathTemplate((string) ($rule['source_template'] ?? '{path}'), $candidate);
+        return $source !== '' ? $source : (string) ($candidate['path'] ?? '');
+    }
+
+    private function buildDelivery(array $rule, array $candidate, string $source): string
+    {
+        if (($rule['delivery_mode'] ?? 'template') === 'same_as_source') {
+            if (!empty($rule['overwrite_allowed'])) {
+                return $source;
+            }
+            return $this->siblingPathWithSuffix($source, (string) ($rule['output_suffix'] ?? '_processed'));
+        }
+
+        return $this->applyPathTemplate((string) ($rule['delivery_template'] ?? ''), $candidate);
+    }
+
+    private function siblingPathWithSuffix(string $pathOrUri, string $suffix): string
+    {
+        $suffix = $this->normalizeOutputSuffix($suffix);
+        if ($suffix === '') {
+            $suffix = '_processed';
+        }
+
+        $parts = @parse_url($pathOrUri);
+        if (is_array($parts) && isset($parts['scheme']) && isset($parts['path'])) {
+            $newPath = $this->appendSuffixToPath((string) ($parts['path'] ?? ''), $suffix);
+            $rebuilt = (string) $parts['scheme'] . '://';
+            if (isset($parts['user'])) {
+                $rebuilt .= rawurlencode((string) $parts['user']);
+                if (isset($parts['pass'])) {
+                    $rebuilt .= ':' . rawurlencode((string) $parts['pass']);
+                }
+                $rebuilt .= '@';
+            }
+            $rebuilt .= (string) ($parts['host'] ?? '');
+            if (isset($parts['port'])) {
+                $rebuilt .= ':' . (string) $parts['port'];
+            }
+            $rebuilt .= $newPath;
+            if (isset($parts['query'])) {
+                $rebuilt .= '?' . (string) $parts['query'];
+            }
+            if (isset($parts['fragment'])) {
+                $rebuilt .= '#' . (string) $parts['fragment'];
+            }
+            return $rebuilt;
+        }
+
+        return $this->appendSuffixToPath($pathOrUri, $suffix);
+    }
+
+    private function appendSuffixToPath(string $path, string $suffix): string
+    {
+        $directory = dirname($path);
+        $basename = basename($path);
+        $extension = pathinfo($basename, PATHINFO_EXTENSION);
+        $name = $extension !== '' ? substr($basename, 0, -strlen($extension) - 1) : $basename;
+        $newName = $name . $suffix . ($extension !== '' ? '.' . $extension : '');
+        return ($directory === '' || $directory === '.') ? $newName : rtrim($directory, '/') . '/' . $newName;
+    }
+
     private function applyPathTemplate(string $template, array $candidate): string
     {
         $template = trim($template);
@@ -804,6 +877,7 @@ final class AutomationStore
             '{basename}' => (string) ($candidate['basename'] ?? ''),
             '{name}' => (string) ($candidate['name'] ?? ''),
             '{ext}' => (string) ($candidate['ext'] ?? ''),
+            '{dot_ext}' => (string) (($candidate['ext'] ?? '') !== '' ? '.' . ($candidate['ext'] ?? '') : ''),
             '{mtime}' => (string) ($candidate['mtime'] ?? ''),
             '{size}' => (string) ($candidate['size'] ?? ''),
         ]);
@@ -819,6 +893,7 @@ final class AutomationStore
             '{basename}' => escapeshellarg((string) ($candidate['basename'] ?? '')),
             '{name}' => escapeshellarg((string) ($candidate['name'] ?? '')),
             '{ext}' => escapeshellarg((string) ($candidate['ext'] ?? '')),
+            '{dot_ext}' => escapeshellarg((string) (($candidate['ext'] ?? '') !== '' ? '.' . ($candidate['ext'] ?? '') : '')),
             '{mtime}' => escapeshellarg((string) ($candidate['mtime'] ?? '')),
             '{size}' => escapeshellarg((string) ($candidate['size'] ?? '')),
         ]);
@@ -908,6 +983,16 @@ final class AutomationStore
             return '';
         }
         return (string) max(0, (float) str_replace(',', '.', $value));
+    }
+
+    private function normalizeOutputSuffix($value): string
+    {
+        $suffix = trim((string) $value);
+        if ($suffix === '') {
+            return '';
+        }
+        $suffix = preg_replace('~[\\/\x00-\x1F\x7F]+~', '_', $suffix);
+        return $suffix === null ? '_processed' : $suffix;
     }
 
     private function cleanCommaList(string $value): string

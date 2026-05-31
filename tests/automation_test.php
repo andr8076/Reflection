@@ -54,6 +54,41 @@ assertSameValue(1, count($data['jobs']), 'Farm store should contain one queued a
 assertSameValue('dummy_task', $data['jobs'][0]['module'], 'Automation job should use the configured task.');
 assertSameValue($rule['id'], $data['jobs'][0]['automation_rule_id'], 'Automation jobs should be tagged with the rule id.');
 
+$sameSourceRule = $automationStore->saveRule([
+    'name' => 'Same source replacement',
+    'enabled' => false,
+    'module' => 'dummy_task',
+    'scan_roots' => $scanDir . DIRECTORY_SEPARATOR . 'one.txt',
+    'recursive' => false,
+    'source_template' => '{path}',
+    'delivery_mode' => 'same_as_source',
+    'overwrite_allowed' => true,
+    'extensions' => 'txt',
+    'require_unchanged_seconds' => 0,
+    'max_files_per_scan' => 10,
+    'max_jobs_per_scan' => 10,
+], ['dummy_task' => 'dummy']);
+$sameSourceTest = $automationStore->testRule($sameSourceRule, $scanDir . DIRECTORY_SEPARATOR . 'one.txt', 10);
+assertSameValue($scanDir . DIRECTORY_SEPARATOR . 'one.txt', $sameSourceTest['rows'][0]['delivery'], 'Same-as-source with overwrite should deliver back to the source path.');
+
+$siblingRule = $automationStore->saveRule([
+    'name' => 'Same source sibling',
+    'enabled' => false,
+    'module' => 'dummy_task',
+    'scan_roots' => $scanDir . DIRECTORY_SEPARATOR . 'one.txt',
+    'recursive' => false,
+    'source_template' => '{path}',
+    'delivery_mode' => 'same_as_source',
+    'overwrite_allowed' => false,
+    'output_suffix' => '_converted',
+    'extensions' => 'txt',
+    'require_unchanged_seconds' => 0,
+    'max_files_per_scan' => 10,
+    'max_jobs_per_scan' => 10,
+], ['dummy_task' => 'dummy']);
+$siblingTest = $automationStore->testRule($siblingRule, $scanDir . DIRECTORY_SEPARATOR . 'one.txt', 10);
+assertSameValue($scanDir . DIRECTORY_SEPARATOR . 'one_converted.txt', $siblingTest['rows'][0]['delivery'], 'Same-as-source without overwrite should add the configured suffix.');
+
 $result = $automationStore->runRule($automationStore->rule($rule['id']), $farmStore, false);
 assertSameValue(0, $result['queued'], 'Unchanged files should not be queued twice.');
 

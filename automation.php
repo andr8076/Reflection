@@ -34,7 +34,9 @@ function reflection_rule_from_post(AutomationStore $automationStore): array
         'scan_roots' => (string) ($_POST['scan_roots'] ?? ''),
         'recursive' => reflection_post_bool('recursive'),
         'source_template' => (string) ($_POST['source_template'] ?? '{path}'),
+        'delivery_mode' => (string) ($_POST['delivery_mode'] ?? 'template'),
         'delivery_template' => (string) ($_POST['delivery_template'] ?? ''),
+        'output_suffix' => (string) ($_POST['output_suffix'] ?? '_processed'),
         'overwrite_allowed' => reflection_post_bool('overwrite_allowed'),
         'extensions' => (string) ($_POST['extensions'] ?? ''),
         'include_globs' => (string) ($_POST['include_globs'] ?? ''),
@@ -113,6 +115,19 @@ function reflection_automation_wake_notice(FarmStore $store, int $staleAfterSeco
         return 'Demand wake wanted ' . $needed . ' more worker' . ($needed === 1 ? '' : 's') . ', but no eligible target is ready right now.';
     }
     return null;
+}
+
+function reflection_extension_presets(): array
+{
+    return [
+        'Video' => 'mkv, mp4, m4v, mov, avi, wmv, webm, mpg, mpeg, ts, m2ts, flv',
+        'Images' => 'jpg, jpeg, png, webp, gif, bmp, tif, tiff, heic, heif, avif, raw, cr2, nef, arw, dng',
+        'Audio' => 'mp3, flac, wav, aac, m4a, ogg, opus, wma, aiff, alac',
+        'Documents' => 'pdf, doc, docx, xls, xlsx, ppt, pptx, odt, ods, odp, rtf, txt, md',
+        'Archives' => 'zip, 7z, rar, tar, gz, bz2, xz, tgz, tbz2, txz',
+        'Subtitles' => 'srt, ass, ssa, sub, vtt',
+        'Code/text' => 'txt, md, json, xml, yaml, yml, csv, log, py, php, js, ts, html, css, sh, ps1',
+    ];
 }
 
 $selectedId = (string) ($_GET['edit'] ?? '');
@@ -209,6 +224,7 @@ if ($editingRule === null) {
     }
 }
 $recentRuns = $automationStore->recentRuns(12);
+$extensionPresets = reflection_extension_presets();
 $scriptDirectory = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '')), '/');
 $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tick.php';
 ?>
@@ -329,7 +345,8 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                         </label>
                         <label class="check-row top-check">
                             <input type="checkbox" name="enabled" value="1" <?= !empty($editingRule['enabled']) ? 'checked' : '' ?>>
-                            Enabled for scheduled runs
+                            Enabled for automatic scheduled scans
+                            <small>Only enabled rules are run by <code>automation_tick.php</code> or “Run due rules now”. Manual test/dry-run buttons still work while disabled.</small>
                         </label>
                     </div>
                 </section>
@@ -348,9 +365,14 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                         </label>
                         <label>
                             File extensions
-                            <input name="extensions" value="<?= reflection_h($editingRule['extensions'] ?? '') ?>" placeholder="mkv, mp4, avi">
-                            <small>Blank means any file extension.</small>
+                            <input id="extensions-input" name="extensions" value="<?= reflection_h($editingRule['extensions'] ?? '') ?>" placeholder="mkv, mp4, avi">
+                            <small>Blank means any file extension. Use a preset below, then edit it if needed.</small>
                         </label>
+                    </div>
+                    <div class="preset-row" aria-label="Common file-extension presets">
+                        <?php foreach ($extensionPresets as $presetName => $presetExtensions): ?>
+                            <button type="button" class="preset-chip" data-extensions="<?= reflection_h($presetExtensions) ?>"><?= reflection_h($presetName) ?></button>
+                        <?php endforeach; ?>
                     </div>
                 </section>
 
@@ -360,21 +382,38 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                         <label>
                             Source template
                             <input name="source_template" value="<?= reflection_h($editingRule['source_template'] ?? '{path}') ?>">
+                            <small>What the worker receives as the source. Usually <code>{path}</code>.</small>
+                        </label>
+                        <label>
+                            Delivery target
+                            <select name="delivery_mode">
+                                <option value="template" <?= ($editingRule['delivery_mode'] ?? 'template') === 'template' ? 'selected' : '' ?>>Use custom delivery template</option>
+                                <option value="same_as_source" <?= ($editingRule['delivery_mode'] ?? 'template') === 'same_as_source' ? 'selected' : '' ?>>Same as source location</option>
+                            </select>
+                            <small>Same as source means overwrite the original when overwrite is enabled, or create a sibling file with the suffix below when overwrite is disabled.</small>
                         </label>
                         <label>
                             Delivery template
                             <input name="delivery_template" value="<?= reflection_h($editingRule['delivery_template'] ?? '') ?>" placeholder="/output/{relative}">
+                            <small>Used only when the delivery target is custom.</small>
+                        </label>
+                        <label>
+                            Output suffix when not overwriting
+                            <input name="output_suffix" value="<?= reflection_h($editingRule['output_suffix'] ?? '_processed') ?>" placeholder="_processed">
+                            <small>Example: <code>Movie.mkv</code> becomes <code>Movie_processed.mkv</code>.</small>
                         </label>
                     </div>
-                    <p class="api-note">Available placeholders: <code>{path}</code>, <code>{root}</code>, <code>{relative}</code>, <code>{dir}</code>, <code>{basename}</code>, <code>{name}</code>, <code>{ext}</code>, <code>{size}</code>, <code>{mtime}</code>.</p>
+                    <p class="api-note">Available placeholders: <code>{path}</code>, <code>{root}</code>, <code>{relative}</code>, <code>{dir}</code>, <code>{basename}</code>, <code>{name}</code>, <code>{ext}</code>, <code>{dot_ext}</code>, <code>{size}</code>, <code>{mtime}</code>.</p>
                     <div class="settings-grid">
                         <label class="check-row top-check warning-check">
                             <input type="checkbox" name="overwrite_allowed" value="1" <?= !empty($editingRule['overwrite_allowed']) ? 'checked' : '' ?>>
                             Allow worker overwrite/replacement
+                            <small>For same-as-source delivery, this means the result replaces the original path after the task succeeds.</small>
                         </label>
                         <label class="check-row top-check">
                             <input type="checkbox" name="requeue_unchanged" value="1" <?= !empty($editingRule['requeue_unchanged']) ? 'checked' : '' ?>>
-                            Queue unchanged files again
+                            Requeue even if already handled
+                            <small>Normally off. Leave off to avoid creating the same job again for a file with the same path, size, and modified time.</small>
                         </label>
                     </div>
                 </section>
@@ -405,22 +444,24 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                         <label>
                             Minimum size MB
                             <input name="min_size_mb" value="<?= reflection_h($editingRule['min_size_mb'] ?? '') ?>" inputmode="decimal">
+                            <small>Optional. Skip files smaller than this, for example tiny samples or thumbnails.</small>
                         </label>
                         <label>
                             Maximum size MB
                             <input name="max_size_mb" value="<?= reflection_h($editingRule['max_size_mb'] ?? '') ?>" inputmode="decimal">
+                            <small>Optional. Skip files larger than this if a task should not touch very large files.</small>
                         </label>
                         <label>
                             Require unchanged seconds
                             <input name="require_unchanged_seconds" value="<?= (int) ($editingRule['require_unchanged_seconds'] ?? 0) ?>" inputmode="numeric">
-                            <small>Helps avoid files still being copied.</small>
+                            <small>Optional safety delay. A file must not have changed for this many seconds before it can be queued.</small>
                         </label>
                     </div>
                 </section>
 
                 <section class="form-block">
                     <h3>Optional command filter</h3>
-                    <p class="api-note">Use this for task-specific checks while keeping the automation system universal. Example: ffprobe can exclude movies that are already HEVC.</p>
+                    <p class="api-note">Use this for custom checks while keeping the automation system universal. The command runs per candidate file; the selected mode decides whether its exit code or output includes/skips the file.</p>
                     <div class="settings-grid">
                         <label>
                             Command mode
@@ -451,7 +492,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                     </label>
                     <details class="example-box">
                         <summary>H.265 example filter</summary>
-                        <p>For a movie conversion rule, set task <code>h265_encode</code>, extensions <code>mkv, mp4, avi, mov, m4v</code>, delivery template <code>{path}</code>, enable overwrite, command mode <code>Include if output does not match regex</code>, command:</p>
+                        <p>For a movie conversion rule, set task <code>h265_encode</code>, choose the Video extension preset, set delivery target to <code>Same as source location</code>, enable overwrite, command mode <code>Include if output does not match regex</code>, command:</p>
                         <pre>ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 {path}</pre>
                         <p>and regex:</p>
                         <pre>/^hevc$/i</pre>
@@ -472,10 +513,12 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                         <label>
                             Scan interval minutes
                             <input name="scan_interval_minutes" value="<?= (int) ($editingRule['scan_interval_minutes'] ?? 60) ?>" inputmode="numeric">
+                            <small>Used only by scheduled/due scans. Manual runs ignore this.</small>
                         </label>
                         <label>
-                            State entries kept
+                            Handled-file entries kept
                             <input name="state_keep_paths" value="<?= (int) ($editingRule['state_keep_paths'] ?? 10000) ?>" inputmode="numeric">
+                            <small>Used for duplicate protection so old handled files do not fill the live state forever.</small>
                         </label>
                     </div>
                 </section>
@@ -581,6 +624,19 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
             </div>
         <?php endif; ?>
     </section>
+
+    <script>
+        document.querySelectorAll('.preset-chip[data-extensions]').forEach(function (button) {
+            button.addEventListener('click', function () {
+                var input = document.getElementById('extensions-input');
+                if (!input) {
+                    return;
+                }
+                input.value = button.getAttribute('data-extensions') || '';
+                input.focus();
+            });
+        });
+    </script>
 
     <footer>
         <p>Automation state lives in <code>data/automation_rules.json</code>, <code>data/automation_state.json</code>, and <code>data/automation_runs.jsonl</code>.</p>
