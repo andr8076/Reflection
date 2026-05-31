@@ -273,6 +273,34 @@ function reflection_status_class($status): string
     return $status !== '' ? strtolower($status) : 'unknown';
 }
 
+function reflection_ess_soc_is_ignored(array $settings): bool
+{
+    $url = trim((string) ($settings['ess_soc_url'] ?? ''));
+    if ($url === '' || empty($settings['ess_ignore_when_unavailable'])) {
+        return false;
+    }
+
+    return ($settings['ess_soc_status'] ?? 'manual') !== 'online';
+}
+
+function reflection_ess_status_label(array $settings): string
+{
+    $status = (string) ($settings['ess_soc_status'] ?? 'manual');
+    if ($status === 'online') {
+        return 'online';
+    }
+
+    if ($status === 'offline') {
+        return 'connection failed';
+    }
+
+    if ($status === 'parse_error') {
+        return 'parse failed';
+    }
+
+    return 'manual';
+}
+
 function reflection_url_with(array $overrides): string
 {
     $query = array_merge($_GET, $overrides);
@@ -315,6 +343,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'ess_soc_url' => trim((string) ($_POST['ess_soc_url'] ?? '')),
             'ess_min_soc_percent' => (int) ($_POST['ess_min_soc_percent'] ?? 20),
             'ess_shutdown_below_minimum' => isset($_POST['ess_shutdown_below_minimum']),
+            'ess_ignore_when_unavailable' => isset($_POST['ess_ignore_when_unavailable']),
             'idle_shutdown_after_no_job_checks' => (int) ($_POST['idle_shutdown_after_no_job_checks'] ?? 0),
             'job_history_keep_completed' => (int) ($_POST['job_history_keep_completed'] ?? 500),
             'event_log_keep_lines' => (int) ($_POST['event_log_keep_lines'] ?? 1000),
@@ -402,6 +431,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 $store->refreshEssSocFromConfiguredEndpoint();
 $staleCount = $store->requeueStaleJobs((int) $config['stale_after_seconds']);
 $settings = $store->effectiveSettings();
+$essSocIgnored = reflection_ess_soc_is_ignored($settings);
 $automaticMaintenance = reflection_run_store_maintenance($store, $settings);
 $data = $store->read();
 $workers = $data['workers'];
@@ -468,6 +498,9 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
     <?php if (!empty($config['storage_warning'])): ?>
         <div class="alert warning"><?= reflection_h($config['storage_warning']) ?></div>
     <?php endif; ?>
+    <?php if ($essSocIgnored): ?>
+        <div class="alert warning">ESS SOC <?= reflection_h(reflection_ess_status_label($settings)) ?>. SOC-based worker limits are being ignored until the endpoint returns a valid SOC value again. <?= reflection_h($settings['ess_soc_error'] ?? '') ?></div>
+    <?php endif; ?>
     <?php if ($staleCount > 0): ?>
         <div class="alert warning"><?= reflection_h($staleCount) ?> stale job(s) were marked for operator review.</div>
     <?php endif; ?>
@@ -481,15 +514,20 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
             <strong><?= $activeCount ?></strong>
             <small><?= (int) ($statusCounts['queued'] ?? 0) ?> queued · <?= (int) ($statusCounts['running'] ?? 0) ?> running</small>
         </article>
-        <article class="metric">
+        <article class="metric <?= $essSocIgnored ? 'warning-metric' : '' ?>">
             <span>ESS SOC</span>
-            <strong><?= (int) ($settings['ess_soc_percent'] ?? 100) ?>%</strong>
-            <small>Minimum <?= (int) ($settings['ess_min_soc_percent'] ?? 20) ?>%</small>
+            <?php if ($essSocIgnored): ?>
+                <strong>ignored</strong>
+                <small><?= reflection_h(reflection_ess_status_label($settings)) ?> · last good <?= (int) ($settings['ess_soc_percent'] ?? 100) ?>%</small>
+            <?php else: ?>
+                <strong><?= (int) ($settings['ess_soc_percent'] ?? 100) ?>%</strong>
+                <small><?= reflection_h(reflection_ess_status_label($settings)) ?> · minimum <?= (int) ($settings['ess_min_soc_percent'] ?? 20) ?>%</small>
+            <?php endif; ?>
         </article>
         <article class="metric">
             <span>Worker budget</span>
             <strong><?= $allowedActiveWorkers === PHP_INT_MAX ? '∞' : (int) $allowedActiveWorkers ?></strong>
-            <small><?= (int) $wakeTargetCount ?> wake target(s)</small>
+            <small><?= $essSocIgnored ? 'SOC limit paused' : (int) $wakeTargetCount . ' wake target(s)' ?></small>
         </article>
         <article class="metric">
             <span>Completed kept</span>
@@ -600,7 +638,11 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                         <button type="submit" class="secondary-button">Wake farm</button>
                     </form>
                 </div>
-                <p class="api-note">Current SOC allows <?= $allowedActiveWorkers === PHP_INT_MAX ? 'unlimited' : (int) $allowedActiveWorkers ?> active worker(s). <?= (int) $wakeTargetCount ?> machine(s) are inside the wake budget.</p>
+                <?php if ($essSocIgnored): ?>
+                    <p class="api-note">ESS SOC is currently unavailable or unreadable, so SOC-based worker limiting is paused. All wake-enabled machines are considered eligible until a valid value is received again.</p>
+                <?php else: ?>
+                    <p class="api-note">Current SOC allows <?= $allowedActiveWorkers === PHP_INT_MAX ? 'unlimited' : (int) $allowedActiveWorkers ?> active worker(s). <?= (int) $wakeTargetCount ?> machine(s) are inside the wake budget.</p>
+                <?php endif; ?>
                 <form method="post" class="bare-form maintenance-form">
                     <input type="hidden" name="form_action" value="maintenance">
                     <button type="submit" class="ghost-button">Run maintenance now</button>
@@ -879,7 +921,19 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                 <label>
                     ESS SOC URL
                     <input name="ess_soc_url" value="<?= reflection_h($settings['ess_soc_url'] ?? '') ?>" placeholder="http://192.168.1.245:8076">
-                    <small>Accepts a plain fraction like <code>0.974</code>, a percent like <code>97</code>, or JSON keys like <code>soc</code>, <code>SOC</code>, or <code>battery.soc</code>.</small>
+                    <small>Strict parser: accepts a plain fraction like <code>0.974</code>, a percent like <code>97</code> or <code>97%</code>, or JSON keys like <code>soc</code>, <code>SOC</code>, or <code>battery.soc</code>. Unknown output is treated as an ESS failure.</small>
+                </label>
+                <div class="ess-status-box">
+                    <strong>ESS status: <?= reflection_h(reflection_ess_status_label($settings)) ?></strong>
+                    <span>Last check: <?= reflection_h(reflection_relative_time($settings['ess_soc_last_checked_at'] ?? null)) ?></span>
+                    <span>Last valid SOC: <?= reflection_h(reflection_relative_time($settings['ess_soc_last_success_at'] ?? null)) ?> · <?= (int) ($settings['ess_soc_percent'] ?? 100) ?>%</span>
+                    <?php if (!empty($settings['ess_soc_error'])): ?>
+                        <span class="error-text"><?= reflection_h($settings['ess_soc_error']) ?></span>
+                    <?php endif; ?>
+                </div>
+                <label class="check-row">
+                    <input type="checkbox" name="ess_ignore_when_unavailable" value="1" <?= !empty($settings['ess_ignore_when_unavailable']) ? 'checked' : '' ?>>
+                    Ignore SOC limits when the ESS endpoint is offline or returns unreadable output
                 </label>
                 <label class="check-row">
                     <input type="checkbox" name="ess_shutdown_below_minimum" value="1" <?= !empty($settings['ess_shutdown_below_minimum']) ? 'checked' : '' ?>>

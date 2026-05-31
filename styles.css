@@ -668,3 +668,28 @@ footer p {
         min-width: 760px;
     }
 }
+
+.metric.warning-metric {
+    background: var(--warning-soft);
+    border-color: rgba(181, 71, 8, 0.25);
+}
+
+.ess-status-box {
+    background: var(--panel-soft);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    display: grid;
+    gap: 0.35rem;
+    margin: 0.75rem 0;
+    padding: 0.9rem;
+}
+
+.ess-status-box span {
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+
+.ess-status-box .error-text {
+    color: var(--warning);
+    font-weight: 800;
+}

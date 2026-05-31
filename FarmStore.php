@@ -437,6 +437,10 @@ final class FarmStore
             $data['settings']['max_retries'] = max(0, (int) ($data['settings']['max_retries'] ?? 0));
             $data['settings']['ess_soc_percent'] = max(0, min(100, (int) ($data['settings']['ess_soc_percent'] ?? 100)));
             $data['settings']['ess_min_soc_percent'] = max(0, min(100, (int) ($data['settings']['ess_min_soc_percent'] ?? 20)));
+            $data['settings']['ess_ignore_when_unavailable'] = !empty($data['settings']['ess_ignore_when_unavailable']);
+            $data['settings']['ess_soc_status'] = $this->cleanEssStatus((string) ($data['settings']['ess_soc_status'] ?? 'manual'));
+            $data['settings']['ess_soc_error'] = $this->limitString((string) ($data['settings']['ess_soc_error'] ?? ''), 500);
+            $data['settings']['ess_soc_raw_sample'] = $this->limitString((string) ($data['settings']['ess_soc_raw_sample'] ?? ''), 500);
             $data['settings']['idle_shutdown_after_no_job_checks'] = max(0, (int) ($data['settings']['idle_shutdown_after_no_job_checks'] ?? 0));
             $data['settings']['job_history_keep_completed'] = max(0, (int) ($data['settings']['job_history_keep_completed'] ?? 500));
             $data['settings']['event_log_keep_lines'] = max(0, (int) ($data['settings']['event_log_keep_lines'] ?? 1000));
@@ -491,36 +495,57 @@ final class FarmStore
         $settings = $this->effectiveSettings();
         $url = trim((string) ($settings['ess_soc_url'] ?? ''));
         if ($url === '') {
+            if (($settings['ess_soc_status'] ?? '') !== 'manual') {
+                $this->recordEssSocStatus('manual', null, 'Manual SOC value is being used because no ESS SOC URL is configured.');
+            }
             return null;
         }
 
-        $context = stream_context_create(['http' => ['timeout' => 3, 'ignore_errors' => true]]);
+        $checkedAt = gmdate(DATE_ATOM);
+        $context = stream_context_create([
+            'http' => [
+                'timeout' => 3,
+                'ignore_errors' => true,
+                'header' => "Accept: application/json, text/plain;q=0.9, */*;q=0.1
+",
+            ],
+        ]);
         $body = @file_get_contents($url, false, $context);
         if ($body === false) {
+            $this->recordEssSocStatus(
+                'offline',
+                null,
+                'Unable to read ESS SOC endpoint. SOC worker limiting is ignored until a valid value is received again.',
+                '',
+                $checkedAt,
+            );
             return null;
         }
 
-        $soc = null;
-        $trimmedBody = trim($body);
-        if (is_numeric($trimmedBody)) {
-            $soc = $this->normalizeSocPercent((float) $trimmedBody);
-        } else {
-            $payload = json_decode($body, true);
-            if (is_array($payload)) {
-                $soc = $this->extractSocPercent($payload);
-            }
-        }
-        if ($soc === null) {
+        $parsed = $this->parseSocResponse($body);
+        if ($parsed['soc'] === null) {
+            $this->recordEssSocStatus(
+                'parse_error',
+                null,
+                (string) $parsed['error'] . ' SOC worker limiting is ignored until a valid value is received again.',
+                $body,
+                $checkedAt,
+            );
             return null;
         }
 
-        $this->updateSettings(['ess_soc_percent' => $soc]);
+        $soc = (int) $parsed['soc'];
+        $this->recordEssSocStatus('online', $soc, '', $body, $checkedAt);
         return $soc;
     }
 
     public function allowedActiveWorkers(): int
     {
         $settings = $this->effectiveSettings();
+        if (!$this->essSocCanLimitWorkers($settings)) {
+            return PHP_INT_MAX;
+        }
+
         $soc = (int) ($settings['ess_soc_percent'] ?? 100);
         $minimum = (int) ($settings['ess_min_soc_percent'] ?? 20);
         if ($soc <= $minimum) {
@@ -570,7 +595,6 @@ final class FarmStore
     public function wakeTargetsForCurrentSoc(): array
     {
         $settings = $this->effectiveSettings();
-        $budget = max(0, (int) ($settings['ess_soc_percent'] ?? 100) - (int) ($settings['ess_min_soc_percent'] ?? 20));
         $machines = array_values(array_filter($this->machines(), static function (array $machine): bool {
             return !empty($machine['wake_enabled']) && !empty($machine['mac']);
         }));
@@ -578,6 +602,11 @@ final class FarmStore
             return ((int) ($a['soc_margin_percent'] ?? 5)) <=> ((int) ($b['soc_margin_percent'] ?? 5));
         });
 
+        if (!$this->essSocCanLimitWorkers($settings)) {
+            return $machines;
+        }
+
+        $budget = max(0, (int) ($settings['ess_soc_percent'] ?? 100) - (int) ($settings['ess_min_soc_percent'] ?? 20));
         $targets = [];
         foreach ($machines as $machine) {
             $margin = max(1, (int) ($machine['soc_margin_percent'] ?? 5));
@@ -643,6 +672,23 @@ final class FarmStore
             'delivery' => $job['delivery'] ?? null,
             'error' => $job['error'] ?? '',
         ];
+
+        @file_put_contents($this->eventLogPath, json_encode($entry, JSON_UNESCAPED_SLASHES) . PHP_EOL, FILE_APPEND | LOCK_EX);
+    }
+
+    private function recordSystemEvent(string $event, string $error = '', array $extra = []): void
+    {
+        $entry = array_merge([
+            'timestamp' => gmdate(DATE_ATOM),
+            'event' => $event,
+            'task_id' => null,
+            'module' => null,
+            'status' => null,
+            'worker' => null,
+            'source' => null,
+            'delivery' => null,
+            'error' => $error,
+        ], $extra);
 
         @file_put_contents($this->eventLogPath, json_encode($entry, JSON_UNESCAPED_SLASHES) . PHP_EOL, FILE_APPEND | LOCK_EX);
     }
@@ -872,28 +918,157 @@ final class FarmStore
         ];
     }
 
+    private function parseSocResponse(string $body): array
+    {
+        $trimmedBody = trim($body);
+        if ($trimmedBody === '') {
+            return ['soc' => null, 'error' => 'ESS SOC endpoint returned an empty response.'];
+        }
+
+        $plainSoc = $this->parseSocValue($trimmedBody);
+        if ($plainSoc !== null) {
+            return ['soc' => $plainSoc, 'error' => ''];
+        }
+
+        $payload = json_decode($body, true);
+        if (json_last_error() === JSON_ERROR_NONE && is_array($payload)) {
+            $soc = $this->extractSocPercent($payload);
+            if ($soc !== null) {
+                return ['soc' => $soc, 'error' => ''];
+            }
+
+            return ['soc' => null, 'error' => 'ESS SOC JSON was valid, but no supported SOC key contained a valid value.'];
+        }
+
+        return ['soc' => null, 'error' => 'ESS SOC output was not a supported plain number/percent or JSON document.'];
+    }
+
     private function extractSocPercent(array $payload): ?int
     {
-        foreach (['soc', 'SOC', 'stateOfCharge', 'state_of_charge', 'battery_percent'] as $key) {
-            if (isset($payload[$key]) && is_numeric($payload[$key])) {
-                return $this->normalizeSocPercent((float) $payload[$key]);
+        foreach (['soc', 'SOC', 'stateOfCharge', 'state_of_charge', 'battery_percent', 'batteryPercent', 'charge', 'charge_percent'] as $key) {
+            if (array_key_exists($key, $payload)) {
+                $soc = $this->parseSocValue($payload[$key]);
+                if ($soc !== null) {
+                    return $soc;
+                }
             }
         }
 
-        if (isset($payload['battery']) && is_array($payload['battery'])) {
-            return $this->extractSocPercent($payload['battery']);
+        foreach (['battery', 'ess', 'system', 'data'] as $nestedKey) {
+            if (isset($payload[$nestedKey]) && is_array($payload[$nestedKey])) {
+                $soc = $this->extractSocPercent($payload[$nestedKey]);
+                if ($soc !== null) {
+                    return $soc;
+                }
+            }
         }
 
         return null;
     }
 
-    private function normalizeSocPercent(float $value): int
+    private function parseSocValue($value): ?int
     {
-        if ($value >= 0.0 && $value <= 1.0) {
+        if (is_int($value) || is_float($value)) {
+            return $this->normalizeSocPercent((float) $value);
+        }
+
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+        if (!preg_match('/^([+-]?\d+(?:\.\d+)?)\s*%?$/', $value, $matches)) {
+            return null;
+        }
+
+        return $this->normalizeSocPercent((float) $matches[1]);
+    }
+
+    private function normalizeSocPercent(float $value): ?int
+    {
+        if (!is_finite($value) || $value < 0.0) {
+            return null;
+        }
+
+        if ($value <= 1.0) {
             $value *= 100;
         }
 
-        return max(0, min(100, (int) round($value)));
+        if ($value > 100.0) {
+            return null;
+        }
+
+        return (int) round($value);
+    }
+
+    private function essSocCanLimitWorkers(array $settings): bool
+    {
+        $url = trim((string) ($settings['ess_soc_url'] ?? ''));
+        if ($url === '') {
+            return true;
+        }
+
+        if (empty($settings['ess_ignore_when_unavailable'])) {
+            return true;
+        }
+
+        return ($settings['ess_soc_status'] ?? 'manual') === 'online';
+    }
+
+    private function recordEssSocStatus(string $status, ?int $soc, string $error = '', string $rawBody = '', ?string $checkedAt = null): void
+    {
+        $status = $this->cleanEssStatus($status);
+        $checkedAt = $checkedAt ?? gmdate(DATE_ATOM);
+        $sample = $this->limitString(preg_replace('/\s+/', ' ', trim($rawBody)) ?? '', 500);
+        $error = $this->limitString($error, 500);
+
+        $previous = $this->effectiveSettings();
+        $update = [
+            'ess_soc_status' => $status,
+            'ess_soc_last_checked_at' => $checkedAt,
+            'ess_soc_error' => $error,
+            'ess_soc_raw_sample' => $sample,
+        ];
+
+        if ($soc !== null) {
+            $update['ess_soc_percent'] = $soc;
+            $update['ess_soc_last_success_at'] = $checkedAt;
+        } elseif ($status !== 'manual') {
+            $update['ess_soc_last_failure_at'] = $checkedAt;
+        }
+
+        $this->updateSettings($update);
+
+        $previousStatus = (string) ($previous['ess_soc_status'] ?? 'manual');
+        $previousError = (string) ($previous['ess_soc_error'] ?? '');
+        if ($previousStatus !== $status || ($status !== 'online' && $previousError !== $error)) {
+            $this->recordSystemEvent('ess_soc_' . $status, $error, [
+                'soc' => $soc,
+                'raw_sample' => $sample,
+            ]);
+        }
+    }
+
+    private function cleanEssStatus(string $status): string
+    {
+        return in_array($status, ['manual', 'online', 'offline', 'parse_error'], true) ? $status : 'manual';
+    }
+
+    private function limitString(string $value, int $limit): string
+    {
+        if ($limit <= 0) {
+            return '';
+        }
+
+        if (function_exists('mb_strlen') && mb_strlen($value) > $limit) {
+            return mb_substr($value, 0, $limit);
+        }
+
+        if (!function_exists('mb_strlen') && strlen($value) > $limit) {
+            return substr($value, 0, $limit);
+        }
+
+        return $value;
     }
 
     private function defaultSettings(): array
@@ -906,6 +1081,13 @@ final class FarmStore
             'ess_soc_url' => 'http://192.168.1.245:8076',
             'ess_min_soc_percent' => 20,
             'ess_shutdown_below_minimum' => true,
+            'ess_ignore_when_unavailable' => true,
+            'ess_soc_status' => 'manual',
+            'ess_soc_error' => '',
+            'ess_soc_raw_sample' => '',
+            'ess_soc_last_checked_at' => null,
+            'ess_soc_last_success_at' => null,
+            'ess_soc_last_failure_at' => null,
             'idle_shutdown_after_no_job_checks' => 0,
             'job_history_keep_completed' => 500,
             'event_log_keep_lines' => 1000,

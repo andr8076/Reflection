@@ -115,6 +115,19 @@ assertSameValue(
 $socStore->updateSettings(['ess_soc_url' => $socEndpointPath]);
 assertSameValue(97, $socStore->refreshEssSocFromConfiguredEndpoint(), 'Plain fractional SOC endpoint should convert to percent.');
 assertSameValue(97, $socStore->effectiveSettings()['ess_soc_percent'], 'Parsed SOC should be stored as percent.');
+assertSameValue('online', $socStore->effectiveSettings()['ess_soc_status'], 'Valid SOC refresh should mark ESS online.');
+file_put_contents($socEndpointPath, 'this is not an SOC value');
+assertSameValue(null, $socStore->refreshEssSocFromConfiguredEndpoint(), 'Unreadable SOC output should be rejected.');
+assertSameValue('parse_error', $socStore->effectiveSettings()['ess_soc_status'], 'Unreadable SOC output should mark ESS as parse_error.');
+assertSameValue(PHP_INT_MAX, $socStore->allowedActiveWorkers(), 'Unreadable ESS SOC should be ignored instead of limiting workers with a stale value.');
+file_put_contents($socEndpointPath, '{"battery":{"soc":"12%"}}');
+assertSameValue(12, $socStore->refreshEssSocFromConfiguredEndpoint(), 'Nested JSON SOC should parse when the value is valid.');
+assertSameValue('online', $socStore->effectiveSettings()['ess_soc_status'], 'Valid SOC should recover ESS from parse_error.');
+assertSameValue(0, $socStore->allowedActiveWorkers(), 'Recovered low SOC should resume limiting workers.');
+$socStore->updateSettings(['ess_soc_url' => $socEndpointPath . '.missing']);
+assertSameValue(null, $socStore->refreshEssSocFromConfiguredEndpoint(), 'Missing SOC endpoint should be treated as offline.');
+assertSameValue('offline', $socStore->effectiveSettings()['ess_soc_status'], 'Connection failure should mark ESS as offline.');
+assertSameValue(PHP_INT_MAX, $socStore->allowedActiveWorkers(), 'Offline ESS SOC should be ignored until connection returns.');
 unlink($socStorePath);
 unlink($socEndpointPath);
 
