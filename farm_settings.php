@@ -2,83 +2,8 @@
 
 declare(strict_types=1);
 
-return [
-    // Give each deployed farm a stable id/name. These values also help derive
-    // fallback temporary paths when the configured store is not writable.
-    'farm_id' => 'default',
-    'farm_name' => 'Reflection Farm',
-
-    // Shared secret for farm worker requests. REFLECTION_WORKER_ACCESS_TOKEN overrides this value.
-    // Legacy REFLECTION_API_TOKEN / api_token are still accepted for older deployments.
-    // Leave blank only on a trusted private network while testing.
-    'worker_access_token' => '',
-    'api_token' => '',
-
-    // Connection details for the shared file server. The master sends these to workers.
-    // Workers should keep their own usernames/passwords in cluster/reflection_config.json.
-    // REFLECTION_TRANSFER_* or REFLECTION_FTP_* environment variables can override these.
-    'transfer_server' => [
-        'scheme' => 'ftp',
-        'host' => '',
-        'port' => 21,
-        'root' => '',
-    ],
-
-    // Legacy/default transfer credentials. Prefer keeping credentials on each worker.
-    // REFLECTION_FTP_* environment variables still override these values.
-    'transfer_auth' => [
-        'scheme' => 'ftp',
-        'host' => '',
-        'port' => 21,
-        'username' => '',
-        'password' => '',
-    ],
-
-    // Persistent farm data. REFLECTION_MASTER_STORE still overrides this value.
-    'storage_path' => __DIR__ . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'farm_store.json',
-
-    // REFLECTION_REQUIRED_VERSION still overrides this value. Leave null to use
-    // the currently checked-out Git commit id when it can be detected.
-    'required_version' => null,
-    'stale_after_seconds' => 15 * 60,
-
-    // Defaults used when the writable farm store does not yet contain a saved
-    // operator setting. The dashboard can still update these at runtime.
-    'runtime_defaults' => [
-        'enforce_version' => true,
-        'failure_strategy' => 'mark_failed',
-        'max_retries' => 0,
-        'stale_job_strategy' => 'requeue_to_end',
-        'stale_max_retries' => 1,
-        'ess_soc_percent' => 100, // read-only live value; updated from ess_soc_url
-        'ess_soc_url' => 'http://192.168.1.245:8076',
-        'ess_min_soc_percent' => 20,
-        'ess_shutdown_below_minimum' => true,
-        'idle_shutdown_after_no_job_checks' => 0,
-        'auto_wake_for_queued_jobs' => true,
-        'automation_run_due_on_worker_checkin' => true,
-        'automation_checkin_cooldown_seconds' => 60,
-        'wake_dispatch_mode' => 'worker_relay',
-        'auto_wake_cooldown_seconds' => 300,
-        'auto_wake_max_targets_per_run' => 20,
-        'wake_broadcast_address' => '255.255.255.255',
-        'wake_udp_port' => 9,
-        'job_archive_keep_lines' => 5000,
-        'worker_temp_max_age_hours' => 24,
-        'quarantine_keep_days' => 14,
-    ],
-
-    'allowed_tasks' => [
-        'dummy_task' => 'Placeholder pipeline test task.',
-        'render_frame' => 'Render a frame with the configured worker renderer.',
-        'h265_encode' => 'Transcode video files to H.265/HEVC MP4 with FFmpeg.',
-        'compress_archive' => 'Compress a file or directory into a small .tar.xz archive with hardware-aware limits.',
-        'invert_image' => 'Invert an image while preserving alpha transparency when possible.',
-        'noop' => 'Built-in worker connectivity check.',
-        'status' => 'Built-in worker health snapshot.',
-        'reload_tasks' => 'Ask a worker to reload its local task registry.',
-        'shutdown' => 'Ask a worker to stop after reporting success.',
-        'wake_farm' => 'Ask a worker to send Wake-on-LAN packets to configured farm computers.',
-        'storage_test' => 'Ask a worker to verify read/write/rename/delete access to a configured storage server.',
-    ],
-];
+// Deployment-specific overrides belong here. The complete default configuration
+// lives in config.php so fresh installs, tests, and FarmStore normalization use
+// the same values. Environment variables and farm_settings.local.php can still
+// override these settings without modifying tracked files.
+return [];

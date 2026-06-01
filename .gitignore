@@ -12,3 +12,6 @@ farm_settings.local.php
 # Local/package noise
 .DS_Store
 __MACOSX/
+
+/cluster/output
+.reflection_managed_files

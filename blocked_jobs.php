@@ -4,48 +4,12 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
+require_once __DIR__ . '/ui_helpers.php';
 
 $config = reflection_master_config();
 $store = reflection_farm_store($config);
 $message = null;
 $error = null;
-
-function reflection_h($value): string
-{
-    return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-}
-
-function reflection_short_value($value, int $limit = 120): string
-{
-    $value = (string) ($value ?? '—');
-    if ($value === '') {
-        return '—';
-    }
-    if (function_exists('mb_strlen') && mb_strlen($value) > $limit) {
-        return mb_substr($value, 0, $limit - 1) . '…';
-    }
-    if (!function_exists('mb_strlen') && strlen($value) > $limit) {
-        return substr($value, 0, $limit - 1) . '…';
-    }
-    return $value;
-}
-
-function reflection_relative_time($timestamp): string
-{
-    $timestamp = (string) ($timestamp ?? '');
-    if ($timestamp === '') {
-        return '—';
-    }
-    $time = strtotime($timestamp);
-    if ($time === false) {
-        return $timestamp;
-    }
-    $diff = max(0, time() - $time);
-    if ($diff < 60) return $diff . 's ago';
-    if ($diff < 3600) return (int) floor($diff / 60) . 'm ago';
-    if ($diff < 86400) return (int) floor($diff / 3600) . 'h ago';
-    return (int) floor($diff / 86400) . 'd ago';
-}
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $action = (string) ($_POST['blocked_action'] ?? '');

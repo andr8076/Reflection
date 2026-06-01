@@ -6,6 +6,7 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
 require_once __DIR__ . '/AutomationStore.php';
 require_once __DIR__ . '/StorageStore.php';
+require_once __DIR__ . '/ui_helpers.php';
 
 $config = reflection_master_config();
 $farmStore = reflection_farm_store($config);
@@ -16,16 +17,6 @@ $message = null;
 $error = null;
 $testResult = null;
 $runResult = null;
-
-function reflection_h($value): string
-{
-    return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-}
-
-function reflection_post_bool(string $key): bool
-{
-    return isset($_POST[$key]) && in_array((string) $_POST[$key], ['1', 'true', 'yes', 'on'], true);
-}
 
 function reflection_rule_from_post(AutomationStore $automationStore): array
 {

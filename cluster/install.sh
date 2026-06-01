@@ -107,6 +107,7 @@ echo "Visible terminal command found: $terminal"
 
 python3 -m py_compile \
     "$SCRIPT_DIR/Reflection.py" \
+    "$SCRIPT_DIR/task_registry.py" \
     "$SCRIPT_DIR/task_runner.py" \
     "$SCRIPT_DIR/run_setup.py" \
     "$SCRIPT_DIR/toggle_start_on_boot.py"

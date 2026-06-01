@@ -3,7 +3,6 @@ import contextlib
 import ftplib
 import hashlib
 import importlib.util
-import inspect
 import json
 import logging
 import os
@@ -17,8 +16,9 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
 from urllib.parse import quote, unquote, urlparse
+
+from task_registry import TaskDefinition, discover_task_definitions, normalize_task_result
 
 # --- CONFIGURATION ---
 DEFAULT_SERVER_URL = "http://your-server-domain.com/farm_api.php"
@@ -316,6 +316,7 @@ TASK_TIMEOUTS = dict(AGENT_CONFIG.get("task_timeouts", {}))
 TASK_LOG_TAIL_BYTES = int(AGENT_CONFIG.get("task_log_tail_bytes", DEFAULT_TASK_LOG_TAIL_BYTES))
 TASK_ISOLATION = bool(AGENT_CONFIG.get("task_isolation", DEFAULT_TASK_ISOLATION))
 TASK_RUNNER_PATH = Path(__file__).with_name("task_runner.py")
+UPDATE_SCRIPT_PATH = Path(__file__).resolve().parent.parent / "update.sh"
 MIN_FREE_SPACE_BYTES = int(float(AGENT_CONFIG.get("min_free_space_gb", DEFAULT_MIN_FREE_SPACE_GB)) * 1024 * 1024 * 1024)
 MIN_FREE_SPACE_MULTIPLIER = float(AGENT_CONFIG.get("min_free_space_multiplier", DEFAULT_MIN_FREE_SPACE_MULTIPLIER))
 LOCAL_TEMP_MAX_AGE_HOURS = int(AGENT_CONFIG.get("local_temp_max_age_hours", DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS))
@@ -383,54 +384,10 @@ class TaskOutcome:
 
     success: bool
     stop_agent: bool = False
+    restart_agent: bool = False
     reload_tasks: bool = False
     cleanup_source: bool = False
     message: str = ""
-
-
-@dataclass(frozen=True)
-class TaskDefinition:
-    """A standardized task loaded from a Python file in the tasks folder."""
-
-    name: str
-    run: Callable[[str, str, bool], Any]
-    install: Optional[Callable[[], None]] = None
-    description: str = ""
-
-
-def _import_task_file(path):
-    """Import one task file without requiring the tasks folder to be a package."""
-    module_name = f"reflection_task_{path.stem}"
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _load_task_definition(path):
-    """Validate one task file and return its standardized definition."""
-    module = _import_task_file(path)
-    task_name = getattr(module, "TASK_NAME", path.stem)
-    runner = getattr(module, "run", None)
-
-    if not callable(runner):
-        raise AttributeError(f"{path} must define run(source, delivery, overwrite_allowed).")
-
-    signature = inspect.signature(runner)
-    expected_args = ("source", "delivery", "overwrite_allowed")
-    if tuple(signature.parameters) != expected_args:
-        raise TypeError(f"{path} run function must be run(source, delivery, overwrite_allowed).")
-
-    installer = getattr(module, "install", None)
-    if installer is not None and not callable(installer):
-        raise TypeError(f"{path} install value must be a function when provided.")
-
-    return TaskDefinition(
-        name=task_name,
-        run=runner,
-        install=installer,
-        description=getattr(module, "DESCRIPTION", ""),
-    )
 
 
 def run_task_installer(task_name):
@@ -452,22 +409,8 @@ def run_task_installer(task_name):
 
 def _normalize_task_result(result):
     """Convert a task return value into a TaskOutcome."""
-    if isinstance(result, TaskOutcome):
-        return result
-
-    if isinstance(result, bool):
-        return TaskOutcome(success=result)
-
-    if isinstance(result, dict):
-        return TaskOutcome(
-            success=bool(result.get("success", False)),
-            stop_agent=bool(result.get("stop_agent", False)),
-            reload_tasks=bool(result.get("reload_tasks", False)),
-            cleanup_source=bool(result.get("cleanup_source", False)),
-            message=str(result.get("message", "")),
-        )
-
-    raise TypeError("Task run() must return a bool, dict, or TaskOutcome.")
+    normalized = normalize_task_result(result)
+    return TaskOutcome(**normalized)
 
 
 def _system_noop(source, delivery, overwrite_allowed):
@@ -523,6 +466,33 @@ def _system_shutdown(source, delivery, overwrite_allowed):
     }
 
 
+def _system_update_worker(source, delivery, overwrite_allowed):
+    """Download the latest worker code and restart this agent after acknowledgement."""
+    if not UPDATE_SCRIPT_PATH.is_file():
+        raise FileNotFoundError(f"Missing updater script: {UPDATE_SCRIPT_PATH}")
+
+    logging.info("Updating worker from GitHub with %s.", UPDATE_SCRIPT_PATH)
+    result = subprocess.run(
+        ["bash", str(UPDATE_SCRIPT_PATH)],
+        cwd=str(UPDATE_SCRIPT_PATH.parent),
+        capture_output=True,
+        text=True,
+        timeout=5 * 60,
+        check=False,
+    )
+    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+    output = output[-4000:]
+    if result.returncode != 0:
+        raise RuntimeError(f"Worker update failed with exit code {result.returncode}: {output or 'no output'}")
+
+    return {
+        "success": True,
+        "restart_agent": True,
+        "cleanup_source": False,
+        "message": output or "Worker updated successfully. Restart requested.",
+    }
+
+
 def _normalize_wake_job(source):
     """Parse legacy MAC lists and newer relay payloads from the master."""
     if not source:
@@ -571,6 +541,9 @@ def _send_wake_packet(mac_address, broadcast="255.255.255.255", port=9):
 def _system_wake_farm(source, delivery, overwrite_allowed):
     """Built-in task that sends Wake-on-LAN packets for configured machines."""
     targets, broadcast, port = _normalize_wake_job(source)
+    if not targets:
+        raise ValueError("Wake-on-LAN task did not include any target MAC addresses.")
+
     errors = []
     sent = 0
     for mac in targets:
@@ -629,6 +602,11 @@ def built_in_tasks():
             run=_system_shutdown,
             description="Built-in control task that stops the worker after reporting success.",
         ),
+        "update_worker": TaskDefinition(
+            name="update_worker",
+            run=_system_update_worker,
+            description="Built-in control task that downloads updates and restarts this worker.",
+        ),
         "wake_farm": TaskDefinition(
             name="wake_farm",
             run=_system_wake_farm,
@@ -644,17 +622,10 @@ def built_in_tasks():
 
 def discover_tasks():
     """Load standardized task files plus reserved built-in system tasks."""
-    registry = {}
-
-    for path in sorted(TASKS_DIR.glob("*.py")):
-        if path.name.startswith("_"):
-            continue
-
-        try:
-            definition = _load_task_definition(path)
-            registry[definition.name] = definition
-        except Exception as e:
-            logging.error("Failed to load task file '%s': %s", path, e)
+    registry = discover_task_definitions(
+        TASKS_DIR,
+        on_error=lambda path, exc: logging.error("Failed to load task file '%s': %s", path, exc),
+    )
 
     built_ins = built_in_tasks()
     reserved_names = sorted(set(registry) & set(built_ins))
@@ -1832,6 +1803,10 @@ class FarmAgent:
 
             if task_outcome.reload_tasks:
                 self.reload_task_registry()
+
+            if task_outcome.restart_agent:
+                logging.info("Update task %s confirmed by server. Restarting agent.", task_id)
+                os.execv(sys.executable, [sys.executable, *sys.argv])
 
             if task_outcome.stop_agent:
                 logging.info("Shutdown task %s confirmed by server. Stopping agent.", task_id)

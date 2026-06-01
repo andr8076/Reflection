@@ -5,6 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
 require_once __DIR__ . '/StorageStore.php';
+require_once __DIR__ . '/ui_helpers.php';
 
 $config = reflection_master_config();
 $store = reflection_farm_store($config);
@@ -16,11 +17,6 @@ $storageServerIds = array_map(static function (array $server): string {
 }, $storageServers);
 $message = null;
 $error = null;
-
-function reflection_h($value): string
-{
-    return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-}
 
 function reflection_storage_server_label(array $server): string
 {
@@ -127,42 +123,6 @@ function reflection_uploaded_import_text(string $field): string
     return (string) file_get_contents($tmpName);
 }
 
-function reflection_parse_machine_list(string $raw): array
-{
-    $machines = [];
-    foreach (preg_split('/\r\n|\r|\n/', trim($raw)) ?: [] as $line) {
-        $line = trim($line);
-        if ($line === '' || reflection_string_starts_with($line, '#')) {
-            continue;
-        }
-
-        $parts = array_map('trim', explode(',', $line));
-        $machines[] = [
-            'pc_id' => $parts[0] ?? '',
-            'mac' => $parts[1] ?? '',
-            'soc_margin_percent' => (int) ($parts[2] ?? 5),
-            'wake_enabled' => !isset($parts[3]) || !in_array(strtolower($parts[3]), ['0', 'false', 'no', 'off'], true),
-        ];
-    }
-
-    return $machines;
-}
-
-function reflection_machine_list_text(array $machines): string
-{
-    $lines = [];
-    foreach ($machines as $machine) {
-        $lines[] = implode(',', [
-            $machine['pc_id'] ?? '',
-            $machine['mac'] ?? '',
-            $machine['soc_margin_percent'] ?? 5,
-            !empty($machine['wake_enabled']) ? '1' : '0',
-        ]);
-    }
-
-    return implode(PHP_EOL, $lines);
-}
-
 function reflection_worker_cards(array $workers, array $machines): array
 {
     $cards = [];
@@ -223,104 +183,6 @@ function reflection_count_worker_states(array $workerCards): array
     return $counts;
 }
 
-function reflection_format_bytes(int $bytes): string
-{
-    if ($bytes < 1024) {
-        return $bytes . ' B';
-    }
-
-    $units = ['KB', 'MB', 'GB', 'TB'];
-    $value = $bytes / 1024;
-    foreach ($units as $unit) {
-        if ($value < 1024) {
-            return number_format($value, $value >= 10 ? 1 : 2) . ' ' . $unit;
-        }
-        $value /= 1024;
-    }
-
-    return number_format($value, 2) . ' PB';
-}
-
-function reflection_relative_time($timestamp): string
-{
-    $timestamp = (string) ($timestamp ?? '');
-    if ($timestamp === '') {
-        return '—';
-    }
-
-    $time = strtotime($timestamp);
-    if ($time === false) {
-        return $timestamp;
-    }
-
-    $diff = max(0, time() - $time);
-    if ($diff < 60) {
-        return $diff . 's ago';
-    }
-
-    if ($diff < 3600) {
-        return (int) floor($diff / 60) . 'm ago';
-    }
-
-    if ($diff < 86400) {
-        return (int) floor($diff / 3600) . 'h ago';
-    }
-
-    return (int) floor($diff / 86400) . 'd ago';
-}
-
-function reflection_short_value($value, int $limit = 96): string
-{
-    $value = (string) ($value ?? '—');
-    if ($value === '') {
-        return '—';
-    }
-
-    if (function_exists('mb_strlen') && mb_strlen($value) > $limit) {
-        return mb_substr($value, 0, $limit - 1) . '…';
-    }
-
-    if (!function_exists('mb_strlen') && strlen($value) > $limit) {
-        return substr($value, 0, $limit - 1) . '…';
-    }
-
-    return $value;
-}
-
-function reflection_status_class($status): string
-{
-    $status = preg_replace('/[^a-z0-9_-]/i', '', (string) $status);
-    return $status !== '' ? strtolower($status) : 'unknown';
-}
-
-function reflection_ess_soc_is_ignored(array $settings): bool
-{
-    $url = trim((string) ($settings['ess_soc_url'] ?? ''));
-    if ($url === '' || empty($settings['ess_ignore_when_unavailable'])) {
-        return false;
-    }
-
-    return ($settings['ess_soc_status'] ?? 'manual') !== 'online';
-}
-
-function reflection_ess_status_label(array $settings): string
-{
-    $status = (string) ($settings['ess_soc_status'] ?? 'manual');
-    if ($status === 'online') {
-        return 'online';
-    }
-
-    if ($status === 'offline') {
-        return 'connection failed';
-    }
-
-    if ($status === 'parse_error') {
-        return 'parse failed';
-    }
-
-    return 'manual';
-}
-
 function reflection_url_with(array $overrides): string
 {
     $query = array_merge($_GET, $overrides);
@@ -334,20 +196,6 @@ function reflection_url_with(array $overrides): string
     return $queryString === '' ? '?' : '?' . $queryString;
 }
 
-function reflection_run_store_maintenance(FarmStore $store, array $settings): array
-{
-    return [
-        'archived_jobs' => $store->archiveOldCompletedJobs((int) ($settings['job_history_keep_completed'] ?? 500)),
-        'trimmed_events' => $store->trimEventLog((int) ($settings['event_log_keep_lines'] ?? 1000)),
-        'trimmed_file_history' => $store->compactFileHistory(
-            (int) ($settings['file_history_keep_paths'] ?? 500),
-            (int) ($settings['file_history_keep_entries_per_path'] ?? 10),
-        ),
-        'trimmed_job_archive' => $store->trimJobArchive((int) ($settings['job_archive_keep_lines'] ?? 5000)),
-    ];
-}
-
-
 function reflection_append_message(?string $message, string $addition): string
 {
     $addition = trim($addition);
@@ -357,6 +205,35 @@ function reflection_append_message(?string $message, string $addition): string
 
     $current = trim((string) ($message ?? ''));
     return $current === '' ? $addition : $current . ' ' . $addition;
+}
+
+function reflection_manual_wake_result(FarmStore $store, int $staleAfterSeconds): array
+{
+    $targets = $store->wakeTargetsForCurrentSoc(true, $staleAfterSeconds);
+    if ($targets === []) {
+        return [
+            'message' => null,
+            'error' => 'No Wake-on-LAN targets are currently eligible. Check configured machines, MAC addresses, SOC margins, and current online workers.',
+        ];
+    }
+
+    $wakeResult = $store->dispatchWakeTargets($targets, 'manual');
+    $sent = (int) ($wakeResult['sent'] ?? 0);
+    $queued = (int) ($wakeResult['queued'] ?? 0);
+    if ($queued > 0) {
+        $message = 'Queued a Wake-on-LAN relay task for ' . $queued . ' computer' . ($queued === 1 ? '' : 's') . '. The next worker that checks in will send the packets.';
+    } else {
+        $message = 'Sent Wake-on-LAN packets to ' . $sent . ' computer' . ($sent === 1 ? '' : 's') . '.';
+    }
+    if (!empty($wakeResult['relay_pending'])) {
+        $message = 'A Wake-on-LAN relay task is already queued or running.';
+    }
+
+    $failed = (int) ($wakeResult['failed'] ?? 0);
+    return [
+        'message' => $message,
+        'error' => $failed > 0 ? $failed . ' Wake-on-LAN attempt(s) failed. Check recent events for details.' : null,
+    ];
 }
 
 function reflection_auto_wake_notice(FarmStore $store, int $staleAfterSeconds, string $reason): ?string
@@ -398,7 +275,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $module = trim((string) ($_POST['module'] ?? ''));
     $delivery = trim((string) ($_POST[$formAction === 'bulk' ? 'bulk_delivery' : 'single_delivery'] ?? ''));
     $overwriteAllowed = isset($_POST['overwrite_allowed']);
-    $controlTasks = ['noop', 'status', 'reload_tasks', 'shutdown', 'wake_farm'];
+    $controlTasks = ['noop', 'status', 'reload_tasks', 'shutdown', 'update_worker', 'wake_farm'];
     $isControlTask = in_array($module, $controlTasks, true);
     $transferServerId = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($_POST['transfer_server_id'] ?? '')) ?: '';
     $transferExtra = (!$isControlTask && $transferServerId !== '') ? ['transfer_server_id' => $transferServerId] : [];
@@ -440,26 +317,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     } elseif ($formAction === 'maintenance') {
         $maintenance = reflection_run_store_maintenance($store, $store->effectiveSettings());
         $message = 'Maintenance complete. Archived ' . $maintenance['archived_jobs'] . ' old completed job(s), trimmed ' . $maintenance['trimmed_events'] . ' event(s), compacted ' . $maintenance['trimmed_file_history'] . ' file-history item(s), and trimmed ' . $maintenance['trimmed_job_archive'] . ' archived job line(s).';
-    } elseif ($formAction === 'wake_farm') {
-        $targets = $store->wakeTargetsForCurrentSoc(true, (int) ($config['stale_after_seconds'] ?? 900));
-        if ($targets === []) {
-            $error = 'No Wake-on-LAN targets are currently eligible. Check configured machines, MAC addresses, SOC margins, and current online workers.';
-        } else {
-            $wakeResult = $store->dispatchWakeTargets($targets, 'manual');
-            $sent = (int) ($wakeResult['sent'] ?? 0);
-            $queued = (int) ($wakeResult['queued'] ?? 0);
-            if ($queued > 0) {
-                $message = 'Queued a Wake-on-LAN relay task for ' . $queued . ' computer' . ($queued === 1 ? '' : 's') . '. The next worker that checks in will send the packets.';
-            } else {
-                $message = 'Sent Wake-on-LAN packets to ' . $sent . ' computer' . ($sent === 1 ? '' : 's') . '.';
-            }
-            if (!empty($wakeResult['relay_pending'])) {
-                $message = 'A Wake-on-LAN relay task is already queued or running.';
-            }
-            if ((int) ($wakeResult['failed'] ?? 0) > 0) {
-                $error = (int) ($wakeResult['failed'] ?? 0) . ' Wake-on-LAN attempt(s) failed. Check recent events for details.';
-            }
-        }
+    } elseif ($formAction === 'wake_farm' || $module === 'wake_farm') {
+        $wake = reflection_manual_wake_result($store, (int) ($config['stale_after_seconds'] ?? 900));
+        $message = $wake['message'];
+        $error = $wake['error'];
     } elseif ($formAction === 'bulk') {
         $importText = (string) ($_POST['source_list'] ?? '');
         $uploadedText = reflection_uploaded_import_text('source_file');

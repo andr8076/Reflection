@@ -308,6 +308,118 @@ class TaskOutcomeTest(unittest.TestCase):
 
         self.assertTrue(outcome.success)
         self.assertFalse(outcome.cleanup_source)
+        self.assertFalse(outcome.restart_agent)
+
+
+class WakeFarmTest(unittest.TestCase):
+    def test_wake_job_reads_relay_payload_and_sends_each_target(self):
+        source = json.dumps({
+            "targets": [{"pc_id": "node-1", "mac": "AA:BB:CC:DD:EE:01"}, "AA:BB:CC:DD:EE:02"],
+            "broadcast": "192.0.2.255",
+            "port": 7,
+        })
+        seen = []
+        original_sender = Reflection._send_wake_packet
+        try:
+            Reflection._send_wake_packet = lambda mac, broadcast, port: seen.append((mac, broadcast, port))
+            outcome = Reflection._normalize_task_result(Reflection._system_wake_farm(source, "", False))
+        finally:
+            Reflection._send_wake_packet = original_sender
+
+        self.assertTrue(outcome.success)
+        self.assertEqual([
+            ("AA:BB:CC:DD:EE:01", "192.0.2.255", 7),
+            ("AA:BB:CC:DD:EE:02", "192.0.2.255", 7),
+        ], seen)
+
+    def test_wake_job_rejects_missing_target_payload(self):
+        with self.assertRaisesRegex(ValueError, "did not include any target MAC addresses"):
+            Reflection._system_wake_farm(None, "", False)
+
+
+class WorkerUpdateTest(unittest.TestCase):
+    def test_update_worker_runs_updater_and_requests_restart(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            update_script = Path(temp_dir) / "update.sh"
+            update_script.write_text("#!/usr/bin/env bash\necho fixture update complete\n", encoding="utf-8")
+            update_script.chmod(0o755)
+            original_update_script = Reflection.UPDATE_SCRIPT_PATH
+            try:
+                Reflection.UPDATE_SCRIPT_PATH = update_script
+                outcome = Reflection._normalize_task_result(Reflection._system_update_worker("", "", False))
+            finally:
+                Reflection.UPDATE_SCRIPT_PATH = original_update_script
+
+            self.assertTrue(outcome.success)
+            self.assertTrue(outcome.restart_agent)
+            self.assertFalse(outcome.stop_agent)
+            self.assertIn("fixture update complete", outcome.message)
+
+    def test_update_worker_reports_updater_failures(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            update_script = Path(temp_dir) / "update.sh"
+            update_script.write_text("#!/usr/bin/env bash\necho fixture update failed >&2\nexit 7\n", encoding="utf-8")
+            update_script.chmod(0o755)
+            original_update_script = Reflection.UPDATE_SCRIPT_PATH
+            try:
+                Reflection.UPDATE_SCRIPT_PATH = update_script
+                with self.assertRaisesRegex(RuntimeError, "fixture update failed"):
+                    Reflection._system_update_worker("", "", False)
+            finally:
+                Reflection.UPDATE_SCRIPT_PATH = original_update_script
+
+    def test_update_worker_is_always_available_as_a_builtin(self):
+        self.assertIn("update_worker", Reflection.built_in_tasks())
+
+    def test_confirmed_update_replaces_the_current_agent_process(self):
+        class RestartRequested(Exception):
+            pass
+
+        class FakeAgent:
+            def check_for_task(self):
+                return {
+                    "status": "task_available",
+                    "task": {"task_id": "job_update", "module": "update_worker"},
+                }
+
+            def confirm_task_taken(self, task_id):
+                return task_id == "job_update"
+
+            def heartbeat_task(self, task_id):
+                return {"status": "heartbeat_acknowledged"}
+
+            def report_task_done(self, task_id, success, error_message):
+                return {"status": "confirmed_by_server", "shutdown_after_task": False}
+
+            def cleanup_files(self, source):
+                raise AssertionError("update task should not clean source files")
+
+            def reload_task_registry(self):
+                raise AssertionError("update task should restart rather than reload in-process")
+
+        original_runner = Reflection._run_task_with_transfer_handling
+        original_execv = Reflection.os.execv
+        seen = []
+        try:
+            Reflection._run_task_with_transfer_handling = lambda *args, **kwargs: Reflection.TaskOutcome(
+                success=True,
+                restart_agent=True,
+                message="updated",
+            )
+
+            def record_execv(executable, arguments):
+                seen.append((executable, arguments))
+                raise RestartRequested()
+
+            Reflection.os.execv = record_execv
+            with self.assertRaises(RestartRequested):
+                Reflection.FarmAgent._run_lifecycle_cycle(FakeAgent())
+        finally:
+            Reflection._run_task_with_transfer_handling = original_runner
+            Reflection.os.execv = original_execv
+
+        self.assertEqual(seen[0][0], Reflection.sys.executable)
+        self.assertEqual(seen[0][1][0], Reflection.sys.executable)
 
 
 class TransferHandlingTest(unittest.TestCase):
