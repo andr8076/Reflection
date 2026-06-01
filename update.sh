@@ -7,6 +7,7 @@ GITHUB_REPOSITORY="andr8076/Reflection"
 ARCHIVE_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TOKEN_FILE="$SCRIPT_DIR/.reflection_github_token"
+MANIFEST_FILE="$SCRIPT_DIR/.reflection_managed_files"
 TOKEN="${REFLECTION_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
 if [[ -z "$TOKEN" && -f "$TOKEN_FILE" ]]; then
     IFS= read -r TOKEN < "$TOKEN_FILE" || true
@@ -64,22 +65,33 @@ if [[ -z "$SOURCE_DIR" || ! -f "$SOURCE_DIR/config.php" || ! -f "$SOURCE_DIR/clu
     exit 1
 fi
 
-# Copy the tracked application files over the current checkout. Local runtime
-# files are not present in the GitHub archive, so data/, farm_settings.local.php,
-# and cluster/reflection_config.json remain untouched.
-python3 - "$SOURCE_DIR" "$SCRIPT_DIR" <<'PY'
+# Copy the downloaded application files over the current checkout. Keep a small
+# local manifest so later updates can remove files that disappeared upstream
+# without deleting unrelated local files or runtime state.
+python3 - "$SOURCE_DIR" "$SCRIPT_DIR" "$MANIFEST_FILE" <<'PY'
 import shutil
 import sys
 from pathlib import Path
 
 source = Path(sys.argv[1])
 target = Path(sys.argv[2])
-for child in source.iterdir():
-    destination = target / child.name
-    if child.is_dir():
-        shutil.copytree(child, destination, dirs_exist_ok=True)
-    else:
-        shutil.copy2(child, destination)
+manifest_path = Path(sys.argv[3])
+files = sorted(path.relative_to(source) for path in source.rglob("*") if path.is_file())
+current = {str(path) for path in files}
+if manifest_path.is_file():
+    previous = {line for line in manifest_path.read_text(encoding="utf-8").splitlines() if line}
+    for relative in sorted(previous - current, reverse=True):
+        stale = target / relative
+        if stale.is_file() or stale.is_symlink():
+            stale.unlink()
+
+for relative in files:
+    source_file = source / relative
+    destination = target / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_file, destination)
+
+manifest_path.write_text("".join(f"{relative}\n" for relative in files), encoding="utf-8")
 PY
 
 # Validate the worker entry points after copying so a bad archive is obvious.
