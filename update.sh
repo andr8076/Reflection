@@ -4,14 +4,9 @@ set -Eeuo pipefail
 # Reflection's upstream is intentionally fixed so an update is one command:
 #   ./update.sh
 GITHUB_REPOSITORY="andr8076/Reflection"
-ARCHIVE_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball"
+ARCHIVE_URL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/heads/main.tar.gz"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-TOKEN_FILE="$SCRIPT_DIR/.reflection_github_token"
 MANIFEST_FILE="$SCRIPT_DIR/.reflection_managed_files"
-TOKEN="${REFLECTION_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
-if [[ -z "$TOKEN" && -f "$TOKEN_FILE" ]]; then
-    IFS= read -r TOKEN < "$TOKEN_FILE" || true
-fi
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reflection-update.XXXXXX")"
 ARCHIVE_PATH="$TEMP_DIR/reflection.tar.gz"
 EXTRACT_DIR="$TEMP_DIR/extracted"
@@ -38,22 +33,13 @@ curl_args=(
     --location
     --silent
     --show-error
-    --header "Accept: application/vnd.github+json"
-    --header "X-GitHub-Api-Version: 2026-03-10"
     --output "$ARCHIVE_PATH"
 )
-if [[ -n "$TOKEN" ]]; then
-    curl_args+=(--header "Authorization: Bearer $TOKEN")
-fi
-
-echo "Downloading the latest ${GITHUB_REPOSITORY} default branch..."
+echo "Downloading the latest ${GITHUB_REPOSITORY} main branch..."
 if ! curl "${curl_args[@]}" "$ARCHIVE_URL"; then
     echo >&2
     echo "Unable to download the Reflection update from GitHub." >&2
-    echo "If the repository is private, save a read-only GitHub token once:" >&2
-    echo "  printf '%s\n' 'github-token' > '$TOKEN_FILE'" >&2
-    echo "  chmod 600 '$TOKEN_FILE'" >&2
-    echo "Then run ./update.sh again." >&2
+    echo "Check your network connection and try ./update.sh again." >&2
     exit 1
 fi
 
