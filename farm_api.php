@@ -160,7 +160,7 @@ function reflection_worker_transfer_server_for_job(array $job, array $config): ?
 
 function reflection_is_control_task(string $module): bool
 {
-    return in_array($module, ['noop', 'status', 'reload_tasks', 'shutdown', 'wake_farm', 'storage_test'], true);
+    return in_array($module, ['noop', 'status', 'reload_tasks', 'shutdown', 'update_worker', 'wake_farm', 'storage_test'], true);
 }
 
 function reflection_run_due_automation_on_worker_checkin(FarmStore $store, array $config): array

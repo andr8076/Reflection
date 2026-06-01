@@ -56,6 +56,7 @@ def main() -> int:
         error = {
             "success": False,
             "stop_agent": False,
+            "restart_agent": False,
             "reload_tasks": False,
             "cleanup_source": False,
             "message": f"Task called sys.exit({code}).",
@@ -66,6 +67,7 @@ def main() -> int:
         error = {
             "success": False,
             "stop_agent": False,
+            "restart_agent": False,
             "reload_tasks": False,
             "cleanup_source": False,
             "message": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",

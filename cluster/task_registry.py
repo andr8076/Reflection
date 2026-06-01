@@ -102,6 +102,7 @@ def normalize_task_result(result: Any) -> dict:
         return {
             "success": result,
             "stop_agent": False,
+            "restart_agent": False,
             "reload_tasks": False,
             "cleanup_source": False,
             "message": "",
@@ -110,6 +111,7 @@ def normalize_task_result(result: Any) -> dict:
         return {
             "success": bool(result.get("success", False)),
             "stop_agent": bool(result.get("stop_agent", False)),
+            "restart_agent": bool(result.get("restart_agent", False)),
             "reload_tasks": bool(result.get("reload_tasks", False)),
             "cleanup_source": bool(result.get("cleanup_source", False)),
             "message": str(result.get("message", "")),
@@ -118,6 +120,7 @@ def normalize_task_result(result: Any) -> dict:
         return {
             "success": bool(getattr(result, "success")),
             "stop_agent": bool(getattr(result, "stop_agent", False)),
+            "restart_agent": bool(getattr(result, "restart_agent", False)),
             "reload_tasks": bool(getattr(result, "reload_tasks", False)),
             "cleanup_source": bool(getattr(result, "cleanup_source", False)),
             "message": str(getattr(result, "message", "")),

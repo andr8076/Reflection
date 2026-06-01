@@ -316,6 +316,7 @@ TASK_TIMEOUTS = dict(AGENT_CONFIG.get("task_timeouts", {}))
 TASK_LOG_TAIL_BYTES = int(AGENT_CONFIG.get("task_log_tail_bytes", DEFAULT_TASK_LOG_TAIL_BYTES))
 TASK_ISOLATION = bool(AGENT_CONFIG.get("task_isolation", DEFAULT_TASK_ISOLATION))
 TASK_RUNNER_PATH = Path(__file__).with_name("task_runner.py")
+UPDATE_SCRIPT_PATH = Path(__file__).resolve().parent.parent / "update.sh"
 MIN_FREE_SPACE_BYTES = int(float(AGENT_CONFIG.get("min_free_space_gb", DEFAULT_MIN_FREE_SPACE_GB)) * 1024 * 1024 * 1024)
 MIN_FREE_SPACE_MULTIPLIER = float(AGENT_CONFIG.get("min_free_space_multiplier", DEFAULT_MIN_FREE_SPACE_MULTIPLIER))
 LOCAL_TEMP_MAX_AGE_HOURS = int(AGENT_CONFIG.get("local_temp_max_age_hours", DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS))
@@ -383,6 +384,7 @@ class TaskOutcome:
 
     success: bool
     stop_agent: bool = False
+    restart_agent: bool = False
     reload_tasks: bool = False
     cleanup_source: bool = False
     message: str = ""
@@ -461,6 +463,33 @@ def _system_shutdown(source, delivery, overwrite_allowed):
         "stop_agent": True,
         "cleanup_source": False,
         "message": "Agent shutdown requested.",
+    }
+
+
+def _system_update_worker(source, delivery, overwrite_allowed):
+    """Download the latest worker code and restart this agent after acknowledgement."""
+    if not UPDATE_SCRIPT_PATH.is_file():
+        raise FileNotFoundError(f"Missing updater script: {UPDATE_SCRIPT_PATH}")
+
+    logging.info("Updating worker from GitHub with %s.", UPDATE_SCRIPT_PATH)
+    result = subprocess.run(
+        ["bash", str(UPDATE_SCRIPT_PATH)],
+        cwd=str(UPDATE_SCRIPT_PATH.parent),
+        capture_output=True,
+        text=True,
+        timeout=5 * 60,
+        check=False,
+    )
+    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+    output = output[-4000:]
+    if result.returncode != 0:
+        raise RuntimeError(f"Worker update failed with exit code {result.returncode}: {output or 'no output'}")
+
+    return {
+        "success": True,
+        "restart_agent": True,
+        "cleanup_source": False,
+        "message": output or "Worker updated successfully. Restart requested.",
     }
 
 
@@ -569,6 +598,11 @@ def built_in_tasks():
             name="shutdown",
             run=_system_shutdown,
             description="Built-in control task that stops the worker after reporting success.",
+        ),
+        "update_worker": TaskDefinition(
+            name="update_worker",
+            run=_system_update_worker,
+            description="Built-in control task that downloads updates and restarts this worker.",
         ),
         "wake_farm": TaskDefinition(
             name="wake_farm",
@@ -1766,6 +1800,10 @@ class FarmAgent:
 
             if task_outcome.reload_tasks:
                 self.reload_task_registry()
+
+            if task_outcome.restart_agent:
+                logging.info("Update task %s confirmed by server. Restarting agent.", task_id)
+                os.execv(sys.executable, [sys.executable, *sys.argv])
 
             if task_outcome.stop_agent:
                 logging.info("Shutdown task %s confirmed by server. Stopping agent.", task_id)

@@ -246,7 +246,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $module = trim((string) ($_POST['module'] ?? ''));
     $delivery = trim((string) ($_POST[$formAction === 'bulk' ? 'bulk_delivery' : 'single_delivery'] ?? ''));
     $overwriteAllowed = isset($_POST['overwrite_allowed']);
-    $controlTasks = ['noop', 'status', 'reload_tasks', 'shutdown', 'wake_farm'];
+    $controlTasks = ['noop', 'status', 'reload_tasks', 'shutdown', 'update_worker', 'wake_farm'];
     $isControlTask = in_array($module, $controlTasks, true);
     $transferServerId = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($_POST['transfer_server_id'] ?? '')) ?: '';
     $transferExtra = (!$isControlTask && $transferServerId !== '') ? ['transfer_server_id' => $transferServerId] : [];

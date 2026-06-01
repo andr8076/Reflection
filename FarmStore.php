@@ -1639,7 +1639,7 @@ final class FarmStore
 
     private function isControlModule(string $module): bool
     {
-        return in_array($module, ['noop', 'status', 'reload_tasks', 'shutdown', 'wake_farm', 'storage_test'], true);
+        return in_array($module, ['noop', 'status', 'reload_tasks', 'shutdown', 'update_worker', 'wake_farm', 'storage_test'], true);
     }
 
     private function onlineWorkersFromData(array $data, int $staleAfterSeconds): array

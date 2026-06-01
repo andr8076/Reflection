@@ -144,6 +144,7 @@ function reflection_default_allowed_tasks(): array
         'status' => 'Built-in worker health snapshot.',
         'reload_tasks' => 'Ask a worker to reload its local task registry.',
         'shutdown' => 'Ask a worker to stop after reporting success.',
+        'update_worker' => 'Ask a worker to download the latest code and restart itself.',
         'wake_farm' => 'Ask a worker to send Wake-on-LAN packets to configured farm computers.',
         'storage_test' => 'Ask a worker to verify read/write/rename/delete access to a configured storage server.',
     ];
