@@ -245,17 +245,55 @@ TASKS_DIR = Path(__file__).with_name("tasks")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 
 
-def _merge_transfer_auth(task_transfer_auth):
-    """Merge master-supplied transfer auth with local setup defaults."""
-    merged = dict(task_transfer_auth) if isinstance(task_transfer_auth, dict) else {}
-    if not isinstance(LOCAL_TRANSFER_AUTH, dict):
-        return merged
+def _merge_transfer_settings(task_transfer_server=None, task_transfer_auth=None):
+    """Merge master-supplied server details with this worker's local login.
 
-    for key, value in LOCAL_TRANSFER_AUTH.items():
-        if value in (None, ""):
-            continue
-        merged[key] = value
+    The master should describe where the shared storage server lives. Each worker
+    should keep its own username/password locally. Legacy master-supplied
+    credentials are still accepted only as a fallback when the worker has none.
+    """
+    merged = {}
+    local_auth = LOCAL_TRANSFER_AUTH if isinstance(LOCAL_TRANSFER_AUTH, dict) else {}
+    legacy_auth = task_transfer_auth if isinstance(task_transfer_auth, dict) else {}
+    server = task_transfer_server if isinstance(task_transfer_server, dict) else {}
+
+    # Local values are useful defaults when a task URL already contains a host
+    # but omits credentials, or while running older jobs without transfer_server.
+    for key in ("scheme", "host", "port", "root"):
+        value = local_auth.get(key)
+        if value not in (None, ""):
+            merged[key] = value
+
+    # Backwards compatibility: older masters used transfer_auth for both server
+    # details and credentials. Keep accepting the server part from that object.
+    for key in ("scheme", "host", "port", "root"):
+        value = legacy_auth.get(key)
+        if value not in (None, ""):
+            merged[key] = value
+
+    # Preferred path: server connection details supplied by the master.
+    for key in ("scheme", "host", "port", "root"):
+        value = server.get(key)
+        if value not in (None, ""):
+            merged[key] = value
+
+    # Preferred credentials: the worker's own local login. Legacy task
+    # credentials are only a fallback for older deployments.
+    for key in ("username", "password"):
+        value = local_auth.get(key)
+        if value not in (None, ""):
+            merged[key] = value
+        else:
+            fallback = legacy_auth.get(key)
+            if fallback not in (None, ""):
+                merged[key] = fallback
+
     return merged
+
+
+def _merge_transfer_auth(task_transfer_auth):
+    """Backward-compatible wrapper for tests and older code paths."""
+    return _merge_transfer_settings(None, task_transfer_auth)
 
 
 @dataclass(frozen=True)
@@ -523,6 +561,60 @@ def _is_sftp_uri(value):
     return urlparse(str(value)).scheme.lower() == "sftp"
 
 
+def _transfer_server_is_usable(transfer_auth):
+    """Return true when a shared storage server is described for this job."""
+    if not isinstance(transfer_auth, dict):
+        return False
+    scheme = str(transfer_auth.get("scheme", "ftp")).lower()
+    return scheme in {"ftp", "ftps", "sftp"} and bool(str(transfer_auth.get("host", "")).strip())
+
+
+def _quote_remote_path(remote_path):
+    """Quote a remote path while preserving directory separators."""
+    return quote(str(remote_path), safe="/")
+
+
+def _apply_transfer_root(remote_path, transfer_auth):
+    """Apply an optional remote root/prefix to a worker-visible path."""
+    path = str(remote_path or "").strip()
+    root = str((transfer_auth or {}).get("root", "")).strip()
+    if not root or root == "/":
+        return path or "/"
+
+    root = root.rstrip("/")
+    if path.startswith(root + "/") or path == root:
+        return path
+    if path.startswith("/"):
+        return root + path
+    return root + "/" + path
+
+
+def _transfer_uri_from_plain_path(value, transfer_auth):
+    """Build a credential-free transfer URI for a remote path supplied by the master."""
+    if value in (None, ""):
+        return value
+    if _is_transfer_uri(value):
+        return value
+    if not _transfer_server_is_usable(transfer_auth):
+        return value
+
+    scheme = str(transfer_auth.get("scheme", "ftp")).lower()
+    host = str(transfer_auth.get("host", "")).strip()
+    default_port = 22 if scheme == "sftp" else (990 if scheme == "ftps" else 21)
+    try:
+        port = int(transfer_auth.get("port") or default_port)
+    except (TypeError, ValueError):
+        port = default_port
+
+    remote_path = _apply_transfer_root(str(value), transfer_auth)
+    if not remote_path.startswith("/"):
+        remote_path = "/" + remote_path
+    netloc = host
+    if port and port != default_port:
+        netloc = f"{netloc}:{port}"
+    return f"{scheme}://{netloc}{_quote_remote_path(remote_path)}"
+
+
 def _transfer_connection_details(parsed_uri, transfer_auth):
     """Resolve transfer connection settings using URI values first, then auth defaults."""
     auth = transfer_auth if isinstance(transfer_auth, dict) else {}
@@ -772,12 +864,22 @@ def _transfer_delivery_target(delivery, prepared_source, temp_path):
     return str(temp_path / "delivery" / delivery_name), upload_delivery
 
 
-def _prepare_transfer_paths(source, delivery, task_id, transfer_auth):
-    """Convert transfer URIs into local task paths and final upload URI."""
+def _prepare_transfer_paths(
+    source,
+    delivery,
+    task_id,
+    transfer_auth,
+    use_transfer_server_for_plain_paths=False,
+):
+    """Convert remote transfer paths into local task paths and final upload URI."""
     temp_directory = None
     prepared_source = source
     prepared_delivery = delivery
     upload_delivery = delivery
+
+    if use_transfer_server_for_plain_paths:
+        source = _transfer_uri_from_plain_path(source, transfer_auth)
+        delivery = _transfer_uri_from_plain_path(delivery, transfer_auth)
 
     if _is_transfer_uri(source) or _is_transfer_uri(delivery):
         temp_directory = tempfile.TemporaryDirectory(
@@ -808,6 +910,7 @@ def _run_task_with_transfer_handling(
     overwrite_allowed,
     task_id,
     transfer_auth,
+    use_transfer_server_for_plain_paths=False,
 ):
     """Run one task and treat download/upload errors as task failures."""
     transfer_workspace = None
@@ -822,6 +925,7 @@ def _run_task_with_transfer_handling(
             delivery,
             task_id,
             transfer_auth,
+            use_transfer_server_for_plain_paths,
         )
         task_outcome = agent.run_task(
             module_name,
@@ -981,7 +1085,14 @@ class FarmAgent:
             source = task.get("source")
             delivery = task.get("delivery")
             overwrite_allowed = task.get("overwrite_allowed", False)
-            transfer_auth = _merge_transfer_auth(task.get("transfer_auth", {}))
+            transfer_auth = _merge_transfer_settings(
+                task.get("transfer_server", {}),
+                task.get("transfer_auth", {}),
+            )
+            use_transfer_server_for_plain_paths = (
+                task.get("path_mode") == "transfer"
+                and isinstance(task.get("transfer_server"), dict)
+            )
 
             # 3. Confirm task taken
             if not self.confirm_task_taken(task_id):
@@ -1002,6 +1113,7 @@ class FarmAgent:
                 overwrite_allowed,
                 task_id,
                 transfer_auth,
+                use_transfer_server_for_plain_paths,
             )
             error_message = task_outcome.message
 

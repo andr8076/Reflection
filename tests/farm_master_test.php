@@ -75,6 +75,8 @@ assertSameValue('paint-token', $customConfig['api_token'], 'Custom API token sho
 assertSameValue('paint-user', $customConfig['transfer_auth']['username'], 'Custom FTP username should be loaded from farm settings.');
 assertSameValue('paint-pass', $customConfig['transfer_auth']['password'], 'Custom FTP password should be loaded from farm settings.');
 assertSameValue('ftp.example.test', $customConfig['transfer_auth']['host'], 'Custom FTP host should be loaded from farm settings.');
+assertSameValue('ftp.example.test', $customConfig['transfer_server']['host'], 'Transfer server host should default to the configured FTP host.');
+assertSameValue(990, $customConfig['transfer_server']['port'], 'Transfer server port should default to the configured FTP port.');
 assertSameValue('paint-version', $customConfig['required_version'], 'Custom required version should be loaded from farm settings.');
 assertSameValue('http://example.test/soc', $customConfig['runtime_defaults']['ess_soc_url'], 'Runtime defaults should be loaded from farm settings.');
 assertSameValue(30, $customConfig['stale_after_seconds'], 'Stale timeout should be loaded from farm settings.');
@@ -231,6 +233,45 @@ assertSameValue(
     ])['username'],
     'Configured transfer credentials should still be available to workers.'
 );
+
+assertSameValue(
+    'files.example.test',
+    reflection_worker_transfer_server([
+        'transfer_server' => [
+            'scheme' => 'sftp',
+            'host' => 'files.example.test',
+            'port' => 2222,
+            'root' => '/shared',
+        ],
+    ])['host'],
+    'Configured transfer server details should be available without credentials.'
+);
+
+$serverStorePath = sys_get_temp_dir() . '/reflection_server_store_' . bin2hex(random_bytes(6)) . '.json';
+$serverStore = new FarmStore($serverStorePath);
+$serverStore->updateSettings(['ess_soc_url' => '']);
+$serverStore->createJob('invert_image', '/System/images/in.jpg', '/System/images/out.jpg', false);
+$serverResponse = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'server-version',
+    'pc_id' => 'node-server',
+], $serverStore, [
+    'required_version' => 'server-version',
+    'transfer_server' => [
+        'scheme' => 'ftp',
+        'host' => 'nas.example.test',
+        'port' => 21,
+        'root' => '',
+    ],
+]);
+assertSameValue('task_available', $serverResponse['status'], 'Transfer-server jobs should still be offered to workers.');
+assertSameValue('transfer', $serverResponse['task']['path_mode'], 'Transfer-server jobs should tell workers to stage plain paths through transfer.');
+assertSameValue('nas.example.test', $serverResponse['task']['transfer_server']['host'], 'API should send server details to workers.');
+assertSameValue(false, array_key_exists('username', $serverResponse['task']['transfer_server']), 'API should not put worker usernames in transfer_server.');
+assertSameValue(false, array_key_exists('password', $serverResponse['task']['transfer_server']), 'API should not put worker passwords in transfer_server.');
+assertSameValue(false, array_key_exists('transfer_auth', $serverResponse['task']), 'API should not send transfer credentials by default.');
+@unlink($serverStorePath);
+@unlink($serverStorePath . '.lock');
 
 $response = reflection_handle_farm_api([
     'action' => 'confirm_taken',

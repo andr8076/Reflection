@@ -66,7 +66,9 @@ final class AutomationStore
             'module' => 'dummy_task',
             'scan_roots' => [],
             'recursive' => true,
-            'source_template' => '{path}',
+            'worker_path_mappings' => '',
+            'transfer_server_id' => '',
+            'source_template' => '{worker_path}',
             'delivery_mode' => 'template',
             'delivery_template' => '',
             'output_suffix' => '_processed',
@@ -91,7 +93,7 @@ final class AutomationStore
         ]);
     }
 
-    public function saveRule(array $input, array $allowedTasks): array
+    public function saveRule(array $input, array $allowedTasks, array $allowedStorageServerIds = []): array
     {
         $rule = $this->normalizeRule($input);
         if (($rule['id'] ?? '') === '') {
@@ -100,7 +102,7 @@ final class AutomationStore
         }
         $rule['updated_at'] = gmdate(DATE_ATOM);
 
-        $errors = $this->validateRule($rule, $allowedTasks);
+        $errors = $this->validateRule($rule, $allowedTasks, $allowedStorageServerIds);
         if ($errors !== []) {
             throw new InvalidArgumentException(implode(' ', $errors));
         }
@@ -170,7 +172,7 @@ final class AutomationStore
         });
     }
 
-    public function validateRule(array $rule, array $allowedTasks): array
+    public function validateRule(array $rule, array $allowedTasks, array $allowedStorageServerIds = []): array
     {
         $errors = [];
         if (trim((string) ($rule['name'] ?? '')) === '') {
@@ -182,9 +184,19 @@ final class AutomationStore
         if (($rule['scan_roots'] ?? []) === []) {
             $errors[] = 'At least one scan root is required.';
         }
+        $transferServerId = trim((string) ($rule['transfer_server_id'] ?? ''));
+        if ($transferServerId !== '' && $allowedStorageServerIds !== [] && !in_array($transferServerId, $allowedStorageServerIds, true)) {
+            $errors[] = 'Choose an available storage server for this automation rule.';
+        }
         foreach (($rule['scan_roots'] ?? []) as $root) {
             if (preg_match('/[\x00-\x1F\x7F]/', (string) $root) === 1) {
                 $errors[] = 'Scan roots may not contain control characters.';
+                break;
+            }
+        }
+        foreach ($this->cleanLines($rule['worker_path_mappings'] ?? []) as $line) {
+            if (!$this->parseWorkerPathMappingLine($line)) {
+                $errors[] = 'Worker path mappings must use: master path => worker path.';
                 break;
             }
         }
@@ -205,7 +217,7 @@ final class AutomationStore
         }
 
         $errors = array_merge($errors, $this->templateValidationErrors(
-            (string) ($rule['source_template'] ?? '{path}'),
+            (string) ($rule['source_template'] ?? '{worker_path}'),
             'Source template'
         ));
         if (($rule['delivery_mode'] ?? 'template') === 'template') {
@@ -236,6 +248,7 @@ final class AutomationStore
             if (count($rows) >= $limit) {
                 break;
             }
+            $candidate = $this->decorateCandidateForRule($rule, $candidate);
             $result = $this->evaluateCandidate($rule, $candidate);
             $source = $result['include'] ? $this->buildSource($rule, $candidate) : '';
             $delivery = $result['include'] ? $this->buildDelivery($rule, $candidate, $source) : '';
@@ -274,6 +287,7 @@ final class AutomationStore
         $maxJobs = max(0, (int) ($rule['max_jobs_per_scan'] ?? 25));
         foreach ($candidates as $candidate) {
             $summary['scanned']++;
+            $candidate = $this->decorateCandidateForRule($rule, $candidate);
             $evaluation = $this->evaluateCandidate($rule, $candidate);
             if (empty($evaluation['include'])) {
                 $summary['skipped']++;
@@ -311,11 +325,14 @@ final class AutomationStore
                     $source,
                     $delivery,
                     !empty($rule['overwrite_allowed']),
-                    [
+                    array_filter([
                         'automation_rule_id' => (string) ($rule['id'] ?? ''),
                         'automation_rule_name' => (string) ($rule['name'] ?? ''),
                         'automation_fingerprint' => $fingerprint,
-                    ]
+                        'transfer_server_id' => trim((string) ($rule['transfer_server_id'] ?? '')),
+                    ], static function ($value): bool {
+                        return $value !== '';
+                    })
                 );
                 $this->recordQueuedState($rule, $candidate, $source, $delivery, $fingerprint, $job);
                 $summary['queued']++;
@@ -391,7 +408,9 @@ final class AutomationStore
         $rule['module'] = trim((string) ($rule['module'] ?? ''));
         $rule['scan_roots'] = $this->cleanLines($rule['scan_roots'] ?? []);
         $rule['recursive'] = !empty($rule['recursive']);
-        $rule['source_template'] = trim((string) ($rule['source_template'] ?? '{path}')) ?: '{path}';
+        $rule['worker_path_mappings'] = implode("\n", $this->cleanLines($rule['worker_path_mappings'] ?? []));
+        $rule['transfer_server_id'] = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($rule['transfer_server_id'] ?? '')) ?: '';
+        $rule['source_template'] = trim((string) ($rule['source_template'] ?? '{worker_path}')) ?: '{worker_path}';
         $rule['delivery_mode'] = in_array((string) ($rule['delivery_mode'] ?? 'template'), ['template', 'same_as_source'], true)
             ? (string) ($rule['delivery_mode'] ?? 'template')
             : 'template';
@@ -432,7 +451,9 @@ final class AutomationStore
             'module' => 'dummy_task',
             'scan_roots' => [],
             'recursive' => true,
-            'source_template' => '{path}',
+            'worker_path_mappings' => '',
+            'transfer_server_id' => '',
+            'source_template' => '{worker_path}',
             'delivery_mode' => 'template',
             'delivery_template' => '',
             'output_suffix' => '_processed',
@@ -548,6 +569,13 @@ final class AutomationStore
             'ext' => $extension,
             'size' => $size,
             'mtime' => $mtime,
+            'worker_path' => $path,
+            'worker_root' => $root,
+            'worker_relative' => $relative,
+            'worker_dir' => $dir,
+            'worker_basename' => $basename,
+            'worker_name' => $name,
+            'worker_ext' => $extension,
         ];
     }
 
@@ -819,7 +847,7 @@ final class AutomationStore
 
     private function buildSource(array $rule, array $candidate): string
     {
-        $source = $this->applyPathTemplate((string) ($rule['source_template'] ?? '{path}'), $candidate);
+        $source = $this->applyPathTemplate((string) ($rule['source_template'] ?? '{worker_path}'), $candidate);
         return $source !== '' ? $source : (string) ($candidate['path'] ?? '');
     }
 
@@ -882,7 +910,10 @@ final class AutomationStore
 
     private function validTemplatePlaceholders(): array
     {
-        return ['path', 'root', 'relative', 'dir', 'basename', 'name', 'ext', 'dot_ext', 'mtime', 'size'];
+        return [
+            'path', 'root', 'relative', 'dir', 'basename', 'name', 'ext', 'dot_ext', 'mtime', 'size',
+            'worker_path', 'worker_root', 'worker_relative', 'worker_dir', 'worker_basename', 'worker_name', 'worker_ext', 'worker_dot_ext',
+        ];
     }
 
     private function templateValidationErrors(string $template, string $label): array
@@ -925,6 +956,14 @@ final class AutomationStore
             '{dot_ext}' => (string) (($candidate['ext'] ?? '') !== '' ? '.' . ($candidate['ext'] ?? '') : ''),
             '{mtime}' => (string) ($candidate['mtime'] ?? ''),
             '{size}' => (string) ($candidate['size'] ?? ''),
+            '{worker_path}' => (string) ($candidate['worker_path'] ?? ($candidate['path'] ?? '')),
+            '{worker_root}' => (string) ($candidate['worker_root'] ?? ($candidate['root'] ?? '')),
+            '{worker_relative}' => (string) ($candidate['worker_relative'] ?? ($candidate['relative'] ?? '')),
+            '{worker_dir}' => (string) ($candidate['worker_dir'] ?? ($candidate['dir'] ?? '')),
+            '{worker_basename}' => (string) ($candidate['worker_basename'] ?? ($candidate['basename'] ?? '')),
+            '{worker_name}' => (string) ($candidate['worker_name'] ?? ($candidate['name'] ?? '')),
+            '{worker_ext}' => (string) ($candidate['worker_ext'] ?? ($candidate['ext'] ?? '')),
+            '{worker_dot_ext}' => (string) (($candidate['worker_ext'] ?? ($candidate['ext'] ?? '')) !== '' ? '.' . ($candidate['worker_ext'] ?? ($candidate['ext'] ?? '')) : ''),
         ]);
     }
 
@@ -941,6 +980,14 @@ final class AutomationStore
             '{dot_ext}' => escapeshellarg((string) (($candidate['ext'] ?? '') !== '' ? '.' . ($candidate['ext'] ?? '') : '')),
             '{mtime}' => escapeshellarg((string) ($candidate['mtime'] ?? '')),
             '{size}' => escapeshellarg((string) ($candidate['size'] ?? '')),
+            '{worker_path}' => escapeshellarg((string) ($candidate['worker_path'] ?? ($candidate['path'] ?? ''))),
+            '{worker_root}' => escapeshellarg((string) ($candidate['worker_root'] ?? ($candidate['root'] ?? ''))),
+            '{worker_relative}' => escapeshellarg((string) ($candidate['worker_relative'] ?? ($candidate['relative'] ?? ''))),
+            '{worker_dir}' => escapeshellarg((string) ($candidate['worker_dir'] ?? ($candidate['dir'] ?? ''))),
+            '{worker_basename}' => escapeshellarg((string) ($candidate['worker_basename'] ?? ($candidate['basename'] ?? ''))),
+            '{worker_name}' => escapeshellarg((string) ($candidate['worker_name'] ?? ($candidate['name'] ?? ''))),
+            '{worker_ext}' => escapeshellarg((string) ($candidate['worker_ext'] ?? ($candidate['ext'] ?? ''))),
+            '{worker_dot_ext}' => escapeshellarg((string) (($candidate['worker_ext'] ?? ($candidate['ext'] ?? '')) !== '' ? '.' . ($candidate['worker_ext'] ?? ($candidate['ext'] ?? '')) : '')),
         ]);
     }
 
@@ -1001,6 +1048,101 @@ final class AutomationStore
             'exit_code' => (int) $exitCode,
             'output' => $this->limitString(trim($output), 4096),
             'timed_out' => $timedOut,
+        ];
+    }
+
+    private function decorateCandidateForRule(array $rule, array $candidate): array
+    {
+        $workerPath = $this->mapMasterPathToWorkerPath((string) ($candidate['path'] ?? ''), $rule);
+        $workerRoot = $this->mapMasterPathToWorkerPath((string) ($candidate['root'] ?? ''), $rule);
+        $workerRelative = $this->relativePath($workerPath, $workerRoot);
+        $workerBasename = basename($workerPath);
+        $workerExtension = strtolower(pathinfo($workerBasename, PATHINFO_EXTENSION));
+        $workerName = $workerExtension !== '' ? substr($workerBasename, 0, -strlen($workerExtension) - 1) : $workerBasename;
+
+        $candidate['worker_path'] = $workerPath;
+        $candidate['worker_root'] = $workerRoot;
+        $candidate['worker_relative'] = $workerRelative;
+        $candidate['worker_dir'] = $this->normalizePath(dirname($workerPath));
+        $candidate['worker_basename'] = $workerBasename;
+        $candidate['worker_name'] = $workerName;
+        $candidate['worker_ext'] = $workerExtension;
+
+        return $candidate;
+    }
+
+    private function mapMasterPathToWorkerPath(string $path, array $rule): string
+    {
+        $path = $this->normalizePath($path);
+        $mappings = $this->workerPathMappings($rule);
+        if ($mappings === []) {
+            return $path;
+        }
+
+        usort($mappings, static function (array $a, array $b): int {
+            return strlen((string) $b['from']) <=> strlen((string) $a['from']);
+        });
+
+        foreach ($mappings as $mapping) {
+            $from = rtrim((string) $mapping['from'], '/');
+            $to = rtrim((string) $mapping['to'], '/');
+            if ($from === '') {
+                continue;
+            }
+            if ($path === $from || strpos($path, $from . '/') === 0) {
+                $suffix = $path === $from ? '' : substr($path, strlen($from));
+                if ($to === '') {
+                    return ltrim($suffix, '/');
+                }
+                if ($to === '/') {
+                    return '/' . ltrim($suffix, '/');
+                }
+                return $to . $suffix;
+            }
+        }
+
+        return $path;
+    }
+
+    private function workerPathMappings(array $rule): array
+    {
+        $mappings = [];
+        foreach ($this->cleanLines($rule['worker_path_mappings'] ?? []) as $line) {
+            $mapping = $this->parseWorkerPathMappingLine($line);
+            if ($mapping !== null) {
+                $mappings[] = $mapping;
+            }
+        }
+        return $mappings;
+    }
+
+    private function parseWorkerPathMappingLine(string $line): ?array
+    {
+        $line = trim(str_replace('\\', '/', $line));
+        if ($line === '') {
+            return null;
+        }
+
+        $parts = null;
+        if (strpos($line, '=>') !== false) {
+            $parts = explode('=>', $line, 2);
+        } elseif (strpos($line, '=') !== false) {
+            $parts = explode('=', $line, 2);
+        }
+
+        if ($parts === null || count($parts) !== 2) {
+            return null;
+        }
+
+        $from = rtrim(trim($parts[0]), '/');
+        $to = trim($parts[1]);
+        if ($from === '' || preg_match('/[\x00-\x1F\x7F]/', $from . $to) === 1) {
+            return null;
+        }
+
+        return [
+            'from' => $from,
+            'to' => rtrim(str_replace('\\', '/', $to), '/'),
         ];
     }
 

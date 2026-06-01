@@ -12,9 +12,18 @@ return [
     // Leave blank only on a trusted private network while testing.
     'api_token' => '',
 
-    // Credentials workers use when source/delivery paths point at the farm FTP server.
-    // REFLECTION_FTP_* environment variables override these values. Keep blanks here and
-    // provide real credentials through environment variables or a local untracked override.
+    // Connection details for the shared file server. The master sends these to workers.
+    // Workers should keep their own usernames/passwords in cluster/reflection_config.json.
+    // REFLECTION_TRANSFER_* or REFLECTION_FTP_* environment variables can override these.
+    'transfer_server' => [
+        'scheme' => 'ftp',
+        'host' => '',
+        'port' => 21,
+        'root' => '',
+    ],
+
+    // Legacy/default transfer credentials. Prefer keeping credentials on each worker.
+    // REFLECTION_FTP_* environment variables still override these values.
     'transfer_auth' => [
         'scheme' => 'ftp',
         'host' => '',

@@ -11,7 +11,15 @@
         ext: { label: 'Extension', description: 'The final extension without the dot.' },
         dot_ext: { label: 'Dot extension', description: 'The final extension including the dot.' },
         size: { label: 'File size', description: 'The file size in bytes. The browser preview uses an example size.' },
-        mtime: { label: 'Modified time', description: 'The modified time as a Unix timestamp. The browser preview uses an example timestamp.' }
+        mtime: { label: 'Modified time', description: 'The modified time as a Unix timestamp. The browser preview uses an example timestamp.' },
+        worker_path: { label: 'Worker-visible path', description: 'The file path after applying the worker path mapping. Use this for FTP worker sources.' },
+        worker_root: { label: 'Worker scan root', description: 'The scan root after applying the worker path mapping.' },
+        worker_relative: { label: 'Worker relative path', description: 'The relative path below the mapped worker root.' },
+        worker_dir: { label: 'Worker parent folder', description: 'The mapped folder containing the matched file.' },
+        worker_basename: { label: 'Worker filename', description: 'The mapped filename including the extension.' },
+        worker_name: { label: 'Worker name only', description: 'The mapped filename without the final extension.' },
+        worker_ext: { label: 'Worker extension', description: 'The mapped final extension without the dot.' },
+        worker_dot_ext: { label: 'Worker dot extension', description: 'The mapped final extension including the dot.' }
     };
 
     function byId(id) {
@@ -123,6 +131,49 @@
         return (dir === '' || dir === '.') ? newName : dir.replace(/\/+$/, '') + '/' + newName;
     }
 
+    function parseWorkerMappings() {
+        return valueOf('worker-path-mappings-input')
+            .split(/\r?\n/)
+            .map(function (line) { return line.trim(); })
+            .filter(function (line) { return line && line.charAt(0) !== '#'; })
+            .map(function (line) {
+                var separator = line.indexOf('=>');
+                var separatorLength = 2;
+                if (separator === -1) {
+                    separator = line.indexOf('=');
+                    separatorLength = 1;
+                }
+                if (separator === -1) {
+                    return null;
+                }
+                var from = normalizeSlashes(line.slice(0, separator).trim()).replace(/\/+$/, '');
+                var to = normalizeSlashes(line.slice(separator + separatorLength).trim()).replace(/\/+$/, '');
+                return from ? { from: from, to: to } : null;
+            })
+            .filter(Boolean)
+            .sort(function (a, b) { return b.from.length - a.from.length; });
+    }
+
+    function mapMasterPathToWorkerPath(path) {
+        path = normalizeSlashes(path);
+        var mappings = parseWorkerMappings();
+        for (var i = 0; i < mappings.length; i += 1) {
+            var from = mappings[i].from;
+            var to = mappings[i].to;
+            if (path === from || path.indexOf(from + '/') === 0) {
+                var suffix = path === from ? '' : path.slice(from.length);
+                if (to === '') {
+                    return suffix.replace(/^\/+/, '');
+                }
+                if (to === '/') {
+                    return '/' + suffix.replace(/^\/+/, '');
+                }
+                return to + suffix;
+            }
+        }
+        return path;
+    }
+
     function candidateFromExample() {
         var path = normalizeSlashes(valueOf('template-sample-path').trim() || '/volume1/video/Movies/Example Movie (2024)/Example Movie.mkv');
         var root = firstScanRoot() || dirname(path);
@@ -131,6 +182,12 @@
         var dir = dirname(path);
         var base = basename(path);
         var parts = splitNameExtension(base);
+        var workerPath = mapMasterPathToWorkerPath(path);
+        var workerRoot = mapMasterPathToWorkerPath(root);
+        var workerRel = relativePath(workerPath, workerRoot);
+        var workerDir = dirname(workerPath);
+        var workerBase = basename(workerPath);
+        var workerParts = splitNameExtension(workerBase);
         return {
             '{path}': path,
             '{root}': root,
@@ -141,7 +198,15 @@
             '{ext}': parts.ext,
             '{dot_ext}': parts.ext ? '.' + parts.ext : '',
             '{mtime}': '1780241000',
-            '{size}': '7340032000'
+            '{size}': '7340032000',
+            '{worker_path}': workerPath,
+            '{worker_root}': workerRoot,
+            '{worker_relative}': workerRel,
+            '{worker_dir}': workerDir,
+            '{worker_basename}': workerBase,
+            '{worker_name}': workerParts.name,
+            '{worker_ext}': workerParts.ext,
+            '{worker_dot_ext}': workerParts.ext ? '.' + workerParts.ext : ''
         };
     }
 
@@ -348,6 +413,7 @@
 
         setCode('preview-root', candidate['{root}']);
         setCode('preview-relative', candidate['{relative}']);
+        setCode('preview-worker-path', candidate['{worker_path}']);
         setCode('preview-source', source);
         setCode('preview-delivery', delivery || 'No delivery target configured');
         setCode('source-template-preview', 'Example: ' + source);
@@ -395,6 +461,7 @@
 
     [
         'scan-roots-input',
+        'worker-path-mappings-input',
         'template-sample-path',
         'source-template-input',
         'delivery-mode-input',
@@ -412,12 +479,59 @@
         element.addEventListener('change', updateTemplatePreview);
     });
 
+    function setupCollapsibleSections() {
+        var sections = Array.prototype.slice.call(document.querySelectorAll('.collapsible-form-block[data-section-key]'));
+        if (!sections.length) {
+            return;
+        }
+
+        sections.forEach(function (section) {
+            var key = 'reflection.automation.section.' + (section.getAttribute('data-section-key') || 'section');
+            try {
+                var stored = window.localStorage ? window.localStorage.getItem(key) : null;
+                if (stored === 'open') {
+                    section.open = true;
+                } else if (stored === 'closed') {
+                    section.open = false;
+                }
+            } catch (ignore) {
+                // localStorage may be blocked; the native details element still works.
+            }
+            section.addEventListener('toggle', function () {
+                try {
+                    if (window.localStorage) {
+                        window.localStorage.setItem(key, section.open ? 'open' : 'closed');
+                    }
+                } catch (ignore) {
+                    // Ignore storage failures.
+                }
+            });
+        });
+
+        var openAll = byId('open-all-sections');
+        var closeAll = byId('close-all-sections');
+        if (openAll) {
+            openAll.addEventListener('click', function () {
+                sections.forEach(function (section) { section.open = true; });
+            });
+        }
+        if (closeAll) {
+            closeAll.addEventListener('click', function () {
+                sections.forEach(function (section) { section.open = false; });
+            });
+        }
+    }
+
     var form = byId('automation-rule-form');
     if (form) {
         form.addEventListener('submit', function (event) {
             var errors = validateTemplates();
             if (errors.length > 0) {
                 event.preventDefault();
+                var templateSection = document.querySelector('.collapsible-form-block[data-section-key="job-templates"]');
+                if (templateSection) {
+                    templateSection.open = true;
+                }
                 var summary = byId('template-validation-summary');
                 if (summary) {
                     summary.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -426,6 +540,7 @@
         });
     }
 
+    setupCollapsibleSections();
     renderPlaceholderChips();
     updateTemplatePreview();
 }());

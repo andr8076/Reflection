@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
+require_once __DIR__ . '/StorageStore.php';
 
 function reflection_json_response(array $payload, int $statusCode = 200): void
 {
@@ -93,6 +94,71 @@ function reflection_worker_transfer_auth(array $config): ?array
     ];
 }
 
+
+function reflection_clean_transfer_server_payload(?array $server): ?array
+{
+    if (!is_array($server)) {
+        return null;
+    }
+
+    $host = trim((string) ($server['host'] ?? ''));
+    if ($host === '') {
+        return null;
+    }
+
+    $scheme = strtolower((string) ($server['scheme'] ?? 'ftp'));
+    if (!in_array($scheme, ['ftp', 'ftps', 'sftp'], true)) {
+        $scheme = 'ftp';
+    }
+
+    return [
+        'scheme' => $scheme,
+        'host' => $host,
+        'port' => (int) ($server['port'] ?? ($scheme === 'sftp' ? 22 : ($scheme === 'ftps' ? 990 : 21))),
+        'root' => (string) ($server['root'] ?? ''),
+    ];
+}
+
+function reflection_worker_transfer_server(array $config): ?array
+{
+    $server = is_array($config['transfer_server'] ?? null)
+        ? $config['transfer_server']
+        : reflection_transfer_server_config(array_replace_recursive(
+            reflection_default_farm_settings(),
+            $config,
+        ));
+
+    return reflection_clean_transfer_server_payload($server);
+}
+
+function reflection_worker_transfer_server_for_job(array $job, array $config): ?array
+{
+    if (is_array($job['transfer_server'] ?? null)) {
+        return reflection_clean_transfer_server_payload($job['transfer_server']);
+    }
+
+    $serverId = trim((string) ($job['transfer_server_id'] ?? ''));
+    $storagePath = (string) ($config['storage_path'] ?? '');
+    if ($storagePath !== '') {
+        try {
+            $storageStore = new StorageStore(dirname($storagePath), reflection_worker_transfer_server($config));
+            $server = $storageStore->workerServerPayload($serverId !== '' ? $serverId : null);
+            if ($server !== null) {
+                return $server;
+            }
+        } catch (Throwable $exception) {
+            // Fall through to the legacy/default transfer server.
+        }
+    }
+
+    return reflection_worker_transfer_server($config);
+}
+
+function reflection_is_control_task(string $module): bool
+{
+    return in_array($module, ['noop', 'status', 'reload_tasks', 'shutdown', 'wake_farm'], true);
+}
+
 function reflection_api_request_task(FarmStore $store, array $config, string $pcId): array
 {
     $allowedWorkers = $store->allowedActiveWorkers();
@@ -121,9 +187,17 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
         'shutdown_after_task' => !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 1,
     ];
 
-    $transferAuth = reflection_worker_transfer_auth($config);
-    if ($transferAuth !== null) {
-        $task['transfer_auth'] = $transferAuth;
+    $transferServer = reflection_worker_transfer_server_for_job($job, $config);
+    if ($transferServer !== null && !reflection_is_control_task((string) $job['module'])) {
+        $task['transfer_server'] = $transferServer;
+        $task['path_mode'] = 'transfer';
+    }
+
+    if (!empty($config['send_transfer_credentials'])) {
+        $transferAuth = reflection_worker_transfer_auth($config);
+        if ($transferAuth !== null) {
+            $task['transfer_auth'] = $transferAuth;
+        }
     }
 
     return [

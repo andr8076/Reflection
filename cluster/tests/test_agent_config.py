@@ -196,7 +196,7 @@ class AgentConfigTest(unittest.TestCase):
             ("ftp", "files.example.test", 2121, "worker-login", "secret"),
         )
 
-    def test_local_transfer_auth_overrides_master_login_without_blank_password(self):
+    def test_master_server_details_merge_with_worker_login(self):
         original_local_auth = Reflection.LOCAL_TRANSFER_AUTH
         try:
             Reflection.LOCAL_TRANSFER_AUTH = {
@@ -204,29 +204,61 @@ class AgentConfigTest(unittest.TestCase):
                 "host": "",
                 "port": 2121,
                 "username": "worker-hostname",
-                "password": "",
+                "password": "worker-secret",
             }
 
             self.assertEqual(
-                Reflection._merge_transfer_auth(
+                Reflection._merge_transfer_settings(
                     {
-                        "scheme": "ftp",
+                        "scheme": "ftps",
                         "host": "files.example.test",
-                        "port": 21,
-                        "username": "reflection",
-                        "password": "master-password",
-                    }
+                        "port": 990,
+                        "root": "/shared",
+                    },
+                    {
+                        "username": "legacy-master-user",
+                        "password": "legacy-master-password",
+                    },
                 ),
                 {
-                    "scheme": "ftp",
+                    "scheme": "ftps",
                     "host": "files.example.test",
-                    "port": 2121,
+                    "port": 990,
+                    "root": "/shared",
                     "username": "worker-hostname",
-                    "password": "master-password",
+                    "password": "worker-secret",
                 },
             )
         finally:
             Reflection.LOCAL_TRANSFER_AUTH = original_local_auth
+
+    def test_plain_worker_path_becomes_transfer_uri_when_task_requests_transfer_mode(self):
+        self.assertEqual(
+            Reflection._transfer_uri_from_plain_path(
+                "/System/images/DSC_457122.jpg",
+                {
+                    "scheme": "ftp",
+                    "host": "nas.example.test",
+                    "port": 21,
+                    "root": "",
+                },
+            ),
+            "ftp://nas.example.test/System/images/DSC_457122.jpg",
+        )
+
+    def test_plain_worker_path_applies_optional_transfer_root(self):
+        self.assertEqual(
+            Reflection._transfer_uri_from_plain_path(
+                "/System/images/DSC 457122.jpg",
+                {
+                    "scheme": "sftp",
+                    "host": "nas.example.test",
+                    "port": 2222,
+                    "root": "/volume1",
+                },
+            ),
+            "sftp://nas.example.test:2222/volume1/System/images/DSC%20457122.jpg",
+        )
 
     def test_collect_agent_config_rejects_invalid_poll_interval(self):
         with tempfile.TemporaryDirectory() as temp_dir:

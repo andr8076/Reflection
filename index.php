@@ -4,15 +4,35 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
+require_once __DIR__ . '/StorageStore.php';
 
 $config = reflection_master_config();
 $store = reflection_farm_store($config);
+$dataDirectory = dirname((string) $config['storage_path']);
+$storageStore = new StorageStore($dataDirectory, $config['transfer_server'] ?? null);
+$storageServers = $storageStore->enabledServers(true);
+$storageServerIds = array_map(static function (array $server): string {
+    return (string) ($server['id'] ?? '');
+}, $storageServers);
 $message = null;
 $error = null;
 
 function reflection_h($value): string
 {
     return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+function reflection_storage_server_label(array $server): string
+{
+    $root = trim((string) ($server['root'] ?? ''));
+    $suffix = $root !== '' ? ' · root ' . $root : '';
+    return sprintf('%s — %s://%s:%d%s',
+        (string) ($server['name'] ?? 'Unnamed server'),
+        (string) ($server['scheme'] ?? 'ftp'),
+        (string) ($server['host'] ?? ''),
+        (int) ($server['port'] ?? 21),
+        $suffix
+    );
 }
 
 function reflection_validate_task(string $module, array $config): ?string
@@ -372,6 +392,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $overwriteAllowed = isset($_POST['overwrite_allowed']);
     $controlTasks = ['noop', 'status', 'reload_tasks', 'shutdown', 'wake_farm'];
     $isControlTask = in_array($module, $controlTasks, true);
+    $transferServerId = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($_POST['transfer_server_id'] ?? '')) ?: '';
+    $transferExtra = (!$isControlTask && $transferServerId !== '') ? ['transfer_server_id' => $transferServerId] : [];
 
     if ($formAction === 'settings') {
         $settings = $store->updateSettings([
@@ -422,6 +444,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $queued = 0;
         $skipped = [];
         $error = reflection_validate_task($module, $config);
+        if ($error === null && !$isControlTask && $transferServerId !== '' && !in_array($transferServerId, $storageServerIds, true)) {
+            $error = 'Choose an available storage server.';
+        }
 
         if ($error === null) {
             foreach ($paths as $lineNumber => $path) {
@@ -440,7 +465,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     continue;
                 }
 
-                $store->createJob($module, $source, $deliveryPath, $overwriteAllowed);
+                $store->createJob($module, $source, $deliveryPath, $overwriteAllowed, $transferExtra);
                 $queued++;
             }
 
@@ -466,6 +491,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     } else {
         $source = trim((string) ($_POST['single_source'] ?? ''));
         $error = reflection_validate_task($module, $config)
+            ?? ((!$isControlTask && $transferServerId !== '' && !in_array($transferServerId, $storageServerIds, true)) ? 'Choose an available storage server.' : null)
             ?? reflection_path_allowed($source !== '' ? $source : null, !$isControlTask)
             ?? reflection_path_allowed($delivery !== '' ? $delivery : null, false);
 
@@ -475,6 +501,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $source !== '' ? $source : null,
                 $delivery !== '' ? $delivery : null,
                 $overwriteAllowed,
+                $transferExtra
             );
             $message = 'Queued ' . $job['task_id'] . ' for ' . $job['module'] . '.';
             if (!$isControlTask) {
@@ -531,7 +558,12 @@ $jobPageData = $store->jobPage(
 );
 $jobs = $jobPageData['jobs'];
 $statusCounts = $jobPageData['status_counts'];
-$activeJobs = $store->jobPage(1, 6, 'active')['jobs'];
+$activeJobsPage = $store->jobPage(1, 200, 'active');
+$activeJobsAll = $activeJobsPage['jobs'];
+$activeJobsPreviewLimit = 5;
+$activeJobsPreview = array_slice($activeJobsAll, 0, $activeJobsPreviewLimit);
+$activeJobsMore = array_slice($activeJobsAll, $activeJobsPreviewLimit);
+$activeJobsShownLimit = count($activeJobsAll);
 $completedInStore = (int) ($statusCounts['success'] ?? 0) + (int) ($statusCounts['failed'] ?? 0) + (int) ($statusCounts['stale'] ?? 0);
 $activeCount = (int) ($statusCounts['queued'] ?? 0) + (int) ($statusCounts['running'] ?? 0);
 $maintenanceChanged = array_sum($automaticMaintenance) > 0;
@@ -558,13 +590,51 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
             <nav class="top-nav">
                 <a class="active" href="index.php">Dashboard</a>
                 <a href="automation.php">Automation</a>
+                <a href="storage_servers.php">Storage servers</a>
             </nav>
         </div>
-        <div class="version-card">
-            <span>Required worker version</span>
-            <strong><?= reflection_h($config['required_version'] ?? 'not enforced') ?></strong>
-            <small><?= (!empty($settings['enforce_version']) && !empty($config['required_version'])) ? 'Enforced' : 'Not enforced' ?></small>
-        </div>
+        <aside class="version-card active-work-card">
+            <div class="panel-head">
+                <div>
+                    <p class="eyebrow">Now</p>
+                    <h2>Active work</h2>
+                </div>
+                <a class="text-link" href="<?= reflection_h(reflection_url_with(['job_status' => 'active', 'job_page' => 1])) ?>">View active</a>
+            </div>
+            <?php if ($activeJobsPreview === []): ?>
+                <p class="empty">No queued or running jobs.</p>
+            <?php endif; ?>
+            <div class="mini-list active-work-preview-list">
+                <?php foreach ($activeJobsPreview as $job): ?>
+                    <article class="mini-row">
+                        <span class="badge <?= reflection_h(reflection_status_class($job['status'] ?? 'unknown')) ?>"><?= reflection_h($job['status'] ?? 'unknown') ?></span>
+                        <div>
+                            <strong><code><?= reflection_h($job['task_id'] ?? '—') ?></code> · <?= reflection_h($job['module'] ?? '—') ?></strong>
+                            <small><?= reflection_h(reflection_short_value($job['source'] ?? '—', 70)) ?></small>
+                        </div>
+                    </article>
+                <?php endforeach; ?>
+            </div>
+            <?php if ($activeJobsMore !== []): ?>
+                <details class="active-work-more" id="active-work-more">
+                    <summary>Show remaining <?= (int) count($activeJobsMore) ?> active job<?= count($activeJobsMore) === 1 ? '' : 's' ?></summary>
+                    <div class="mini-list active-work-expanded-list">
+                        <?php foreach ($activeJobsMore as $job): ?>
+                            <article class="mini-row">
+                                <span class="badge <?= reflection_h(reflection_status_class($job['status'] ?? 'unknown')) ?>"><?= reflection_h($job['status'] ?? 'unknown') ?></span>
+                                <div>
+                                    <strong><code><?= reflection_h($job['task_id'] ?? '—') ?></code> · <?= reflection_h($job['module'] ?? '—') ?></strong>
+                                    <small><?= reflection_h(reflection_short_value($job['source'] ?? '—', 70)) ?></small>
+                                </div>
+                            </article>
+                        <?php endforeach; ?>
+                    </div>
+                    <?php if ($activeCount > $activeJobsShownLimit): ?>
+                        <p class="api-note active-work-overflow">Showing the first <?= (int) $activeJobsShownLimit ?> active jobs here. Use <a href="<?= reflection_h(reflection_url_with(['job_status' => 'active', 'job_page' => 1])) ?>">View active</a> for the full table.</p>
+                    <?php endif; ?>
+                </details>
+            <?php endif; ?>
+        </aside>
     </header>
 
     <?php if ($message !== null): ?>
@@ -645,6 +715,16 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                         <?php endforeach; ?>
                     </select>
                 </label>
+                <label>
+                    Storage server
+                    <select name="transfer_server_id">
+                        <option value="">Use first available/default server</option>
+                        <?php foreach ($storageServers as $server): ?>
+                            <option value="<?= reflection_h($server['id'] ?? '') ?>"><?= reflection_h(reflection_storage_server_label($server)) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <small>Choose which FTP/SFTP server plain source/delivery paths belong to. Worker usernames/passwords stay on each worker. <a href="storage_servers.php">Add or edit storage servers</a>.</small>
+                </label>
                 <div class="mode-fields mode-single">
                     <label>
                         Source path or URI
@@ -681,30 +761,6 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
         </section>
 
         <aside class="side-stack">
-            <section class="panel compact-panel">
-                <div class="panel-head">
-                    <div>
-                        <p class="eyebrow">Now</p>
-                        <h2>Active work</h2>
-                    </div>
-                    <a class="text-link" href="<?= reflection_h(reflection_url_with(['job_status' => 'active', 'job_page' => 1])) ?>">View active</a>
-                </div>
-                <?php if ($activeJobs === []): ?>
-                    <p class="empty">No queued or running jobs.</p>
-                <?php endif; ?>
-                <div class="mini-list">
-                    <?php foreach ($activeJobs as $job): ?>
-                        <article class="mini-row">
-                            <span class="badge <?= reflection_h(reflection_status_class($job['status'] ?? 'unknown')) ?>"><?= reflection_h($job['status'] ?? 'unknown') ?></span>
-                            <div>
-                                <strong><code><?= reflection_h($job['task_id'] ?? '—') ?></code> · <?= reflection_h($job['module'] ?? '—') ?></strong>
-                                <small><?= reflection_h(reflection_short_value($job['source'] ?? '—', 70)) ?></small>
-                            </div>
-                        </article>
-                    <?php endforeach; ?>
-                </div>
-            </section>
-
             <section class="panel compact-panel power-panel">
                 <div class="panel-head power-head">
                     <div>
@@ -1106,6 +1162,20 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
             }
             mode.addEventListener('change', syncMode);
             syncMode();
+        }());
+        (function () {
+            var more = document.getElementById('active-work-more');
+            if (!more) {
+                return;
+            }
+            var card = more.closest('.active-work-card');
+            function syncActiveWorkExpansion() {
+                if (card) {
+                    card.classList.toggle('is-expanded', more.open);
+                }
+            }
+            more.addEventListener('toggle', syncActiveWorkExpansion);
+            syncActiveWorkExpansion();
         }());
     </script>
 </body>

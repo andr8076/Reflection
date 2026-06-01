@@ -102,6 +102,12 @@ function reflection_default_farm_settings(): array
         'farm_id' => 'default',
         'farm_name' => 'Reflection Farm',
         'api_token' => '',
+        'transfer_server' => [
+            'scheme' => 'ftp',
+            'host' => '',
+            'port' => 21,
+            'root' => '',
+        ],
         'transfer_auth' => [
             'scheme' => 'ftp',
             'host' => '',
@@ -208,6 +214,43 @@ function reflection_transfer_auth_config(array $settings): array
     ];
 }
 
+
+function reflection_transfer_server_config(array $settings): array
+{
+    $configuredServer = is_array($settings['transfer_server'] ?? null) ? $settings['transfer_server'] : [];
+    $configuredAuth = is_array($settings['transfer_auth'] ?? null) ? $settings['transfer_auth'] : [];
+
+    $scheme = strtolower(
+        reflection_env_string('REFLECTION_TRANSFER_SCHEME')
+        ?? reflection_env_string('REFLECTION_FTP_SCHEME')
+        ?? (string) ($configuredServer['scheme'] ?? ($configuredAuth['scheme'] ?? 'ftp'))
+    );
+    if (!in_array($scheme, ['ftp', 'ftps', 'sftp'], true)) {
+        $scheme = 'ftp';
+    }
+
+    $host = reflection_env_string('REFLECTION_TRANSFER_HOST')
+        ?? reflection_env_string('REFLECTION_FTP_HOST')
+        ?? (string) ($configuredServer['host'] ?? ($configuredAuth['host'] ?? ''));
+
+    $port = (int) (
+        reflection_env_string('REFLECTION_TRANSFER_PORT')
+        ?? reflection_env_string('REFLECTION_FTP_PORT')
+        ?? ($configuredServer['port'] ?? ($configuredAuth['port'] ?? ($scheme === 'sftp' ? 22 : ($scheme === 'ftps' ? 990 : 21))))
+    );
+
+    $root = reflection_env_string('REFLECTION_TRANSFER_ROOT')
+        ?? reflection_env_string('REFLECTION_FTP_ROOT')
+        ?? (string) ($configuredServer['root'] ?? ($configuredAuth['root'] ?? ''));
+
+    return [
+        'scheme' => $scheme,
+        'host' => $host,
+        'port' => $port > 0 ? $port : ($scheme === 'sftp' ? 22 : ($scheme === 'ftps' ? 990 : 21)),
+        'root' => $root,
+    ];
+}
+
 function reflection_master_config(?array $farmSettings = null): array
 {
     $repoRoot = __DIR__;
@@ -234,6 +277,7 @@ function reflection_master_config(?array $farmSettings = null): array
         'farm_name' => (string) ($settings['farm_name'] ?? 'Reflection Farm'),
         'api_token' => reflection_api_token_config($settings),
         'transfer_auth' => reflection_transfer_auth_config($settings),
+        'transfer_server' => reflection_transfer_server_config($settings),
         'storage_path' => $storeConfig['storage_path'],
         'storage_warning' => $storeConfig['storage_warning'],
         'required_version' => $requiredVersion !== false && $requiredVersion !== ''

@@ -100,6 +100,36 @@ $invalidErrors = $automationStore->validateRule($automationStore->normalizeRule(
 assertSameValue(true, count($invalidErrors) > 0, 'Invalid template placeholders should be rejected.');
 assertSameValue(true, strpos(implode(' ', $invalidErrors), '{relatiive}') !== false, 'Invalid placeholder error should include the bad placeholder name.');
 
+
+$mappedRule = $automationStore->saveRule([
+    'name' => 'Mapped worker paths',
+    'enabled' => false,
+    'module' => 'dummy_task',
+    'scan_roots' => $scanDir,
+    'recursive' => true,
+    'worker_path_mappings' => $scanDir . ' => /ftp/movies',
+    'source_template' => '{worker_path}',
+    'delivery_mode' => 'same_as_source',
+    'overwrite_allowed' => false,
+    'output_suffix' => '_worker',
+    'extensions' => 'txt',
+    'require_unchanged_seconds' => 0,
+    'max_files_per_scan' => 10,
+    'max_jobs_per_scan' => 10,
+], ['dummy_task' => 'dummy']);
+$mappedTest = $automationStore->testRule($mappedRule, $scanDir . DIRECTORY_SEPARATOR . 'one.txt', 10);
+assertSameValue('/ftp/movies/one.txt', $mappedTest['rows'][0]['source'], 'Mapped rules should send worker-visible paths as the job source.');
+assertSameValue('/ftp/movies/one_worker.txt', $mappedTest['rows'][0]['delivery'], 'Same-as-source delivery should use the worker-visible source path.');
+
+$mappedInvalid = $automationStore->validateRule($automationStore->normalizeRule([
+    'name' => 'Invalid mapping',
+    'enabled' => false,
+    'module' => 'dummy_task',
+    'scan_roots' => $scanDir,
+    'worker_path_mappings' => $scanDir . ' /ftp/movies',
+]), ['dummy_task' => 'dummy']);
+assertSameValue(true, count($mappedInvalid) > 0, 'Invalid worker path mappings should be rejected.');
+
 $result = $automationStore->runRule($automationStore->rule($rule['id']), $farmStore, false);
 assertSameValue(0, $result['queued'], 'Unchanged files should not be queued twice.');
 
