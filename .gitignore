@@ -14,3 +14,4 @@ farm_settings.local.php
 __MACOSX/
 
 /cluster/output
+.reflection_github_token
