@@ -3,7 +3,6 @@ import contextlib
 import ftplib
 import hashlib
 import importlib.util
-import inspect
 import json
 import logging
 import os
@@ -17,8 +16,9 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
 from urllib.parse import quote, unquote, urlparse
+
+from task_registry import TaskDefinition, discover_task_definitions, normalize_task_result
 
 # --- CONFIGURATION ---
 DEFAULT_SERVER_URL = "http://your-server-domain.com/farm_api.php"
@@ -388,51 +388,6 @@ class TaskOutcome:
     message: str = ""
 
 
-@dataclass(frozen=True)
-class TaskDefinition:
-    """A standardized task loaded from a Python file in the tasks folder."""
-
-    name: str
-    run: Callable[[str, str, bool], Any]
-    install: Optional[Callable[[], None]] = None
-    description: str = ""
-
-
-def _import_task_file(path):
-    """Import one task file without requiring the tasks folder to be a package."""
-    module_name = f"reflection_task_{path.stem}"
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _load_task_definition(path):
-    """Validate one task file and return its standardized definition."""
-    module = _import_task_file(path)
-    task_name = getattr(module, "TASK_NAME", path.stem)
-    runner = getattr(module, "run", None)
-
-    if not callable(runner):
-        raise AttributeError(f"{path} must define run(source, delivery, overwrite_allowed).")
-
-    signature = inspect.signature(runner)
-    expected_args = ("source", "delivery", "overwrite_allowed")
-    if tuple(signature.parameters) != expected_args:
-        raise TypeError(f"{path} run function must be run(source, delivery, overwrite_allowed).")
-
-    installer = getattr(module, "install", None)
-    if installer is not None and not callable(installer):
-        raise TypeError(f"{path} install value must be a function when provided.")
-
-    return TaskDefinition(
-        name=task_name,
-        run=runner,
-        install=installer,
-        description=getattr(module, "DESCRIPTION", ""),
-    )
-
-
 def run_task_installer(task_name):
     """Run the optional install() area inside one task file."""
     registry = discover_tasks()
@@ -452,22 +407,8 @@ def run_task_installer(task_name):
 
 def _normalize_task_result(result):
     """Convert a task return value into a TaskOutcome."""
-    if isinstance(result, TaskOutcome):
-        return result
-
-    if isinstance(result, bool):
-        return TaskOutcome(success=result)
-
-    if isinstance(result, dict):
-        return TaskOutcome(
-            success=bool(result.get("success", False)),
-            stop_agent=bool(result.get("stop_agent", False)),
-            reload_tasks=bool(result.get("reload_tasks", False)),
-            cleanup_source=bool(result.get("cleanup_source", False)),
-            message=str(result.get("message", "")),
-        )
-
-    raise TypeError("Task run() must return a bool, dict, or TaskOutcome.")
+    normalized = normalize_task_result(result)
+    return TaskOutcome(**normalized)
 
 
 def _system_noop(source, delivery, overwrite_allowed):
@@ -644,17 +585,10 @@ def built_in_tasks():
 
 def discover_tasks():
     """Load standardized task files plus reserved built-in system tasks."""
-    registry = {}
-
-    for path in sorted(TASKS_DIR.glob("*.py")):
-        if path.name.startswith("_"):
-            continue
-
-        try:
-            definition = _load_task_definition(path)
-            registry[definition.name] = definition
-        except Exception as e:
-            logging.error("Failed to load task file '%s': %s", path, e)
+    registry = discover_task_definitions(
+        TASKS_DIR,
+        on_error=lambda path, exc: logging.error("Failed to load task file '%s': %s", path, exc),
+    )
 
     built_ins = built_in_tasks()
     reserved_names = sorted(set(registry) & set(built_ins))

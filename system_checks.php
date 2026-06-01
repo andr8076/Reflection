@@ -6,6 +6,7 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
 require_once __DIR__ . '/StorageStore.php';
 require_once __DIR__ . '/AutomationStore.php';
+require_once __DIR__ . '/ui_helpers.php';
 
 $config = reflection_master_config();
 $store = reflection_farm_store($config);
@@ -14,20 +15,7 @@ $storageStore = new StorageStore($dataDirectory, $config['transfer_server'] ?? n
 $message = null;
 $error = null;
 
-function reflection_h($value): string { return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
-function reflection_format_bytes(int $bytes): string {
-    if ($bytes < 1024) return $bytes . ' B';
-    $units = ['KB','MB','GB','TB']; $value = $bytes / 1024;
-    foreach ($units as $unit) { if ($value < 1024) return number_format($value, $value >= 10 ? 1 : 2) . ' ' . $unit; $value /= 1024; }
-    return number_format($value, 2) . ' PB';
-}
 function reflection_check_row(string $name, bool $ok, string $detail, string $hint = ''): array { return compact('name','ok','detail','hint'); }
-function reflection_relative_time($timestamp): string {
-    $timestamp = (string) ($timestamp ?? ''); if ($timestamp === '') return '—';
-    $time = strtotime($timestamp); if ($time === false) return $timestamp;
-    $diff = max(0, time() - $time); if ($diff < 60) return $diff . 's ago'; if ($diff < 3600) return (int) floor($diff/60) . 'm ago'; if ($diff < 86400) return (int) floor($diff/3600) . 'h ago'; return (int) floor($diff/86400) . 'd ago';
-}
-
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     try {
         $action = (string) ($_POST['check_action'] ?? '');

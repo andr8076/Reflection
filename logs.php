@@ -5,6 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
 require_once __DIR__ . '/AutomationStore.php';
+require_once __DIR__ . '/ui_helpers.php';
 
 $config = reflection_master_config();
 $store = reflection_farm_store($config);
@@ -14,71 +15,6 @@ try {
     $automationStore = new AutomationStore($dataDirectory);
 } catch (Throwable $exception) {
     $automationStore = null;
-}
-
-function reflection_h($value): string
-{
-    return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-}
-
-function reflection_relative_time($timestamp): string
-{
-    $timestamp = (string) ($timestamp ?? '');
-    if ($timestamp === '') {
-        return '—';
-    }
-    $time = strtotime($timestamp);
-    if ($time === false) {
-        return $timestamp;
-    }
-    $diff = max(0, time() - $time);
-    if ($diff < 60) {
-        return $diff . 's ago';
-    }
-    if ($diff < 3600) {
-        return (int) floor($diff / 60) . 'm ago';
-    }
-    if ($diff < 86400) {
-        return (int) floor($diff / 3600) . 'h ago';
-    }
-    return (int) floor($diff / 86400) . 'd ago';
-}
-
-function reflection_short_value($value, int $limit = 120): string
-{
-    $value = (string) ($value ?? '—');
-    if ($value === '') {
-        return '—';
-    }
-    if (function_exists('mb_strlen') && mb_strlen($value) > $limit) {
-        return mb_substr($value, 0, $limit - 1) . '…';
-    }
-    if (!function_exists('mb_strlen') && strlen($value) > $limit) {
-        return substr($value, 0, $limit - 1) . '…';
-    }
-    return $value;
-}
-
-function reflection_format_bytes(int $bytes): string
-{
-    if ($bytes < 1024) {
-        return $bytes . ' B';
-    }
-    $units = ['KB', 'MB', 'GB', 'TB'];
-    $value = $bytes / 1024;
-    foreach ($units as $unit) {
-        if ($value < 1024) {
-            return number_format($value, $value >= 10 ? 1 : 2) . ' ' . $unit;
-        }
-        $value /= 1024;
-    }
-    return number_format($value, 2) . ' PB';
-}
-
-function reflection_status_class($status): string
-{
-    $status = preg_replace('/[^a-z0-9_-]/i', '', (string) $status);
-    return $status !== '' ? strtolower($status) : 'unknown';
 }
 
 function reflection_tail_lines(string $path, int $limit): array

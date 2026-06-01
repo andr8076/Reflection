@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/FarmDefaults.php';
+
 final class FarmStore
 {
     private string $path;
@@ -2076,43 +2078,7 @@ final class FarmStore
 
     private function defaultSettings(): array
     {
-        return array_merge([
-            'enforce_version' => true,
-            'failure_strategy' => 'mark_failed',
-            'max_retries' => 0,
-            'stale_job_strategy' => 'requeue_to_end',
-            'stale_max_retries' => 1,
-            'crash_loop_protection_enabled' => true,
-            'crash_loop_lost_attempts' => 2,
-            'crash_loop_distinct_workers' => 1,
-            'ess_soc_percent' => 100,
-            'ess_soc_url' => 'http://192.168.1.245:8076',
-            'ess_min_soc_percent' => 20,
-            'ess_shutdown_below_minimum' => true,
-            'ess_ignore_when_unavailable' => true,
-            'ess_soc_status' => 'manual',
-            'ess_soc_error' => '',
-            'ess_soc_raw_sample' => '',
-            'ess_soc_last_checked_at' => null,
-            'ess_soc_last_success_at' => null,
-            'ess_soc_last_failure_at' => null,
-            'idle_shutdown_after_no_job_checks' => 0,
-            'auto_wake_for_queued_jobs' => true,
-            'automation_run_due_on_worker_checkin' => true,
-            'automation_checkin_cooldown_seconds' => 60,
-            'wake_dispatch_mode' => 'worker_relay',
-            'auto_wake_cooldown_seconds' => 300,
-            'auto_wake_max_targets_per_run' => 20,
-            'wake_broadcast_address' => '255.255.255.255',
-            'wake_udp_port' => 9,
-            'job_archive_keep_lines' => 5000,
-            'worker_temp_max_age_hours' => 24,
-            'quarantine_keep_days' => 14,
-            'job_history_keep_completed' => 500,
-            'event_log_keep_lines' => 1000,
-            'file_history_keep_paths' => 500,
-            'file_history_keep_entries_per_path' => 10,
-        ], $this->configuredDefaultSettings);
+        return array_merge(FarmDefaults::runtimeSettings(), $this->configuredDefaultSettings);
     }
 
     private function nextJobId(array &$data): string

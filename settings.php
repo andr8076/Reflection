@@ -4,110 +4,12 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
+require_once __DIR__ . '/ui_helpers.php';
 
 $config = reflection_master_config();
 $store = reflection_farm_store($config);
 $message = null;
 $error = null;
-
-function reflection_h($value): string
-{
-    return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-}
-
-function reflection_string_starts_with_local(string $value, string $prefix): bool
-{
-    return $prefix === '' || strncmp($value, $prefix, strlen($prefix)) === 0;
-}
-
-function reflection_parse_machine_list(string $raw): array
-{
-    $machines = [];
-    foreach (preg_split('/\r\n|\r|\n/', trim($raw)) ?: [] as $line) {
-        $line = trim($line);
-        if ($line === '' || reflection_string_starts_with_local($line, '#')) {
-            continue;
-        }
-
-        $parts = array_map('trim', explode(',', $line));
-        $machines[] = [
-            'pc_id' => $parts[0] ?? '',
-            'mac' => $parts[1] ?? '',
-            'soc_margin_percent' => (int) ($parts[2] ?? 5),
-            'wake_enabled' => !isset($parts[3]) || !in_array(strtolower($parts[3]), ['0', 'false', 'no', 'off'], true),
-        ];
-    }
-
-    return $machines;
-}
-
-function reflection_machine_list_text(array $machines): string
-{
-    $lines = [];
-    foreach ($machines as $machine) {
-        $lines[] = implode(',', [
-            $machine['pc_id'] ?? '',
-            $machine['mac'] ?? '',
-            $machine['soc_margin_percent'] ?? 5,
-            !empty($machine['wake_enabled']) ? '1' : '0',
-        ]);
-    }
-
-    return implode(PHP_EOL, $lines);
-}
-
-function reflection_relative_time($timestamp): string
-{
-    $timestamp = (string) ($timestamp ?? '');
-    if ($timestamp === '') {
-        return '—';
-    }
-
-    $time = strtotime($timestamp);
-    if ($time === false) {
-        return $timestamp;
-    }
-
-    $diff = max(0, time() - $time);
-    if ($diff < 60) {
-        return $diff . 's ago';
-    }
-    if ($diff < 3600) {
-        return (int) floor($diff / 60) . 'm ago';
-    }
-    if ($diff < 86400) {
-        return (int) floor($diff / 3600) . 'h ago';
-    }
-    return (int) floor($diff / 86400) . 'd ago';
-}
-
-function reflection_ess_status_label(array $settings): string
-{
-    $status = (string) ($settings['ess_soc_status'] ?? 'manual');
-    if ($status === 'online') {
-        return 'online';
-    }
-    if ($status === 'offline') {
-        return 'connection failed';
-    }
-    if ($status === 'parse_error') {
-        return 'parse failed';
-    }
-    return 'manual';
-}
-
-function reflection_run_store_maintenance(FarmStore $store, array $settings): array
-{
-    return [
-        'archived_jobs' => $store->archiveOldCompletedJobs((int) ($settings['job_history_keep_completed'] ?? 500)),
-        'trimmed_events' => $store->trimEventLog((int) ($settings['event_log_keep_lines'] ?? 1000)),
-        'trimmed_file_history' => $store->compactFileHistory(
-            (int) ($settings['file_history_keep_paths'] ?? 500),
-            (int) ($settings['file_history_keep_entries_per_path'] ?? 10),
-        ),
-        'trimmed_job_archive' => $store->trimJobArchive((int) ($settings['job_archive_keep_lines'] ?? 5000)),
-    ];
-}
 
 try {
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {

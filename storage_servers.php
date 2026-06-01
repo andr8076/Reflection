@@ -5,6 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/StorageStore.php';
 require_once __DIR__ . '/FarmStore.php';
+require_once __DIR__ . '/ui_helpers.php';
 
 $config = reflection_master_config();
 $dataDirectory = dirname((string) $config['storage_path']);
@@ -14,16 +15,6 @@ $message = null;
 $error = null;
 $editingId = (string) ($_GET['edit'] ?? '');
 $editingServer = null;
-
-function reflection_h($value): string
-{
-    return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-}
-
-function reflection_post_bool(string $key): bool
-{
-    return isset($_POST[$key]) && in_array((string) $_POST[$key], ['1', 'true', 'yes', 'on'], true);
-}
 
 function reflection_server_from_post(StorageStore $store): array
 {
