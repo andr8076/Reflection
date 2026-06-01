@@ -558,9 +558,9 @@ final class FarmStore
         return count($staleJobs) + count($blockedJobs);
     }
 
-    public function abandonJob(string $taskId, string $pcId, string $error): bool
+    public function recoverInterruptedJobForWorker(string $pcId): array
     {
-        $result = $this->withLock(function (array $data) use ($taskId, $pcId, $error): array {
+        $result = $this->withLock(function (array $data) use ($pcId): array {
             $nowText = gmdate(DATE_ATOM);
             $settings = array_merge($this->defaultSettings(), $data['settings'] ?? []);
             $strategy = (string) ($settings['stale_job_strategy'] ?? 'requeue_to_end');
@@ -568,85 +568,101 @@ final class FarmStore
                 $strategy = 'requeue_to_end';
             }
             $maxStaleRetries = max(0, (int) ($settings['stale_max_retries'] ?? 1));
-            $abandonedJob = null;
+            $worker = $data['workers'][$pcId] ?? [];
+            $taskId = trim((string) ($worker['current_job'] ?? ''));
+            $interruptedJob = null;
             $blockedJob = null;
             $requeuedJob = null;
+            $clearedPointerOnly = false;
 
-            foreach ($data['jobs'] as &$job) {
-                if (
-                    ($job['task_id'] ?? '') === $taskId
-                    && ($job['status'] ?? '') === 'running'
-                    && ($job['worker'] ?? '') === $pcId
-                ) {
-                    $job['status'] = 'stale';
-                    $job['error'] = $error !== '' ? $error : 'Worker abandoned the job before it could finish.';
-                    $job['stale_at'] = $nowText;
-                    $job['finished_at'] = $nowText;
-                    $job['crash_key'] = $this->jobCrashKey($job);
+            if ($taskId !== '') {
+                foreach ($data['jobs'] as &$job) {
+                    if (
+                        ($job['task_id'] ?? '') === $taskId
+                        && ($job['status'] ?? '') === 'running'
+                        && ($job['worker'] ?? '') === $pcId
+                    ) {
+                        $job['status'] = 'stale';
+                        $job['error'] = 'Worker requested new work while this job was still running. Treating previous assignment as a worker crash or hard restart.';
+                        $job['stale_at'] = $nowText;
+                        $job['finished_at'] = $nowText;
+                        $job['loss_reason'] = 'worker_requested_new_task_without_completion';
+                        $job['crash_key'] = $this->jobCrashKey($job);
 
-                    $blockInfo = $this->crashLoopBlockInfo($data, $job, $settings);
-                    if ($blockInfo !== null) {
-                        $this->applyCrashLoopBlock($job, $blockInfo, $nowText);
-                        $blockedJob = $job;
-                        $abandonedJob = $job;
+                        $blockInfo = $this->crashLoopBlockInfo($data, $job, $settings);
+                        if ($blockInfo !== null) {
+                            $this->applyCrashLoopBlock($job, $blockInfo, $nowText);
+                            $blockedJob = $job;
+                            $interruptedJob = $job;
+                            break;
+                        }
+
+                        $interruptedJob = $job;
+
+                        $attempt = (int) ($job['attempt'] ?? 0);
+                        if ($strategy === 'requeue_to_end' && $attempt < $maxStaleRetries) {
+                            $requeuedJob = $job;
+                            $requeuedJob['task_id'] = $this->nextJobId($data);
+                            $requeuedJob['status'] = 'queued';
+                            $requeuedJob['worker'] = null;
+                            $requeuedJob['error'] = '';
+                            $requeuedJob['attempt'] = $attempt + 1;
+                            $requeuedJob['parent_task_id'] = $job['parent_task_id'] ?? $job['task_id'];
+                            $requeuedJob['requeued_from_stale_task_id'] = $job['task_id'];
+                            $requeuedJob['created_at'] = $nowText;
+                            $requeuedJob['started_at'] = null;
+                            $requeuedJob['heartbeat_at'] = null;
+                            $requeuedJob['finished_at'] = null;
+                            $requeuedJob['loss_reason'] = null;
+                            $requeuedJob['crash_key'] = $this->jobCrashKey($requeuedJob);
+                            unset($requeuedJob['stale_at'], $requeuedJob['blocked_at'], $requeuedJob['blocked_reason'], $requeuedJob['crash_pattern_count'], $requeuedJob['crash_pattern_workers']);
+                            $data['jobs'][] = $requeuedJob;
+                        }
                         break;
                     }
+                }
+                unset($job);
 
-                    $abandonedJob = $job;
+                if ($interruptedJob === null) {
+                    $clearedPointerOnly = true;
+                }
 
-                    $attempt = (int) ($job['attempt'] ?? 0);
-                    if ($strategy === 'requeue_to_end' && $attempt < $maxStaleRetries) {
-                        $requeuedJob = $job;
-                        $requeuedJob['task_id'] = $this->nextJobId($data);
-                        $requeuedJob['status'] = 'queued';
-                        $requeuedJob['worker'] = null;
-                        $requeuedJob['error'] = '';
-                        $requeuedJob['attempt'] = $attempt + 1;
-                        $requeuedJob['parent_task_id'] = $job['parent_task_id'] ?? $job['task_id'];
-                        $requeuedJob['requeued_from_stale_task_id'] = $job['task_id'];
-                        $requeuedJob['created_at'] = $nowText;
-                        $requeuedJob['started_at'] = null;
-                        $requeuedJob['heartbeat_at'] = null;
-                        $requeuedJob['finished_at'] = null;
-                        $requeuedJob['crash_key'] = $this->jobCrashKey($requeuedJob);
-                        unset($requeuedJob['stale_at'], $requeuedJob['blocked_at'], $requeuedJob['blocked_reason'], $requeuedJob['crash_pattern_count'], $requeuedJob['crash_pattern_workers']);
-                        $data['jobs'][] = $requeuedJob;
-                    }
-                    break;
+                if (isset($data['workers'][$pcId])) {
+                    $data['workers'][$pcId]['last_check_in'] = $nowText;
+                    $data['workers'][$pcId]['current_job'] = null;
+                    $data['workers'][$pcId]['idle_no_job_checkins'] = 0;
                 }
             }
-            unset($job);
 
-            if ($abandonedJob !== null && isset($data['workers'][$pcId])) {
-                $data['workers'][$pcId]['last_check_in'] = $nowText;
-                $data['workers'][$pcId]['current_job'] = null;
-            }
-
-            return ['data' => $data, 'result' => ['abandoned' => $abandonedJob, 'blocked' => $blockedJob, 'requeued' => $requeuedJob]];
+            return ['data' => $data, 'result' => [
+                'interrupted' => $interruptedJob,
+                'blocked' => $blockedJob,
+                'requeued' => $requeuedJob,
+                'cleared_pointer_only' => $clearedPointerOnly,
+            ]];
         }, true);
 
-        if (!is_array($result) || !is_array($result['abandoned'] ?? null)) {
-            return false;
+        if (!is_array($result)) {
+            return ['interrupted' => null, 'blocked' => null, 'requeued' => null, 'cleared_pointer_only' => false];
         }
 
-        $abandonedJob = $result['abandoned'];
         if (is_array($result['blocked'] ?? null)) {
             $this->recordEvent('job_blocked_crash_loop', $result['blocked']);
             $this->recordFileTouch($result['blocked']['source'], 'blocked_crash_loop_source', $result['blocked']);
             $this->recordFileTouch($result['blocked']['delivery'], 'blocked_crash_loop_delivery', $result['blocked']);
-        } else {
-            $this->recordEvent('job_abandoned', $abandonedJob);
-            $this->recordFileTouch($abandonedJob['source'], 'abandoned_source', $abandonedJob);
-            $this->recordFileTouch($abandonedJob['delivery'], 'abandoned_delivery', $abandonedJob);
+        } elseif (is_array($result['interrupted'] ?? null)) {
+            $this->recordEvent('job_interrupted_by_worker_restart', $result['interrupted']);
+            $this->recordFileTouch($result['interrupted']['source'], 'interrupted_source', $result['interrupted']);
+            $this->recordFileTouch($result['interrupted']['delivery'], 'interrupted_delivery', $result['interrupted']);
         }
 
         if (is_array($result['requeued'] ?? null)) {
-            $this->recordEvent('job_requeued_after_abandon', $result['requeued']);
-            $this->recordFileTouch($result['requeued']['source'], 'requeued_after_abandon_source', $result['requeued']);
-            $this->recordFileTouch($result['requeued']['delivery'], 'requeued_after_abandon_delivery', $result['requeued']);
+            $this->recordEvent('job_requeued_after_worker_restart', $result['requeued']);
+            $this->recordFileTouch($result['requeued']['source'], 'requeued_after_worker_restart_source', $result['requeued']);
+            $this->recordFileTouch($result['requeued']['delivery'], 'requeued_after_worker_restart_delivery', $result['requeued']);
         }
 
-        return true;
+        return $result;
     }
 
     public function updateSettings(array $settings): array

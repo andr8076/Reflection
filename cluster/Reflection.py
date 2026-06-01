@@ -92,11 +92,6 @@ def load_agent_config(config_path=None):
             raise ValueError("heartbeat_interval must be greater than zero.")
         config["heartbeat_interval"] = heartbeat_interval
 
-    if "state_path" in loaded:
-        state_path = str(loaded["state_path"]).strip()
-        if state_path:
-            config["state_path"] = state_path
-
     if "task_timeout_seconds" in loaded:
         timeout = int(loaded["task_timeout_seconds"])
         if timeout < 0:
@@ -289,7 +284,6 @@ LOCAL_TRANSFER_AUTH = AGENT_CONFIG.get("transfer_auth", {})
 API_TOKEN = str(AGENT_CONFIG.get("api_token", ""))
 CLEANUP_ROOTS = tuple(AGENT_CONFIG.get("cleanup_roots", []))
 TASKS_DIR = Path(__file__).with_name("tasks")
-STATE_PATH = Path(AGENT_CONFIG.get("state_path", Path(__file__).with_name("reflection_state.json"))).expanduser()
 TASK_TIMEOUT_SECONDS = int(AGENT_CONFIG.get("task_timeout_seconds", DEFAULT_TASK_TIMEOUT_SECONDS))
 TASK_TIMEOUTS = dict(AGENT_CONFIG.get("task_timeouts", {}))
 TASK_LOG_TAIL_BYTES = int(AGENT_CONFIG.get("task_log_tail_bytes", DEFAULT_TASK_LOG_TAIL_BYTES))
@@ -1241,46 +1235,6 @@ def _run_task_with_transfer_handling(
             execution_workspace.cleanup()
 
 
-def _utc_timestamp():
-    """Return a compact UTC timestamp for local worker state."""
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _read_worker_state():
-    """Read this worker's small local state file."""
-    try:
-        if not STATE_PATH.is_file():
-            return {}
-        with STATE_PATH.open(encoding="utf-8") as state_file:
-            state = json.load(state_file)
-        return state if isinstance(state, dict) else {}
-    except Exception as exc:
-        logging.error("Could not read worker state file %s: %s", STATE_PATH, exc)
-        return {}
-
-
-def _write_worker_state(state):
-    """Atomically write local worker state used to recover after crashes."""
-    try:
-        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = STATE_PATH.with_suffix(STATE_PATH.suffix + ".tmp")
-        with temp_path.open("w", encoding="utf-8") as state_file:
-            json.dump(state, state_file, indent=2, sort_keys=True)
-            state_file.write("\n")
-        os.replace(temp_path, STATE_PATH)
-    except Exception as exc:
-        logging.error("Could not write worker state file %s: %s", STATE_PATH, exc)
-
-
-def _clear_worker_state():
-    """Remove local worker state after the master has accepted the closeout."""
-    try:
-        if STATE_PATH.exists():
-            STATE_PATH.unlink()
-    except Exception as exc:
-        logging.error("Could not remove worker state file %s: %s", STATE_PATH, exc)
-
-
 class TaskHeartbeat:
     """Send best-effort progress heartbeats while a long task is running."""
 
@@ -1304,10 +1258,6 @@ class TaskHeartbeat:
             try:
                 response = self.agent.heartbeat_task(self.task_id)
                 if response and response.get("status") == "heartbeat_acknowledged":
-                    state = _read_worker_state()
-                    if state.get("task_id") == self.task_id:
-                        state["last_heartbeat_at"] = _utc_timestamp()
-                        _write_worker_state(state)
                     continue
                 logging.warning("Heartbeat for task %s was not acknowledged: %s", self.task_id, response)
             except Exception as exc:
@@ -1369,17 +1319,6 @@ class FarmAgent:
         }
         return self.post_to_server(payload)
 
-    def report_task_abandoned(self, task_id, error_msg=""):
-        """Tell the master that a locally remembered running task was lost."""
-        payload = {
-            "action": "report_abandoned",
-            "version": VERSION,
-            "pc_id": PC_ID,
-            "task_id": task_id,
-            "error": error_msg,
-        }
-        return self.post_to_server(payload)
-
     def report_task_done(self, task_id, success, error_msg=""):
         """Step 5 & 6: Report status and wait for server's cleanup greenlight."""
         payload = {
@@ -1391,49 +1330,6 @@ class FarmAgent:
             "error": error_msg,
         }
         return self.post_to_server(payload)
-
-    def recover_incomplete_local_task(self):
-        """Close out a task that was active when the worker process last stopped.
-
-        If the state says the task finished locally but the report did not reach the
-        master, retry the original report. If the state says the task was still
-        running, treat it as failed because the worker process restarted before the
-        task could complete cleanly.
-        """
-        state = _read_worker_state()
-        task_id = str(state.get("task_id", "")).strip()
-        if not task_id:
-            return True
-
-        phase = str(state.get("phase", "running"))
-        if phase == "completed":
-            success = bool(state.get("success", False))
-            error_message = str(state.get("error", ""))
-            logging.warning("Recovering unreported completed task %s as %s.", task_id, "success" if success else "failed")
-            response = self.report_task_done(task_id, success, error_message)
-            accepted_statuses = {"confirmed_by_server", "not_available"}
-        else:
-            error_message = (
-                "Worker restarted or crashed while this task was still running. "
-                "The local task state was recovered on startup and the job was abandoned for safe requeue/stale handling."
-            )
-            logging.warning("Recovering lost running task %s as abandoned.", task_id)
-            response = self.report_task_abandoned(task_id, error_message)
-            accepted_statuses = {"abandoned_confirmed_by_server", "not_available"}
-
-        if not response:
-            logging.warning("Could not report recovered task %s yet. Will retry before taking new work.", task_id)
-            return False
-
-        status = response.get("status")
-        if status in accepted_statuses:
-            _clear_worker_state()
-            if status == "not_available":
-                logging.warning("Recovered task %s was no longer open on the master. Local state cleared.", task_id)
-            return True
-
-        logging.warning("Unexpected recovery response for %s: %s", task_id, response)
-        return False
 
     def cleanup_files(self, source_path):
         """Step 7: Local cleanup of source files if explicitly allowed and safe."""
@@ -1508,10 +1404,6 @@ class FarmAgent:
 
     def _run_lifecycle_cycle(self):
         """Run one polling/task cycle. Return False when the agent should stop."""
-        if not self.recover_incomplete_local_task():
-            time.sleep(POLL_INTERVAL)
-            return True
-
         # 1 & 2. Ask for work
         response = self.check_for_task()
 
@@ -1565,16 +1457,6 @@ class FarmAgent:
             return True
 
         logging.info("Task %s locked. Starting module: '%s'", task_id, module_name)
-        _write_worker_state({
-            "phase": "running",
-            "task_id": task_id,
-            "module": module_name,
-            "source": source,
-            "delivery": delivery,
-            "started_at": _utc_timestamp(),
-            "last_heartbeat_at": _utc_timestamp(),
-        })
-
         # 4. Perform the task via isolated execution where possible.
         task_outcome = TaskOutcome(success=False)
         error_message = ""
@@ -1591,25 +1473,12 @@ class FarmAgent:
                 use_transfer_server_for_plain_paths,
             )
         error_message = task_outcome.message
-        _write_worker_state({
-            "phase": "completed",
-            "task_id": task_id,
-            "module": module_name,
-            "source": source,
-            "delivery": delivery,
-            "success": bool(task_outcome.success),
-            "error": error_message,
-            "completed_at": _utc_timestamp(),
-        })
-
         # 5 & 6. Report done & get server final confirmation
         server_response = self.report_task_done(task_id, task_outcome.success, error_message)
         server_confirmed = bool(server_response and server_response.get("status") == "confirmed_by_server")
 
         # 7. Clean up files if the server acknowledged the wrap-up
         if server_confirmed:
-            _clear_worker_state()
-
             if task_outcome.success and task_outcome.cleanup_source and source:
                 self.cleanup_files(source)
 

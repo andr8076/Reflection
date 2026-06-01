@@ -401,25 +401,23 @@ assertSameValue('queued', $data['jobs'][4]['status'], 'Stale jobs should be requ
 assertSameValue(1, $data['jobs'][4]['attempt'], 'Requeued stale jobs should increment attempt count.');
 
 
-$abandonStorePath = sys_get_temp_dir() . '/reflection_abandon_store_' . bin2hex(random_bytes(6)) . '.json';
-$abandonStore = new FarmStore($abandonStorePath);
-$abandonStore->updateSettings(['ess_soc_url' => '', 'stale_job_strategy' => 'requeue_to_end', 'stale_max_retries' => 1]);
-$abandonJob = $abandonStore->createJob('dummy_task', 'incoming/abandon.dat', 'outputs/abandon.txt', false);
-assertSameValue(true, $abandonStore->markJobRunning($abandonJob['task_id'], 'node-abandon'), 'Abandon test job should lock.');
+$interruptStorePath = sys_get_temp_dir() . '/reflection_interrupt_store_' . bin2hex(random_bytes(6)) . '.json';
+$interruptStore = new FarmStore($interruptStorePath);
+$interruptStore->updateSettings(['ess_soc_url' => '', 'stale_job_strategy' => 'requeue_to_end', 'stale_max_retries' => 1]);
+$interruptJob = $interruptStore->createJob('dummy_task', 'incoming/interrupted.dat', 'outputs/interrupted.txt', false);
+assertSameValue(true, $interruptStore->markJobRunning($interruptJob['task_id'], 'node-interrupt'), 'Interrupt test job should lock.');
 $response = reflection_handle_farm_api([
-    'action' => 'report_abandoned',
+    'action' => 'request_task',
     'version' => 'test-version',
-    'pc_id' => 'node-abandon',
-    'task_id' => $abandonJob['task_id'],
-    'error' => 'simulated crash recovery',
-], $abandonStore, ['required_version' => 'test-version']);
-assertSameValue('abandoned_confirmed_by_server', $response['status'], 'Workers should be able to abandon a recovered crashed job.');
-$abandonData = $abandonStore->read();
-assertSameValue('stale', $abandonData['jobs'][0]['status'], 'Abandoned jobs should be marked stale.');
-assertSameValue('queued', $abandonData['jobs'][1]['status'], 'Abandoned jobs should be requeued by stale policy.');
-assertSameValue(null, $abandonData['workers']['node-abandon']['current_job'], 'Abandoned jobs should clear the worker current_job field.');
-@unlink($abandonStorePath);
-@unlink($abandonStorePath . '.lock');
+    'pc_id' => 'node-interrupt',
+], $interruptStore, ['required_version' => 'test-version']);
+assertSameValue('task_available', $response['status'], 'A worker asking for new work while still assigned should trigger master-side crash recovery.');
+$interruptData = $interruptStore->read();
+assertSameValue('stale', $interruptData['jobs'][0]['status'], 'Interrupted jobs should be marked stale.');
+assertSameValue('queued', $interruptData['jobs'][1]['status'], 'Interrupted jobs should be requeued by stale policy.');
+assertSameValue('worker_requested_new_task_without_completion', $interruptData['jobs'][0]['loss_reason'], 'Interrupted jobs should record why the master marked them lost.');
+@unlink($interruptStorePath);
+@unlink($interruptStorePath . '.lock');
 
 $crashLoopStorePath = sys_get_temp_dir() . '/reflection_crash_loop_store_' . bin2hex(random_bytes(6)) . '.json';
 $crashLoopStore = new FarmStore($crashLoopStorePath);
@@ -433,12 +431,12 @@ $crashLoopStore->updateSettings([
 ]);
 $crashLoopJob = $crashLoopStore->createJob('dummy_task', 'incoming/crash-loop.dat', 'outputs/crash-loop.txt', false);
 assertSameValue(true, $crashLoopStore->markJobRunning($crashLoopJob['task_id'], 'node-crash-a'), 'Crash-loop first attempt should lock.');
-assertSameValue(true, $crashLoopStore->abandonJob($crashLoopJob['task_id'], 'node-crash-a', 'first worker crashed'), 'Crash-loop first attempt should abandon.');
+$crashLoopStore->recoverInterruptedJobForWorker('node-crash-a');
 $crashLoopData = $crashLoopStore->read();
 assertSameValue('stale', $crashLoopData['jobs'][0]['status'], 'First crash-loop loss should be marked stale.');
-assertSameValue('queued', $crashLoopData['jobs'][1]['status'], 'First crash-loop loss should still be retried.');
+assertSameValue('queued', $crashLoopData['jobs'][1]['status'], 'First crash-loop loss should still be retried after worker-request recovery.');
 assertSameValue(true, $crashLoopStore->markJobRunning($crashLoopData['jobs'][1]['task_id'], 'node-crash-b'), 'Crash-loop second attempt should lock on another worker.');
-assertSameValue(true, $crashLoopStore->abandonJob($crashLoopData['jobs'][1]['task_id'], 'node-crash-b', 'second worker crashed'), 'Crash-loop second attempt should abandon.');
+$crashLoopStore->recoverInterruptedJobForWorker('node-crash-b');
 $crashLoopData = $crashLoopStore->read();
 assertSameValue('blocked', $crashLoopData['jobs'][1]['status'], 'Repeated lost attempts across workers should be blocked.');
 assertSameValue(2, count($crashLoopData['jobs']), 'Blocked crash-loop jobs should not be requeued again.');

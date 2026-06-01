@@ -63,8 +63,6 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
             return reflection_api_confirm_taken($payload, $store, $pcId);
         case 'heartbeat_task':
             return reflection_api_heartbeat_task($payload, $store, $pcId);
-        case 'report_abandoned':
-            return reflection_api_report_abandoned($payload, $store, $pcId);
         case 'report_done':
             return reflection_api_report_done($payload, $store, $pcId);
         default:
@@ -167,6 +165,12 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
 {
     $store->requeueStaleJobs((int) ($config['stale_after_seconds'] ?? 900));
 
+    // If this worker already had a running job and is now asking for new work,
+    // the master treats the old job as lost/crashed. The worker does not need
+    // local recovery state or a special crash-report action; the request itself
+    // is enough information.
+    $store->recoverInterruptedJobForWorker($pcId);
+
     $allowedWorkers = $store->allowedActiveWorkers();
     $settings = $store->effectiveSettings();
     if ($allowedWorkers <= 0) {
@@ -255,22 +259,6 @@ function reflection_api_heartbeat_task(array $payload, FarmStore $store, string 
     }
 
     return ['status' => 'heartbeat_acknowledged'];
-}
-
-function reflection_api_report_abandoned(array $payload, FarmStore $store, string $pcId): array
-{
-    $taskId = trim((string) ($payload['task_id'] ?? ''));
-    $error = (string) ($payload['error'] ?? 'Worker restarted or lost local task state before the job finished.');
-
-    if ($taskId === '') {
-        return ['status' => 'error', 'error' => 'Missing task_id.'];
-    }
-
-    if (!$store->abandonJob($taskId, $pcId, $error)) {
-        return ['status' => 'not_available'];
-    }
-
-    return ['status' => 'abandoned_confirmed_by_server'];
 }
 
 function reflection_api_report_done(array $payload, FarmStore $store, string $pcId): array
