@@ -548,8 +548,8 @@ $essSocIgnored = reflection_ess_soc_is_ignored($settings);
 $automaticMaintenance = reflection_run_store_maintenance($store, $settings);
 $data = $store->read();
 $workers = $data['workers'];
-$events = $store->readRecentEvents(20);
-$fileHistory = array_slice($store->readFileHistory(), 0, 25, true);
+$events = $store->readRecentEvents(5);
+$fileHistory = array_slice($store->readFileHistory(), 0, 5, true);
 $machines = $store->machines();
 $allowedActiveWorkers = $store->allowedActiveWorkers();
 $wakeTargets = $store->wakeTargetsForCurrentSoc(true, (int) ($config['stale_after_seconds'] ?? 900));
@@ -620,6 +620,8 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                 <a href="storage_servers.php">Storage servers</a>
                 <a href="blocked_jobs.php">Blocked jobs</a>
                 <a href="system_checks.php">System checks</a>
+                <a href="logs.php">Logs</a>
+                <a href="settings.php">Settings</a>
             </nav>
         </div>
         <aside class="version-card active-work-card">
@@ -989,7 +991,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                     <p class="eyebrow">Log</p>
                     <h2>Recent events</h2>
                 </div>
-                <span class="soft-label">Last <?= count($events) ?></span>
+                <a class="ghost-button small-button" href="logs.php?log=events">View all logs</a>
             </div>
             <div class="table-wrap compact-table">
                 <table>
@@ -1026,7 +1028,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                     <p class="eyebrow">Files</p>
                     <h2>Recent paths / URIs</h2>
                 </div>
-                <span class="soft-label">Top <?= count($fileHistory) ?></span>
+                <a class="ghost-button small-button" href="logs.php?log=files">View all logs</a>
             </div>
             <div class="table-wrap compact-table">
                 <table>
@@ -1059,165 +1061,15 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
         </section>
     </section>
 
-    <section class="panel settings-panel">
-        <details>
-            <summary>
-                <span>
-                    <strong>General options and retention</strong>
-                    <small>Worker policy, ESS limits, Wake-on-LAN machines, and dashboard history caps.</small>
-                </span>
-            </summary>
-            <form method="post" class="settings-form">
-                <input type="hidden" name="form_action" value="settings">
-                <div class="settings-grid">
-                    <label class="check-row">
-                        <input type="checkbox" name="enforce_version" value="1" <?= !empty($settings['enforce_version']) ? 'checked' : '' ?>>
-                        Enforce worker version
-                    </label>
-                    <label>
-                        Failed task behavior
-                        <select name="failure_strategy">
-                            <option value="mark_failed" <?= ($settings['failure_strategy'] ?? '') === 'mark_failed' ? 'selected' : '' ?>>Mark failed and stop retrying</option>
-                            <option value="retry_to_end" <?= ($settings['failure_strategy'] ?? '') === 'retry_to_end' ? 'selected' : '' ?>>Retry by pushing a copy to the end of the queue</option>
-                        </select>
-                    </label>
-                    <label>
-                        Max task-failure retries
-                        <input type="number" name="max_retries" min="0" value="<?= (int) ($settings['max_retries'] ?? 0) ?>">
-                    </label>
-                    <label>
-                        Lost/crashed job behavior
-                        <select name="stale_job_strategy">
-                            <option value="requeue_to_end" <?= ($settings['stale_job_strategy'] ?? 'requeue_to_end') === 'requeue_to_end' ? 'selected' : '' ?>>Requeue after heartbeat timeout</option>
-                            <option value="mark_stale" <?= ($settings['stale_job_strategy'] ?? '') === 'mark_stale' ? 'selected' : '' ?>>Mark stale only</option>
-                        </select>
-                        <small>Running jobs are considered lost if no worker heartbeat arrives before the stale timeout.</small>
-                    </label>
-                    <label>
-                        Max lost-job retries
-                        <input type="number" name="stale_max_retries" min="0" value="<?= (int) ($settings['stale_max_retries'] ?? 1) ?>">
-                    </label>
-                    <label class="check-row">
-                        <input type="checkbox" name="crash_loop_protection_enabled" value="1" <?= !empty($settings['crash_loop_protection_enabled']) ? 'checked' : '' ?>>
-                        Block repeated crash-loop jobs
-                        <small>If the same module/source keeps becoming lost or abandoned, stop requeueing it automatically.</small>
-                    </label>
-                    <label>
-                        Lost attempts before block
-                        <input type="number" name="crash_loop_lost_attempts" min="1" value="<?= (int) ($settings['crash_loop_lost_attempts'] ?? 2) ?>">
-                    </label>
-                    <label>
-                        Distinct workers before block
-                        <input type="number" name="crash_loop_distinct_workers" min="1" value="<?= (int) ($settings['crash_loop_distinct_workers'] ?? 1) ?>">
-                        <small>Use 2 if you only want to block after different computers fail on the same work item.</small>
-                    </label>
-                    <label>
-                        Minimum SOC %
-                        <input type="number" name="ess_min_soc_percent" min="0" max="100" value="<?= (int) ($settings['ess_min_soc_percent'] ?? 20) ?>">
-                    </label>
-                    <label>
-                        Idle no-job polls before shutdown
-                        <input type="number" name="idle_shutdown_after_no_job_checks" min="0" value="<?= (int) ($settings['idle_shutdown_after_no_job_checks'] ?? 0) ?>">
-                    </label>
-                    <label>
-                        Demand wake cooldown seconds
-                        <input type="number" name="auto_wake_cooldown_seconds" min="0" value="<?= (int) ($settings['auto_wake_cooldown_seconds'] ?? 300) ?>">
-                    </label>
-                    <label>
-                        Max demand wakes per run
-                        <input type="number" name="auto_wake_max_targets_per_run" min="0" value="<?= (int) ($settings['auto_wake_max_targets_per_run'] ?? 20) ?>">
-                    </label>
-                    <label>
-                        WOL broadcast address
-                        <input name="wake_broadcast_address" value="<?= reflection_h($settings['wake_broadcast_address'] ?? '255.255.255.255') ?>">
-                    </label>
-                    <label>
-                        WOL UDP port
-                        <input type="number" name="wake_udp_port" min="1" max="65535" value="<?= (int) ($settings['wake_udp_port'] ?? 9) ?>">
-                    </label>
-                    <label>
-                        Completed jobs to keep in live store
-                        <input type="number" name="job_history_keep_completed" min="0" value="<?= (int) ($settings['job_history_keep_completed'] ?? 500) ?>">
-                    </label>
-                    <label>
-                        Event log lines to keep
-                        <input type="number" name="event_log_keep_lines" min="0" value="<?= (int) ($settings['event_log_keep_lines'] ?? 1000) ?>">
-                    </label>
-                    <label>
-                        File-history paths to keep
-                        <input type="number" name="file_history_keep_paths" min="0" value="<?= (int) ($settings['file_history_keep_paths'] ?? 500) ?>">
-                    </label>
-                    <label>
-                        Entries per file-history path
-                        <input type="number" name="file_history_keep_entries_per_path" min="0" value="<?= (int) ($settings['file_history_keep_entries_per_path'] ?? 10) ?>">
-                    </label>
-                    <label>
-                        Archived job lines to keep
-                        <input type="number" name="job_archive_keep_lines" min="0" value="<?= (int) ($settings['job_archive_keep_lines'] ?? 5000) ?>">
-                    </label>
-                    <label>
-                        Worker temp cleanup age hours
-                        <input type="number" name="worker_temp_max_age_hours" min="1" value="<?= (int) ($settings['worker_temp_max_age_hours'] ?? 24) ?>">
-                        <small>Sent to workers with jobs so old crashed temp folders can be cleaned up locally.</small>
-                    </label>
-                    <label>
-                        Remote quarantine keep days
-                        <input type="number" name="quarantine_keep_days" min="1" value="<?= (int) ($settings['quarantine_keep_days'] ?? 14) ?>">
-                        <small>Used by safe overwrite jobs; originals are moved to <code>.reflection_quarantine</code>.</small>
-                    </label>
-                </div>
-                <label>
-                    ESS SOC URL
-                    <input name="ess_soc_url" value="<?= reflection_h($settings['ess_soc_url'] ?? '') ?>" placeholder="http://192.168.1.245:8076">
-                    <small>Strict parser: accepts a plain fraction like <code>0.974</code>, a percent like <code>97</code> or <code>97%</code>, or JSON keys like <code>soc</code>, <code>SOC</code>, or <code>battery.soc</code>. Unknown output is treated as an ESS failure.</small>
-                </label>
-                <div class="ess-status-box">
-                    <strong>ESS status: <?= reflection_h(reflection_ess_status_label($settings)) ?></strong>
-                    <span>Last check: <?= reflection_h(reflection_relative_time($settings['ess_soc_last_checked_at'] ?? null)) ?></span>
-                    <span>Last valid SOC: <?= reflection_h(reflection_relative_time($settings['ess_soc_last_success_at'] ?? null)) ?> · <?= (int) ($settings['ess_soc_percent'] ?? 100) ?>%</span>
-                    <?php if (!empty($settings['ess_soc_error'])): ?>
-                        <span class="error-text"><?= reflection_h($settings['ess_soc_error']) ?></span>
-                    <?php endif; ?>
-                </div>
-                <label class="check-row">
-                    <input type="checkbox" name="ess_ignore_when_unavailable" value="1" <?= !empty($settings['ess_ignore_when_unavailable']) ? 'checked' : '' ?>>
-                    Ignore SOC limits when the ESS endpoint is offline or returns unreadable output
-                </label>
-                <label class="check-row">
-                    <input type="checkbox" name="ess_shutdown_below_minimum" value="1" <?= !empty($settings['ess_shutdown_below_minimum']) ? 'checked' : '' ?>>
-                    Tell workers to shut down after current task when SOC is below minimum
-                </label>
-                <label class="check-row">
-                    <input type="checkbox" name="auto_wake_for_queued_jobs" value="1" <?= !empty($settings['auto_wake_for_queued_jobs']) ? 'checked' : '' ?>>
-                    Automatically wake enough eligible machines for queued work
-                </label>
-                <label class="check-row">
-                    <input type="checkbox" name="automation_run_due_on_worker_checkin" value="1" <?= !empty($settings['automation_run_due_on_worker_checkin']) ? 'checked' : '' ?>>
-                    Run due automation scans when a worker checks in
-                </label>
-                <label>
-                    Automation check-in cooldown seconds
-                    <input type="number" name="automation_checkin_cooldown_seconds" min="0" max="3600" value="<?= (int) ($settings['automation_checkin_cooldown_seconds'] ?? 60) ?>">
-                    <small>Prevents several farm PCs that boot together from all starting automation scans. One worker can perform the due-rule check; other check-ins skip it until this cooldown passes.</small>
-                </label>
-                <label>
-                    Wake-on-LAN delivery method
-                    <select name="wake_dispatch_mode">
-                        <?php $wakeMode = (string) ($settings['wake_dispatch_mode'] ?? 'worker_relay'); ?>
-                        <option value="worker_relay" <?= $wakeMode === 'worker_relay' ? 'selected' : '' ?>>Worker relay task</option>
-                        <option value="direct" <?= $wakeMode === 'direct' ? 'selected' : '' ?>>Direct from master PHP</option>
-                        <option value="direct_then_worker_relay" <?= $wakeMode === 'direct_then_worker_relay' ? 'selected' : '' ?>>Try direct, then worker relay</option>
-                    </select>
-                    <small>Use worker relay on Synology if Web Station cannot send UDP broadcast packets. The master queues a <code>wake_farm</code> control task, and an awake farm PC sends the Wake-on-LAN packets.</small>
-                </label>
-                <label>
-                    Farm computers available for Wake-on-LAN
-                    <textarea name="machines" rows="6" placeholder="render-01,AA:BB:CC:DD:EE:01,5,1&#10;render-02,AA:BB:CC:DD:EE:02,8,1"><?= reflection_h(reflection_machine_list_text($machines)) ?></textarea>
-                    <small>One per line: <code>pc_id,mac,soc_margin_percent,wake_enabled</code>.</small>
-                </label>
-                <button type="submit">Save options</button>
-            </form>
-        </details>
+    <section class="panel quick-settings-link">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">Configuration</p>
+                <h2>Settings moved</h2>
+            </div>
+            <a class="ghost-button" href="settings.php">Open Settings</a>
+        </div>
+        <p class="api-note">Farm policy, ESS, Wake-on-LAN, retention, crash-loop limits, and machine definitions now live on the Settings page.</p>
     </section>
 
     <footer>

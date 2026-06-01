@@ -2009,3 +2009,123 @@ pre {
     font-size: 0.78rem;
     padding: 0.45rem 0.65rem;
 }
+
+/* Dedicated Settings and Logs pages */
+.settings-layout,
+.logs-layout {
+    display: grid;
+    gap: clamp(1rem, 2vw, 1.5rem);
+    margin: 0 auto;
+    max-width: 1500px;
+    padding: 0 clamp(1rem, 3vw, 2rem) clamp(2rem, 4vw, 3rem);
+}
+
+.settings-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 24rem);
+    align-items: start;
+}
+
+.logs-layout {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.settings-page-panel,
+.quick-settings-link {
+    overflow: hidden;
+}
+
+.settings-section-box {
+    background: var(--panel);
+    border: 1px solid rgba(195, 207, 221, 0.72);
+    border-radius: 20px;
+    box-shadow: 0 10px 32px rgba(24, 34, 53, 0.045);
+    display: grid;
+    gap: 1rem;
+    padding: clamp(1rem, 2vw, 1.25rem);
+}
+
+.settings-section-box h3 {
+    margin: 0;
+}
+
+.inline-form {
+    margin: 0;
+}
+
+.log-filter-form {
+    align-items: end;
+    background: var(--panel-soft);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: minmax(16rem, 1fr) minmax(8rem, 12rem) auto;
+    margin: 1rem 0;
+    padding: 1rem;
+}
+
+.log-tabs {
+    margin-top: 1rem;
+}
+
+.log-card-grid {
+    display: grid;
+    gap: 1rem;
+}
+
+.log-card {
+    background: var(--panel);
+    border: 1px solid rgba(195, 207, 221, 0.72);
+    border-radius: 20px;
+    box-shadow: 0 10px 32px rgba(24, 34, 53, 0.045);
+    display: grid;
+    gap: 1rem;
+    padding: clamp(1rem, 2vw, 1.25rem);
+}
+
+.log-card-head {
+    align-items: flex-start;
+    display: flex;
+    gap: 1rem;
+    justify-content: space-between;
+}
+
+.log-card-head strong {
+    display: block;
+}
+
+.log-card-head small {
+    color: var(--muted);
+    display: block;
+    margin-top: 0.2rem;
+}
+
+.small-preview-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+pre {
+    background: #0f172a;
+    border-radius: 14px;
+    color: #e5e7eb;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    max-width: 100%;
+    overflow: auto;
+    padding: 1rem;
+    white-space: pre-wrap;
+}
+
+@media (max-width: 980px) {
+    .settings-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .log-filter-form {
+        grid-template-columns: 1fr;
+    }
+
+    .small-preview-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}

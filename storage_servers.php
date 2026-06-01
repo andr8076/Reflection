@@ -119,7 +119,7 @@ if ($editingServer === null) {
                 <a href="automation.php">Automation</a>
                 <a class="active" href="storage_servers.php">Storage servers</a>
                 <a href="blocked_jobs.php">Blocked jobs</a>
-                <a href="system_checks.php">System checks</a>
+                <a href="system_checks.php">System checks</a><a href="logs.php">Logs</a><a href="settings.php">Settings</a>
             </nav>
         </div>
         <div class="version-card storage-help-card">

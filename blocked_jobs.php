@@ -91,7 +91,7 @@ $blockedJobs = $store->blockedJobs(300);
                 <a href="automation.php">Automation</a>
                 <a href="storage_servers.php">Storage servers</a>
                 <a class="active" href="blocked_jobs.php">Blocked jobs</a>
-                <a href="system_checks.php">System checks</a>
+                <a href="system_checks.php">System checks</a><a href="logs.php">Logs</a><a href="settings.php">Settings</a>
             </nav>
         </div>
         <aside class="version-card"><span>Best practice</span><strong>do not auto-retry poison files</strong><small>Retry only after inspecting the file/task or changing the worker code.</small></aside>
