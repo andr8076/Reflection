@@ -36,6 +36,10 @@ class AgentConfigTest(unittest.TestCase):
                     "pc_id": "worker-01",
                     "api_token": "",
                     "cleanup_roots": [],
+                    "task_timeout_seconds": Reflection.DEFAULT_TASK_TIMEOUT_SECONDS,
+                    "task_timeouts": {},
+                    "task_log_tail_bytes": Reflection.DEFAULT_TASK_LOG_TAIL_BYTES,
+                    "task_isolation": Reflection.DEFAULT_TASK_ISOLATION,
                 },
             )
 
@@ -61,6 +65,10 @@ class AgentConfigTest(unittest.TestCase):
                     "pc_id": "local-worker",
                     "api_token": "",
                     "cleanup_roots": [],
+                    "task_timeout_seconds": Reflection.DEFAULT_TASK_TIMEOUT_SECONDS,
+                    "task_timeouts": {},
+                    "task_log_tail_bytes": Reflection.DEFAULT_TASK_LOG_TAIL_BYTES,
+                    "task_isolation": Reflection.DEFAULT_TASK_ISOLATION,
                 },
             )
 

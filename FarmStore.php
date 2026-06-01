@@ -230,7 +230,9 @@ final class FarmStore
                 'error' => '',
                 'created_at' => gmdate(DATE_ATOM),
                 'started_at' => null,
+                'heartbeat_at' => null,
                 'finished_at' => null,
+                'crash_key' => null,
             ];
 
             foreach ($extra as $key => $value) {
@@ -239,6 +241,7 @@ final class FarmStore
                 }
             }
 
+            $job['crash_key'] = $this->jobCrashKey($job);
             $data['jobs'][] = $job;
             return ['data' => $data, 'result' => $job];
         }, true);
@@ -258,7 +261,7 @@ final class FarmStore
                 if (
                     ($job['module'] ?? '') === $module
                     && ($job['source'] ?? null) === $source
-                    && in_array((string) ($job['status'] ?? ''), ['queued', 'running'], true)
+                    && in_array((string) ($job['status'] ?? ''), ['queued', 'running', 'blocked'], true)
                 ) {
                     return true;
                 }
@@ -325,7 +328,9 @@ final class FarmStore
                 if (($job['task_id'] ?? '') === $taskId && ($job['status'] ?? '') === 'queued') {
                     $job['status'] = 'running';
                     $job['worker'] = $pcId;
-                    $job['started_at'] = gmdate(DATE_ATOM);
+                    $now = gmdate(DATE_ATOM);
+                    $job['started_at'] = $now;
+                    $job['heartbeat_at'] = $now;
                     $lockedJob = $job;
                     break;
                 }
@@ -351,6 +356,40 @@ final class FarmStore
         }
 
         return false;
+    }
+
+    public function heartbeatJob(string $taskId, string $pcId): bool
+    {
+        $result = $this->withLock(function (array $data) use ($taskId, $pcId): array {
+            $heartbeatJob = null;
+            $now = gmdate(DATE_ATOM);
+
+            foreach ($data['jobs'] as &$job) {
+                if (
+                    ($job['task_id'] ?? '') === $taskId
+                    && ($job['status'] ?? '') === 'running'
+                    && ($job['worker'] ?? '') === $pcId
+                ) {
+                    $job['heartbeat_at'] = $now;
+                    $heartbeatJob = $job;
+                    break;
+                }
+            }
+            unset($job);
+
+            if ($heartbeatJob !== null) {
+                $data['workers'][$pcId] = array_merge($data['workers'][$pcId] ?? [], [
+                    'pc_id' => $pcId,
+                    'last_check_in' => $now,
+                    'current_job' => $taskId,
+                    'idle_no_job_checkins' => 0,
+                ]);
+            }
+
+            return ['data' => $data, 'result' => $heartbeatJob];
+        }, true);
+
+        return is_array($result);
     }
 
     public function finishJob(string $taskId, string $pcId, string $status, string $error): bool
@@ -382,6 +421,7 @@ final class FarmStore
                         $retryJob['parent_task_id'] = $job['parent_task_id'] ?? $job['task_id'];
                         $retryJob['created_at'] = gmdate(DATE_ATOM);
                         $retryJob['started_at'] = null;
+                        $retryJob['heartbeat_at'] = null;
                         $retryJob['finished_at'] = null;
                         $data['jobs'][] = $retryJob;
                     }
@@ -418,32 +458,84 @@ final class FarmStore
 
     public function requeueStaleJobs(int $staleAfterSeconds): int
     {
-        $staleJobs = $this->withLock(function (array $data) use ($staleAfterSeconds): array {
+        $result = $this->withLock(function (array $data) use ($staleAfterSeconds): array {
             $now = time();
+            $nowText = gmdate(DATE_ATOM, $now);
+            $staleAfterSeconds = max(1, $staleAfterSeconds);
+            $settings = array_merge($this->defaultSettings(), $data['settings'] ?? []);
+            $strategy = (string) ($settings['stale_job_strategy'] ?? 'requeue_to_end');
+            if (!in_array($strategy, ['mark_stale', 'requeue_to_end'], true)) {
+                $strategy = 'requeue_to_end';
+            }
+            $maxStaleRetries = max(0, (int) ($settings['stale_max_retries'] ?? 1));
             $staleJobs = [];
+            $blockedJobs = [];
+            $requeuedJobs = [];
 
             foreach ($data['jobs'] as &$job) {
-                if (($job['status'] ?? '') !== 'running' || empty($job['started_at'])) {
+                if (($job['status'] ?? '') !== 'running') {
                     continue;
                 }
 
-                $startedAt = strtotime((string) $job['started_at']);
-                if ($startedAt !== false && ($now - $startedAt) > $staleAfterSeconds) {
-                    $job['status'] = 'stale';
-                    $job['error'] = 'Worker did not finish before the stale timeout.';
-                    $job['finished_at'] = gmdate(DATE_ATOM);
-                    $workerId = (string) ($job['worker'] ?? '');
-                    if ($workerId !== '' && isset($data['workers'][$workerId])) {
-                        $data['workers'][$workerId]['last_check_in'] = gmdate(DATE_ATOM);
-                        $data['workers'][$workerId]['current_job'] = null;
-                    }
-                    $staleJobs[] = $job;
+                $progressText = (string) ($job['heartbeat_at'] ?? $job['started_at'] ?? '');
+                if ($progressText === '') {
+                    continue;
+                }
+
+                $lastProgressAt = strtotime($progressText);
+                if ($lastProgressAt === false || ($now - $lastProgressAt) <= $staleAfterSeconds) {
+                    continue;
+                }
+
+                $originalWorkerId = (string) ($job['worker'] ?? '');
+                $job['status'] = 'stale';
+                $job['error'] = 'Worker heartbeat timed out after ' . $staleAfterSeconds . ' seconds. Last progress: ' . $progressText;
+                $job['stale_at'] = $nowText;
+                $job['finished_at'] = $nowText;
+                $job['crash_key'] = $this->jobCrashKey($job);
+
+                if ($originalWorkerId !== '' && isset($data['workers'][$originalWorkerId])) {
+                    $data['workers'][$originalWorkerId]['last_check_in'] = $nowText;
+                    $data['workers'][$originalWorkerId]['current_job'] = null;
+                }
+
+                $blockInfo = $this->crashLoopBlockInfo($data, $job, $settings);
+                if ($blockInfo !== null) {
+                    $this->applyCrashLoopBlock($job, $blockInfo, $nowText);
+                    $blockedJobs[] = $job;
+                    continue;
+                }
+
+                $staleJobs[] = $job;
+
+                $attempt = (int) ($job['attempt'] ?? 0);
+                if ($strategy === 'requeue_to_end' && $attempt < $maxStaleRetries) {
+                    $retryJob = $job;
+                    $retryJob['task_id'] = $this->nextJobId($data);
+                    $retryJob['status'] = 'queued';
+                    $retryJob['worker'] = null;
+                    $retryJob['error'] = '';
+                    $retryJob['attempt'] = $attempt + 1;
+                    $retryJob['parent_task_id'] = $job['parent_task_id'] ?? $job['task_id'];
+                    $retryJob['requeued_from_stale_task_id'] = $job['task_id'];
+                    $retryJob['created_at'] = $nowText;
+                    $retryJob['started_at'] = null;
+                    $retryJob['heartbeat_at'] = null;
+                    $retryJob['finished_at'] = null;
+                    $retryJob['crash_key'] = $this->jobCrashKey($retryJob);
+                    unset($retryJob['stale_at'], $retryJob['blocked_at'], $retryJob['blocked_reason'], $retryJob['crash_pattern_count'], $retryJob['crash_pattern_workers']);
+                    $data['jobs'][] = $retryJob;
+                    $requeuedJobs[] = $retryJob;
                 }
             }
             unset($job);
 
-            return ['data' => $data, 'result' => $staleJobs];
+            return ['data' => $data, 'result' => ['stale' => $staleJobs, 'blocked' => $blockedJobs, 'requeued' => $requeuedJobs]];
         }, true);
+
+        $staleJobs = is_array($result['stale'] ?? null) ? $result['stale'] : [];
+        $blockedJobs = is_array($result['blocked'] ?? null) ? $result['blocked'] : [];
+        $requeuedJobs = is_array($result['requeued'] ?? null) ? $result['requeued'] : [];
 
         foreach ($staleJobs as $job) {
             $this->recordEvent('job_stale', $job);
@@ -451,7 +543,110 @@ final class FarmStore
             $this->recordFileTouch($job['delivery'], 'stale_delivery', $job);
         }
 
-        return count($staleJobs);
+        foreach ($blockedJobs as $job) {
+            $this->recordEvent('job_blocked_crash_loop', $job);
+            $this->recordFileTouch($job['source'], 'blocked_crash_loop_source', $job);
+            $this->recordFileTouch($job['delivery'], 'blocked_crash_loop_delivery', $job);
+        }
+
+        foreach ($requeuedJobs as $job) {
+            $this->recordEvent('job_requeued_after_stale', $job);
+            $this->recordFileTouch($job['source'], 'requeued_after_stale_source', $job);
+            $this->recordFileTouch($job['delivery'], 'requeued_after_stale_delivery', $job);
+        }
+
+        return count($staleJobs) + count($blockedJobs);
+    }
+
+    public function abandonJob(string $taskId, string $pcId, string $error): bool
+    {
+        $result = $this->withLock(function (array $data) use ($taskId, $pcId, $error): array {
+            $nowText = gmdate(DATE_ATOM);
+            $settings = array_merge($this->defaultSettings(), $data['settings'] ?? []);
+            $strategy = (string) ($settings['stale_job_strategy'] ?? 'requeue_to_end');
+            if (!in_array($strategy, ['mark_stale', 'requeue_to_end'], true)) {
+                $strategy = 'requeue_to_end';
+            }
+            $maxStaleRetries = max(0, (int) ($settings['stale_max_retries'] ?? 1));
+            $abandonedJob = null;
+            $blockedJob = null;
+            $requeuedJob = null;
+
+            foreach ($data['jobs'] as &$job) {
+                if (
+                    ($job['task_id'] ?? '') === $taskId
+                    && ($job['status'] ?? '') === 'running'
+                    && ($job['worker'] ?? '') === $pcId
+                ) {
+                    $job['status'] = 'stale';
+                    $job['error'] = $error !== '' ? $error : 'Worker abandoned the job before it could finish.';
+                    $job['stale_at'] = $nowText;
+                    $job['finished_at'] = $nowText;
+                    $job['crash_key'] = $this->jobCrashKey($job);
+
+                    $blockInfo = $this->crashLoopBlockInfo($data, $job, $settings);
+                    if ($blockInfo !== null) {
+                        $this->applyCrashLoopBlock($job, $blockInfo, $nowText);
+                        $blockedJob = $job;
+                        $abandonedJob = $job;
+                        break;
+                    }
+
+                    $abandonedJob = $job;
+
+                    $attempt = (int) ($job['attempt'] ?? 0);
+                    if ($strategy === 'requeue_to_end' && $attempt < $maxStaleRetries) {
+                        $requeuedJob = $job;
+                        $requeuedJob['task_id'] = $this->nextJobId($data);
+                        $requeuedJob['status'] = 'queued';
+                        $requeuedJob['worker'] = null;
+                        $requeuedJob['error'] = '';
+                        $requeuedJob['attempt'] = $attempt + 1;
+                        $requeuedJob['parent_task_id'] = $job['parent_task_id'] ?? $job['task_id'];
+                        $requeuedJob['requeued_from_stale_task_id'] = $job['task_id'];
+                        $requeuedJob['created_at'] = $nowText;
+                        $requeuedJob['started_at'] = null;
+                        $requeuedJob['heartbeat_at'] = null;
+                        $requeuedJob['finished_at'] = null;
+                        $requeuedJob['crash_key'] = $this->jobCrashKey($requeuedJob);
+                        unset($requeuedJob['stale_at'], $requeuedJob['blocked_at'], $requeuedJob['blocked_reason'], $requeuedJob['crash_pattern_count'], $requeuedJob['crash_pattern_workers']);
+                        $data['jobs'][] = $requeuedJob;
+                    }
+                    break;
+                }
+            }
+            unset($job);
+
+            if ($abandonedJob !== null && isset($data['workers'][$pcId])) {
+                $data['workers'][$pcId]['last_check_in'] = $nowText;
+                $data['workers'][$pcId]['current_job'] = null;
+            }
+
+            return ['data' => $data, 'result' => ['abandoned' => $abandonedJob, 'blocked' => $blockedJob, 'requeued' => $requeuedJob]];
+        }, true);
+
+        if (!is_array($result) || !is_array($result['abandoned'] ?? null)) {
+            return false;
+        }
+
+        $abandonedJob = $result['abandoned'];
+        if (is_array($result['blocked'] ?? null)) {
+            $this->recordEvent('job_blocked_crash_loop', $result['blocked']);
+            $this->recordFileTouch($result['blocked']['source'], 'blocked_crash_loop_source', $result['blocked']);
+            $this->recordFileTouch($result['blocked']['delivery'], 'blocked_crash_loop_delivery', $result['blocked']);
+        } else {
+            $this->recordEvent('job_abandoned', $abandonedJob);
+            $this->recordFileTouch($abandonedJob['source'], 'abandoned_source', $abandonedJob);
+            $this->recordFileTouch($abandonedJob['delivery'], 'abandoned_delivery', $abandonedJob);
+        }
+
+        if (is_array($result['requeued'] ?? null)) {
+            $this->recordEvent('job_requeued_after_abandon', $result['requeued']);
+            $this->recordFileTouch($result['requeued']['source'], 'requeued_after_abandon_source', $result['requeued']);
+            $this->recordFileTouch($result['requeued']['delivery'], 'requeued_after_abandon_delivery', $result['requeued']);
+        }
+
+        return true;
     }
 
     public function updateSettings(array $settings): array
@@ -459,6 +654,12 @@ final class FarmStore
         return $this->withLock(function (array $data) use ($settings): array {
             $data['settings'] = array_merge($this->defaultSettings(), $data['settings'] ?? [], $settings);
             $data['settings']['max_retries'] = max(0, (int) ($data['settings']['max_retries'] ?? 0));
+            $strategy = (string) ($data['settings']['stale_job_strategy'] ?? 'requeue_to_end');
+            $data['settings']['stale_job_strategy'] = in_array($strategy, ['mark_stale', 'requeue_to_end'], true) ? $strategy : 'requeue_to_end';
+            $data['settings']['stale_max_retries'] = max(0, (int) ($data['settings']['stale_max_retries'] ?? 1));
+            $data['settings']['crash_loop_protection_enabled'] = !empty($data['settings']['crash_loop_protection_enabled']);
+            $data['settings']['crash_loop_lost_attempts'] = max(1, (int) ($data['settings']['crash_loop_lost_attempts'] ?? 2));
+            $data['settings']['crash_loop_distinct_workers'] = max(1, (int) ($data['settings']['crash_loop_distinct_workers'] ?? 1));
             $data['settings']['ess_soc_percent'] = max(0, min(100, (int) ($data['settings']['ess_soc_percent'] ?? 100)));
             $data['settings']['ess_min_soc_percent'] = max(0, min(100, (int) ($data['settings']['ess_min_soc_percent'] ?? 20)));
             $data['settings']['ess_ignore_when_unavailable'] = !empty($data['settings']['ess_ignore_when_unavailable']);
@@ -1395,12 +1596,116 @@ final class FarmStore
         return $value;
     }
 
+    private function jobCrashKey(array $job): string
+    {
+        $module = trim((string) ($job['module'] ?? ''));
+        $source = trim((string) ($job['source'] ?? ''));
+        if ($module === '' || $source === '' || $this->isControlModule($module)) {
+            return '';
+        }
+
+        $parts = [
+            'module' => $module,
+            'source' => $source,
+            'transfer_server_id' => (string) ($job['transfer_server_id'] ?? ''),
+        ];
+
+        return sha1(json_encode($parts, JSON_UNESCAPED_SLASHES) ?: ($module . '|' . $source));
+    }
+
+    private function crashLoopBlockInfo(array $data, array $job, array $settings): ?array
+    {
+        if (empty($settings['crash_loop_protection_enabled'])) {
+            return null;
+        }
+
+        $crashKey = (string) ($job['crash_key'] ?? '');
+        if ($crashKey === '') {
+            $crashKey = $this->jobCrashKey($job);
+        }
+        if ($crashKey === '') {
+            return null;
+        }
+
+        $lostAttemptsNeeded = max(1, (int) ($settings['crash_loop_lost_attempts'] ?? 2));
+        $distinctWorkersNeeded = max(1, (int) ($settings['crash_loop_distinct_workers'] ?? 1));
+        $lostCount = 0;
+        $workers = [];
+
+        foreach (($data['jobs'] ?? []) as $candidate) {
+            if (!is_array($candidate)) {
+                continue;
+            }
+
+            $candidateKey = (string) ($candidate['crash_key'] ?? '');
+            if ($candidateKey === '') {
+                $candidateKey = $this->jobCrashKey($candidate);
+            }
+            if ($candidateKey !== $crashKey) {
+                continue;
+            }
+
+            $status = (string) ($candidate['status'] ?? '');
+            if (!in_array($status, ['stale', 'blocked'], true)) {
+                continue;
+            }
+
+            $lostCount++;
+            $worker = trim((string) ($candidate['worker'] ?? ''));
+            if ($worker !== '') {
+                $workers[$worker] = true;
+            }
+        }
+
+        $distinctWorkers = count($workers);
+        if ($lostCount < $lostAttemptsNeeded || $distinctWorkers < $distinctWorkersNeeded) {
+            return null;
+        }
+
+        return [
+            'crash_key' => $crashKey,
+            'lost_count' => $lostCount,
+            'distinct_workers' => $distinctWorkers,
+            'workers' => array_keys($workers),
+            'lost_attempts_needed' => $lostAttemptsNeeded,
+            'distinct_workers_needed' => $distinctWorkersNeeded,
+        ];
+    }
+
+    private function applyCrashLoopBlock(array &$job, array $blockInfo, string $nowText): void
+    {
+        $previousError = trim((string) ($job['error'] ?? ''));
+        $workerText = implode(', ', array_slice($blockInfo['workers'] ?? [], 0, 8));
+        $reason = 'Crash-loop protection blocked this work item after '
+            . (int) ($blockInfo['lost_count'] ?? 0)
+            . ' lost/abandoned attempt(s)';
+        if ((int) ($blockInfo['distinct_workers'] ?? 0) > 0) {
+            $reason .= ' across ' . (int) ($blockInfo['distinct_workers'] ?? 0) . ' worker(s)';
+        }
+        if ($workerText !== '') {
+            $reason .= ' [' . $workerText . ']';
+        }
+        $reason .= '. It will not be requeued automatically.';
+
+        $job['status'] = 'blocked';
+        $job['blocked_at'] = $nowText;
+        $job['blocked_reason'] = $reason;
+        $job['crash_pattern_count'] = (int) ($blockInfo['lost_count'] ?? 0);
+        $job['crash_pattern_workers'] = array_values($blockInfo['workers'] ?? []);
+        $job['error'] = $previousError !== '' ? ($reason . ' Last lost-job error: ' . $previousError) : $reason;
+    }
+
     private function defaultSettings(): array
     {
         return array_merge([
             'enforce_version' => true,
             'failure_strategy' => 'mark_failed',
             'max_retries' => 0,
+            'stale_job_strategy' => 'requeue_to_end',
+            'stale_max_retries' => 1,
+            'crash_loop_protection_enabled' => true,
+            'crash_loop_lost_attempts' => 2,
+            'crash_loop_distinct_workers' => 1,
             'ess_soc_percent' => 100,
             'ess_soc_url' => 'http://192.168.1.245:8076',
             'ess_min_soc_percent' => 20,

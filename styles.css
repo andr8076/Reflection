@@ -521,7 +521,8 @@ dd {
 }
 
 .badge.failed,
-.badge.stale {
+.badge.stale,
+.badge.blocked {
     background: var(--error-soft);
     color: var(--error);
 }

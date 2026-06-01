@@ -9,8 +9,10 @@ import logging
 import os
 import shutil
 import socket
+import subprocess
 import tempfile
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +22,10 @@ from urllib.parse import quote, unquote, urlparse
 # --- CONFIGURATION ---
 DEFAULT_SERVER_URL = "http://your-server-domain.com/farm_api.php"
 DEFAULT_POLL_INTERVAL = 10
+DEFAULT_HEARTBEAT_INTERVAL = 30
+DEFAULT_TASK_TIMEOUT_SECONDS = 12 * 60 * 60
+DEFAULT_TASK_LOG_TAIL_BYTES = 12000
+DEFAULT_TASK_ISOLATION = True
 DEFAULT_PC_ID = socket.gethostname()
 DEFAULT_API_TOKEN = os.environ.get("REFLECTION_API_TOKEN", "")
 DEFAULT_CLEANUP_ROOTS = []
@@ -51,6 +57,10 @@ def load_agent_config(config_path=None):
         "pc_id": DEFAULT_PC_ID,
         "api_token": DEFAULT_API_TOKEN,
         "cleanup_roots": list(DEFAULT_CLEANUP_ROOTS),
+        "task_timeout_seconds": DEFAULT_TASK_TIMEOUT_SECONDS,
+        "task_timeouts": {},
+        "task_log_tail_bytes": DEFAULT_TASK_LOG_TAIL_BYTES,
+        "task_isolation": DEFAULT_TASK_ISOLATION,
     }
     env_cleanup_roots = _cleanup_roots_from_env()
     if env_cleanup_roots:
@@ -75,6 +85,44 @@ def load_agent_config(config_path=None):
         if poll_interval <= 0:
             raise ValueError("poll_interval must be greater than zero.")
         config["poll_interval"] = poll_interval
+
+    if "heartbeat_interval" in loaded:
+        heartbeat_interval = int(loaded["heartbeat_interval"])
+        if heartbeat_interval <= 0:
+            raise ValueError("heartbeat_interval must be greater than zero.")
+        config["heartbeat_interval"] = heartbeat_interval
+
+    if "state_path" in loaded:
+        state_path = str(loaded["state_path"]).strip()
+        if state_path:
+            config["state_path"] = state_path
+
+    if "task_timeout_seconds" in loaded:
+        timeout = int(loaded["task_timeout_seconds"])
+        if timeout < 0:
+            raise ValueError("task_timeout_seconds must be zero or greater.")
+        config["task_timeout_seconds"] = timeout
+
+    if "task_timeouts" in loaded:
+        raw_timeouts = loaded["task_timeouts"]
+        if not isinstance(raw_timeouts, dict):
+            raise ValueError("task_timeouts must be an object mapping task names to seconds.")
+        timeouts = {}
+        for task_name, timeout_value in raw_timeouts.items():
+            timeout = int(timeout_value)
+            if timeout < 0:
+                raise ValueError("task_timeouts values must be zero or greater.")
+            timeouts[str(task_name)] = timeout
+        config["task_timeouts"] = timeouts
+
+    if "task_log_tail_bytes" in loaded:
+        log_tail_bytes = int(loaded["task_log_tail_bytes"])
+        if log_tail_bytes < 1024:
+            raise ValueError("task_log_tail_bytes must be at least 1024.")
+        config["task_log_tail_bytes"] = log_tail_bytes
+
+    if "task_isolation" in loaded:
+        config["task_isolation"] = bool(loaded["task_isolation"])
 
     if "pc_id" in loaded:
         pc_id = str(loaded["pc_id"]).strip()
@@ -235,11 +283,18 @@ VERSION = get_git_commit_id()
 AGENT_CONFIG = load_agent_config()
 SERVER_URL = AGENT_CONFIG["server_url"]  # Target PHP endpoint
 POLL_INTERVAL = AGENT_CONFIG["poll_interval"]  # Seconds to wait before checking for new jobs if idle
+HEARTBEAT_INTERVAL = int(AGENT_CONFIG.get("heartbeat_interval", DEFAULT_HEARTBEAT_INTERVAL))
 PC_ID = AGENT_CONFIG["pc_id"]  # Unique identifier for this node
 LOCAL_TRANSFER_AUTH = AGENT_CONFIG.get("transfer_auth", {})
 API_TOKEN = str(AGENT_CONFIG.get("api_token", ""))
 CLEANUP_ROOTS = tuple(AGENT_CONFIG.get("cleanup_roots", []))
 TASKS_DIR = Path(__file__).with_name("tasks")
+STATE_PATH = Path(AGENT_CONFIG.get("state_path", Path(__file__).with_name("reflection_state.json"))).expanduser()
+TASK_TIMEOUT_SECONDS = int(AGENT_CONFIG.get("task_timeout_seconds", DEFAULT_TASK_TIMEOUT_SECONDS))
+TASK_TIMEOUTS = dict(AGENT_CONFIG.get("task_timeouts", {}))
+TASK_LOG_TAIL_BYTES = int(AGENT_CONFIG.get("task_log_tail_bytes", DEFAULT_TASK_LOG_TAIL_BYTES))
+TASK_ISOLATION = bool(AGENT_CONFIG.get("task_isolation", DEFAULT_TASK_ISOLATION))
+TASK_RUNNER_PATH = Path(__file__).with_name("task_runner.py")
 
 # Setup logging to see what the farm bot is doing
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
@@ -902,6 +957,219 @@ def _prepare_transfer_paths(
     return prepared_source, prepared_delivery, upload_delivery, temp_directory
 
 
+def _task_timeout_for(module_name):
+    """Return the timeout for one task. Zero disables the timeout."""
+    specific = TASK_TIMEOUTS.get(module_name)
+    if specific is None:
+        specific = TASK_TIMEOUTS.get("default", TASK_TIMEOUT_SECONDS)
+    try:
+        return max(0, int(specific))
+    except (TypeError, ValueError):
+        return max(0, int(TASK_TIMEOUT_SECONDS))
+
+
+def _read_tail(path, max_bytes=None):
+    """Read the tail of a text log file without letting it grow memory usage."""
+    max_bytes = int(max_bytes or TASK_LOG_TAIL_BYTES)
+    log_path = Path(path)
+    if not log_path.is_file():
+        return ""
+
+    try:
+        with log_path.open("rb") as log_file:
+            log_file.seek(0, os.SEEK_END)
+            size = log_file.tell()
+            log_file.seek(max(0, size - max_bytes))
+            data = log_file.read()
+        text = data.decode("utf-8", errors="replace").strip()
+        if size > max_bytes:
+            return "... log truncated ...\n" + text
+        return text
+    except Exception as exc:
+        return f"Could not read task log {log_path}: {exc}"
+
+
+def _process_group_kwargs():
+    """Return subprocess kwargs that let us terminate child process trees."""
+    if os.name == "nt":
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
+def _terminate_process_tree(process):
+    """Best-effort termination of a task runner and its child processes."""
+    if process.poll() is not None:
+        return
+
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            os.killpg(process.pid, 15)
+    except Exception:
+        with contextlib.suppress(Exception):
+            process.terminate()
+
+    try:
+        process.wait(timeout=10)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            os.killpg(process.pid, 9)
+    except Exception:
+        with contextlib.suppress(Exception):
+            process.kill()
+
+    with contextlib.suppress(Exception):
+        process.wait(timeout=5)
+
+
+def _load_task_runner_result(result_path):
+    """Read and normalize the JSON result emitted by task_runner.py."""
+    try:
+        with Path(result_path).open(encoding="utf-8") as result_file:
+            result = json.load(result_file)
+    except FileNotFoundError:
+        raise RuntimeError("Task runner did not produce a result file.")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Task runner produced invalid JSON result: {exc}") from exc
+
+    return _normalize_task_result(result)
+
+
+def _format_isolated_failure(prefix, stdout_path, stderr_path):
+    """Build a useful error message from isolated task logs."""
+    stderr_tail = _read_tail(stderr_path)
+    stdout_tail = _read_tail(stdout_path)
+    parts = [prefix]
+    if stderr_tail:
+        parts.append("stderr tail:\n" + stderr_tail)
+    if stdout_tail:
+        parts.append("stdout tail:\n" + stdout_tail)
+    return "\n\n".join(parts)
+
+
+def _run_task_in_subprocess(module_name, source, delivery, overwrite_allowed, task_id, workspace_root):
+    """Run an external task in an isolated subprocess so the worker survives task crashes."""
+    if not TASK_RUNNER_PATH.is_file():
+        raise FileNotFoundError(f"Missing task runner: {TASK_RUNNER_PATH}")
+
+    timeout_seconds = _task_timeout_for(module_name)
+    runtime_dir = Path(workspace_root) / "runner"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    result_path = runtime_dir / "result.json"
+    stdout_path = runtime_dir / "stdout.log"
+    stderr_path = runtime_dir / "stderr.log"
+
+    command = [
+        sys.executable,
+        str(TASK_RUNNER_PATH),
+        "--tasks-dir",
+        str(TASKS_DIR),
+        "--module",
+        str(module_name),
+        "--source",
+        str(source or ""),
+        "--delivery",
+        str(delivery or ""),
+        "--result-file",
+        str(result_path),
+    ]
+    if overwrite_allowed:
+        command.append("--overwrite-allowed")
+
+    logging.info(
+        "Starting isolated task process for %s%s.",
+        module_name,
+        f" with timeout {timeout_seconds}s" if timeout_seconds else " without timeout",
+    )
+
+    with stdout_path.open("wb") as stdout_file, stderr_path.open("wb") as stderr_file:
+        process = subprocess.Popen(
+            command,
+            cwd=str(Path(__file__).parent),
+            stdout=stdout_file,
+            stderr=stderr_file,
+            **_process_group_kwargs(),
+        )
+        try:
+            process.wait(timeout=timeout_seconds or None)
+        except subprocess.TimeoutExpired:
+            _terminate_process_tree(process)
+            message = _format_isolated_failure(
+                f"Task '{module_name}' timed out after {timeout_seconds} seconds and was killed.",
+                stdout_path,
+                stderr_path,
+            )
+            logging.error(message)
+            return TaskOutcome(success=False, message=message)
+
+    stdout_tail = _read_tail(stdout_path)
+    stderr_tail = _read_tail(stderr_path)
+    if stdout_tail:
+        logging.info("Task %s stdout tail:\n%s", module_name, stdout_tail)
+    if stderr_tail:
+        logging.warning("Task %s stderr tail:\n%s", module_name, stderr_tail)
+
+    if result_path.exists():
+        try:
+            outcome = _load_task_runner_result(result_path)
+            if process.returncode != 0 and not outcome.message:
+                return TaskOutcome(
+                    success=False,
+                    message=f"Task '{module_name}' exited with code {process.returncode}.",
+                )
+            if process.returncode != 0 and outcome.success:
+                return TaskOutcome(
+                    success=False,
+                    message=(
+                        f"Task '{module_name}' reported success but exited with code "
+                        f"{process.returncode}: {outcome.message}"
+                    ),
+                )
+            return outcome
+        except Exception as exc:
+            message = _format_isolated_failure(
+                f"Task '{module_name}' finished but its result could not be read: {exc}",
+                stdout_path,
+                stderr_path,
+            )
+            logging.error(message)
+            return TaskOutcome(success=False, message=message)
+
+    if process.returncode != 0:
+        message = _format_isolated_failure(
+            f"Task '{module_name}' crashed or exited with code {process.returncode} before writing a result.",
+            stdout_path,
+            stderr_path,
+        )
+        logging.error(message)
+        return TaskOutcome(success=False, message=message)
+
+    message = _format_isolated_failure(
+        f"Task '{module_name}' exited successfully but did not write a result file.",
+        stdout_path,
+        stderr_path,
+    )
+    logging.error(message)
+    return TaskOutcome(success=False, message=message)
+
+
 def _run_task_with_transfer_handling(
     agent,
     module_name,
@@ -912,8 +1180,9 @@ def _run_task_with_transfer_handling(
     transfer_auth,
     use_transfer_server_for_plain_paths=False,
 ):
-    """Run one task and treat download/upload errors as task failures."""
+    """Run one task and treat download/upload/process errors as task failures."""
     transfer_workspace = None
+    execution_workspace = None
     try:
         (
             prepared_source,
@@ -927,12 +1196,35 @@ def _run_task_with_transfer_handling(
             transfer_auth,
             use_transfer_server_for_plain_paths,
         )
-        task_outcome = agent.run_task(
-            module_name,
-            prepared_source,
-            prepared_delivery,
-            overwrite_allowed,
+
+        if transfer_workspace is not None:
+            workspace_root = Path(transfer_workspace.name)
+        else:
+            execution_workspace = tempfile.TemporaryDirectory(prefix=f"reflection-runner-{task_id or 'task'}-")
+            workspace_root = Path(execution_workspace.name)
+
+        should_isolate = (
+            TASK_ISOLATION
+            and hasattr(agent, "task_registry")
+            and module_name not in built_in_tasks()
         )
+        if should_isolate:
+            task_outcome = _run_task_in_subprocess(
+                module_name,
+                prepared_source,
+                prepared_delivery,
+                overwrite_allowed,
+                task_id,
+                workspace_root,
+            )
+        else:
+            task_outcome = agent.run_task(
+                module_name,
+                prepared_source,
+                prepared_delivery,
+                overwrite_allowed,
+            )
+
         if task_outcome.success and _is_ftp_uri(upload_delivery):
             _upload_ftp_file(prepared_delivery, upload_delivery, transfer_auth)
         elif task_outcome.success and _is_sftp_uri(upload_delivery):
@@ -940,11 +1232,86 @@ def _run_task_with_transfer_handling(
         return task_outcome
     except Exception as e:
         error_message = str(e)
-        logging.error("Execution failed on module '%s': %s", module_name, error_message)
+        logging.exception("Execution failed on module '%s': %s", module_name, error_message)
         return TaskOutcome(success=False, message=error_message)
     finally:
         if transfer_workspace is not None:
             transfer_workspace.cleanup()
+        if execution_workspace is not None:
+            execution_workspace.cleanup()
+
+
+def _utc_timestamp():
+    """Return a compact UTC timestamp for local worker state."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _read_worker_state():
+    """Read this worker's small local state file."""
+    try:
+        if not STATE_PATH.is_file():
+            return {}
+        with STATE_PATH.open(encoding="utf-8") as state_file:
+            state = json.load(state_file)
+        return state if isinstance(state, dict) else {}
+    except Exception as exc:
+        logging.error("Could not read worker state file %s: %s", STATE_PATH, exc)
+        return {}
+
+
+def _write_worker_state(state):
+    """Atomically write local worker state used to recover after crashes."""
+    try:
+        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = STATE_PATH.with_suffix(STATE_PATH.suffix + ".tmp")
+        with temp_path.open("w", encoding="utf-8") as state_file:
+            json.dump(state, state_file, indent=2, sort_keys=True)
+            state_file.write("\n")
+        os.replace(temp_path, STATE_PATH)
+    except Exception as exc:
+        logging.error("Could not write worker state file %s: %s", STATE_PATH, exc)
+
+
+def _clear_worker_state():
+    """Remove local worker state after the master has accepted the closeout."""
+    try:
+        if STATE_PATH.exists():
+            STATE_PATH.unlink()
+    except Exception as exc:
+        logging.error("Could not remove worker state file %s: %s", STATE_PATH, exc)
+
+
+class TaskHeartbeat:
+    """Send best-effort progress heartbeats while a long task is running."""
+
+    def __init__(self, agent, task_id, interval):
+        self.agent = agent
+        self.task_id = task_id
+        self.interval = max(5, int(interval))
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._loop, name=f"reflection-heartbeat-{task_id}", daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.stop_event.set()
+        self.thread.join(timeout=2)
+
+    def _loop(self):
+        while not self.stop_event.wait(self.interval):
+            try:
+                response = self.agent.heartbeat_task(self.task_id)
+                if response and response.get("status") == "heartbeat_acknowledged":
+                    state = _read_worker_state()
+                    if state.get("task_id") == self.task_id:
+                        state["last_heartbeat_at"] = _utc_timestamp()
+                        _write_worker_state(state)
+                    continue
+                logging.warning("Heartbeat for task %s was not acknowledged: %s", self.task_id, response)
+            except Exception as exc:
+                logging.warning("Heartbeat for task %s failed: %s", self.task_id, exc)
 
 # --- CORE FARM AGENT CLASS ---
 class FarmAgent:
@@ -992,6 +1359,27 @@ class FarmAgent:
         res = self.post_to_server(payload)
         return res and res.get("status") == "acknowledged"
 
+    def heartbeat_task(self, task_id):
+        """Tell the master that the current long-running task is still alive."""
+        payload = {
+            "action": "heartbeat_task",
+            "version": VERSION,
+            "pc_id": PC_ID,
+            "task_id": task_id,
+        }
+        return self.post_to_server(payload)
+
+    def report_task_abandoned(self, task_id, error_msg=""):
+        """Tell the master that a locally remembered running task was lost."""
+        payload = {
+            "action": "report_abandoned",
+            "version": VERSION,
+            "pc_id": PC_ID,
+            "task_id": task_id,
+            "error": error_msg,
+        }
+        return self.post_to_server(payload)
+
     def report_task_done(self, task_id, success, error_msg=""):
         """Step 5 & 6: Report status and wait for server's cleanup greenlight."""
         payload = {
@@ -1003,6 +1391,49 @@ class FarmAgent:
             "error": error_msg,
         }
         return self.post_to_server(payload)
+
+    def recover_incomplete_local_task(self):
+        """Close out a task that was active when the worker process last stopped.
+
+        If the state says the task finished locally but the report did not reach the
+        master, retry the original report. If the state says the task was still
+        running, treat it as failed because the worker process restarted before the
+        task could complete cleanly.
+        """
+        state = _read_worker_state()
+        task_id = str(state.get("task_id", "")).strip()
+        if not task_id:
+            return True
+
+        phase = str(state.get("phase", "running"))
+        if phase == "completed":
+            success = bool(state.get("success", False))
+            error_message = str(state.get("error", ""))
+            logging.warning("Recovering unreported completed task %s as %s.", task_id, "success" if success else "failed")
+            response = self.report_task_done(task_id, success, error_message)
+            accepted_statuses = {"confirmed_by_server", "not_available"}
+        else:
+            error_message = (
+                "Worker restarted or crashed while this task was still running. "
+                "The local task state was recovered on startup and the job was abandoned for safe requeue/stale handling."
+            )
+            logging.warning("Recovering lost running task %s as abandoned.", task_id)
+            response = self.report_task_abandoned(task_id, error_message)
+            accepted_statuses = {"abandoned_confirmed_by_server", "not_available"}
+
+        if not response:
+            logging.warning("Could not report recovered task %s yet. Will retry before taking new work.", task_id)
+            return False
+
+        status = response.get("status")
+        if status in accepted_statuses:
+            _clear_worker_state()
+            if status == "not_available":
+                logging.warning("Recovered task %s was no longer open on the master. Local state cleared.", task_id)
+            return True
+
+        logging.warning("Unexpected recovery response for %s: %s", task_id, response)
+        return False
 
     def cleanup_files(self, source_path):
         """Step 7: Local cleanup of source files if explicitly allowed and safe."""
@@ -1052,59 +1483,103 @@ class FarmAgent:
         logging.info("Reloaded task modules: %s", ", ".join(sorted(self.task_registry)) or "none")
 
     def run_lifecycle(self):
-        """Step 8: The loop."""
+        """Main worker loop with a top-level guard against unexpected failures."""
         logging.info("Farm Agent started. Version: %s | PC: %s", VERSION, PC_ID)
         logging.info("Loaded task modules: %s", ", ".join(sorted(self.task_registry)) or "none")
+        logging.info(
+            "Task isolation: %s | Default task timeout: %ss",
+            "enabled" if TASK_ISOLATION else "disabled",
+            TASK_TIMEOUT_SECONDS,
+        )
 
         while True:
-            # 1 & 2. Ask for work
-            response = self.check_for_task()
-
-            if not response:
-                logging.info("No response or connection issue. Retrying in %ss...", POLL_INTERVAL)
-                time.sleep(POLL_INTERVAL)
-                continue
-
-            if response.get("status") == "no_jobs":
-                if response.get("shutdown_after_task"):
-                    reason = response.get("reason", "server_policy")
-                    logging.info("Server requested idle shutdown (%s). Stopping agent.", reason)
+            try:
+                should_continue = self._run_lifecycle_cycle()
+                if not should_continue:
                     return
-                logging.info("Server has no jobs. Sleeping for %ss...", POLL_INTERVAL)
-                time.sleep(POLL_INTERVAL)
-                continue
+            except KeyboardInterrupt:
+                logging.info("Keyboard interrupt received. Stopping agent.")
+                return
+            except Exception as exc:
+                # The worker should never fall apart because a single loop
+                # iteration hit a bug. Keep the process alive and try again.
+                logging.exception("Unhandled worker loop error. Continuing after backoff: %s", exc)
+                time.sleep(max(5, POLL_INTERVAL))
 
-            if response.get("status") == "version_mismatch":
-                logging.critical("Fatal: Script version does not match server version! Halting agent.")
-                sys.exit(1)
+    def _run_lifecycle_cycle(self):
+        """Run one polling/task cycle. Return False when the agent should stop."""
+        if not self.recover_incomplete_local_task():
+            time.sleep(POLL_INTERVAL)
+            return True
 
-            # Extract task details
-            task = response.get("task", {})
-            task_id = task.get("task_id")
-            module_name = task.get("module")
-            source = task.get("source")
-            delivery = task.get("delivery")
-            overwrite_allowed = task.get("overwrite_allowed", False)
-            transfer_auth = _merge_transfer_settings(
-                task.get("transfer_server", {}),
-                task.get("transfer_auth", {}),
-            )
-            use_transfer_server_for_plain_paths = (
-                task.get("path_mode") == "transfer"
-                and isinstance(task.get("transfer_server"), dict)
-            )
+        # 1 & 2. Ask for work
+        response = self.check_for_task()
 
-            # 3. Confirm task taken
-            if not self.confirm_task_taken(task_id):
-                logging.warning("Failed to lock task %s. Skipping.", task_id)
-                continue
+        if not response:
+            logging.info("No response or connection issue. Retrying in %ss...", POLL_INTERVAL)
+            time.sleep(POLL_INTERVAL)
+            return True
 
-            logging.info("Task %s locked. Starting module: '%s'", task_id, module_name)
+        if response.get("status") == "no_jobs":
+            if response.get("shutdown_after_task"):
+                reason = response.get("reason", "server_policy")
+                logging.info("Server requested idle shutdown (%s). Stopping agent.", reason)
+                return False
+            logging.info("Server has no jobs. Sleeping for %ss...", POLL_INTERVAL)
+            time.sleep(POLL_INTERVAL)
+            return True
 
-            # 4. Perform the task via the Registry
-            task_outcome = TaskOutcome(success=False)
-            error_message = ""
+        if response.get("status") == "version_mismatch":
+            logging.critical("Fatal: Script version does not match server version! Halting agent.")
+            return False
 
+        if response.get("status") != "task_available":
+            logging.warning("Unexpected server response. Sleeping before retry: %s", response)
+            time.sleep(POLL_INTERVAL)
+            return True
+
+        # Extract task details
+        task = response.get("task", {})
+        task_id = task.get("task_id")
+        module_name = task.get("module")
+        source = task.get("source")
+        delivery = task.get("delivery")
+        overwrite_allowed = task.get("overwrite_allowed", False)
+        transfer_auth = _merge_transfer_settings(
+            task.get("transfer_server", {}),
+            task.get("transfer_auth", {}),
+        )
+        use_transfer_server_for_plain_paths = (
+            task.get("path_mode") == "transfer"
+            and isinstance(task.get("transfer_server"), dict)
+        )
+
+        if not task_id or not module_name:
+            logging.error("Server returned malformed task payload: %s", task)
+            time.sleep(POLL_INTERVAL)
+            return True
+
+        # 3. Confirm task taken
+        if not self.confirm_task_taken(task_id):
+            logging.warning("Failed to lock task %s. Skipping.", task_id)
+            return True
+
+        logging.info("Task %s locked. Starting module: '%s'", task_id, module_name)
+        _write_worker_state({
+            "phase": "running",
+            "task_id": task_id,
+            "module": module_name,
+            "source": source,
+            "delivery": delivery,
+            "started_at": _utc_timestamp(),
+            "last_heartbeat_at": _utc_timestamp(),
+        })
+
+        # 4. Perform the task via isolated execution where possible.
+        task_outcome = TaskOutcome(success=False)
+        error_message = ""
+
+        with TaskHeartbeat(self, task_id, HEARTBEAT_INTERVAL):
             task_outcome = _run_task_with_transfer_handling(
                 self,
                 module_name,
@@ -1115,33 +1590,46 @@ class FarmAgent:
                 transfer_auth,
                 use_transfer_server_for_plain_paths,
             )
-            error_message = task_outcome.message
+        error_message = task_outcome.message
+        _write_worker_state({
+            "phase": "completed",
+            "task_id": task_id,
+            "module": module_name,
+            "source": source,
+            "delivery": delivery,
+            "success": bool(task_outcome.success),
+            "error": error_message,
+            "completed_at": _utc_timestamp(),
+        })
 
-            # 5 & 6. Report done & get server final confirmation
-            server_response = self.report_task_done(task_id, task_outcome.success, error_message)
-            server_confirmed = bool(server_response and server_response.get("status") == "confirmed_by_server")
+        # 5 & 6. Report done & get server final confirmation
+        server_response = self.report_task_done(task_id, task_outcome.success, error_message)
+        server_confirmed = bool(server_response and server_response.get("status") == "confirmed_by_server")
 
-            # 7. Clean up files if the server acknowledged the wrap-up
-            if server_confirmed:
-                if task_outcome.success and task_outcome.cleanup_source and source:
-                    self.cleanup_files(source)
+        # 7. Clean up files if the server acknowledged the wrap-up
+        if server_confirmed:
+            _clear_worker_state()
 
-                if task_outcome.reload_tasks:
-                    self.reload_task_registry()
+            if task_outcome.success and task_outcome.cleanup_source and source:
+                self.cleanup_files(source)
 
-                if task_outcome.stop_agent:
-                    logging.info("Shutdown task %s confirmed by server. Stopping agent.", task_id)
-                    return
+            if task_outcome.reload_tasks:
+                self.reload_task_registry()
 
-                if server_response.get("shutdown_after_task"):
-                    logging.info("Server requested shutdown after task %s due to SOC policy. Stopping agent.", task_id)
-                    return
+            if task_outcome.stop_agent:
+                logging.info("Shutdown task %s confirmed by server. Stopping agent.", task_id)
+                return False
 
-                logging.info("Lifecycle finished for Task %s. Repeating loop...\n", task_id)
-            else:
-                logging.error("Server did not acknowledge task closeout for %s. Holding cleanup.", task_id)
+            if server_response.get("shutdown_after_task"):
+                logging.info("Server requested shutdown after task %s due to SOC policy. Stopping agent.", task_id)
+                return False
 
-            time.sleep(2)  # Minor breather between tasks
+            logging.info("Lifecycle finished for Task %s. Repeating loop...\n", task_id)
+        else:
+            logging.error("Server did not acknowledge task closeout for %s. Holding cleanup.", task_id)
+
+        time.sleep(2)  # Minor breather between tasks
+        return True
 
 
 def main():

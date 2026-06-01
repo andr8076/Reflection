@@ -20,6 +20,9 @@ from Reflection import (
     DEFAULT_PC_ID,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_SERVER_URL,
+    DEFAULT_TASK_ISOLATION,
+    DEFAULT_TASK_LOG_TAIL_BYTES,
+    DEFAULT_TASK_TIMEOUT_SECONDS,
     DEFAULT_TRANSFER_AUTH,
     TaskDefinition,
     default_config_path,
@@ -71,6 +74,38 @@ def _validate_poll_interval(value: str) -> int:
     if poll_interval <= 0:
         raise ValueError("Poll interval must be greater than zero.")
     return poll_interval
+
+
+def _validate_non_negative_seconds(value: str, field_name: str) -> int:
+    """Validate a non-negative timeout value."""
+    try:
+        seconds = int(value)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be a whole number of seconds.") from exc
+    if seconds < 0:
+        raise ValueError(f"{field_name} must be zero or greater.")
+    return seconds
+
+
+def _validate_log_tail_bytes(value: str) -> int:
+    """Validate how much task output should be retained in error messages."""
+    try:
+        size = int(value)
+    except ValueError as exc:
+        raise ValueError("Task log tail bytes must be a whole number.") from exc
+    if size < 1024:
+        raise ValueError("Task log tail bytes must be at least 1024.")
+    return size
+
+
+def _validate_bool(value: str) -> bool:
+    """Parse simple yes/no values."""
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError("Expected yes or no.")
 
 
 def _validate_pc_id(value: str) -> str:
@@ -203,6 +238,10 @@ def collect_agent_config(
             "pc_id": DEFAULT_PC_ID,
             "api_token": DEFAULT_API_TOKEN,
             "cleanup_roots": list(DEFAULT_CLEANUP_ROOTS),
+            "task_timeout_seconds": DEFAULT_TASK_TIMEOUT_SECONDS,
+            "task_timeouts": {},
+            "task_log_tail_bytes": DEFAULT_TASK_LOG_TAIL_BYTES,
+            "task_isolation": DEFAULT_TASK_ISOLATION,
         }
 
     should_prompt = sys.stdin.isatty() if interactive is None else interactive
@@ -250,12 +289,39 @@ def collect_agent_config(
         )
     )
 
+    task_isolation = _validate_bool(
+        _prompt_value(
+            "Run task modules in an isolated subprocess? (yes/no)",
+            "yes" if bool(current_config.get("task_isolation", DEFAULT_TASK_ISOLATION)) else "no",
+            interactive=should_prompt,
+        )
+    )
+    task_timeout_seconds = _validate_non_negative_seconds(
+        _prompt_value(
+            "Default max task runtime in seconds (0 disables timeout)",
+            str(current_config.get("task_timeout_seconds") or DEFAULT_TASK_TIMEOUT_SECONDS),
+            interactive=should_prompt,
+        ),
+        "Default max task runtime",
+    )
+    task_log_tail_bytes = _validate_log_tail_bytes(
+        _prompt_value(
+            "Task log tail bytes included in failure reports",
+            str(current_config.get("task_log_tail_bytes") or DEFAULT_TASK_LOG_TAIL_BYTES),
+            interactive=should_prompt,
+        )
+    )
+
     config: dict[str, Any] = {
         "server_url": server_url,
         "poll_interval": poll_interval,
         "pc_id": pc_id,
         "api_token": api_token,
         "cleanup_roots": cleanup_roots,
+        "task_isolation": task_isolation,
+        "task_timeout_seconds": task_timeout_seconds,
+        "task_timeouts": dict(current_config.get("task_timeouts") or {}),
+        "task_log_tail_bytes": task_log_tail_bytes,
     }
     transfer_auth = collect_transfer_auth(current_config, interactive=should_prompt)
     if transfer_auth is not None:

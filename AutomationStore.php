@@ -684,7 +684,7 @@ final class AutomationStore
     private function shouldQueue(array $rule, array $candidate, string $source, FarmStore $farmStore, string $fingerprint, ?string &$reason): bool
     {
         if ($farmStore->hasOpenJob((string) ($rule['module'] ?? ''), $source)) {
-            $reason = 'A queued or running job already exists for this task/source.';
+            $reason = 'A queued, running, or crash-blocked job already exists for this task/source.';
             return false;
         }
 

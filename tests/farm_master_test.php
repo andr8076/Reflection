@@ -282,6 +282,22 @@ $response = reflection_handle_farm_api([
 assertSameValue('acknowledged', $response['status'], 'Workers should be able to lock queued jobs.');
 
 $response = reflection_handle_farm_api([
+    'action' => 'heartbeat_task',
+    'version' => 'test-version',
+    'pc_id' => 'node-01',
+    'task_id' => 'job_1001',
+], $store, $config);
+assertSameValue('heartbeat_acknowledged', $response['status'], 'Workers should be able to heartbeat running jobs they own.');
+
+$response = reflection_handle_farm_api([
+    'action' => 'heartbeat_task',
+    'version' => 'test-version',
+    'pc_id' => 'node-02',
+    'task_id' => 'job_1001',
+], $store, $config);
+assertSameValue('not_available', $response['status'], 'Workers should not heartbeat jobs owned by another worker.');
+
+$response = reflection_handle_farm_api([
     'action' => 'confirm_taken',
     'version' => 'test-version',
     'pc_id' => 'node-02',
@@ -372,6 +388,7 @@ $data = $store->read();
 foreach ($data['jobs'] as &$jobForStaleTest) {
     if (($jobForStaleTest['task_id'] ?? '') === $staleJob['task_id']) {
         $jobForStaleTest['started_at'] = gmdate(DATE_ATOM, time() - 3600);
+        $jobForStaleTest['heartbeat_at'] = gmdate(DATE_ATOM, time() - 3600);
     }
 }
 unset($jobForStaleTest);
@@ -380,6 +397,55 @@ assertSameValue(1, $store->requeueStaleJobs(60), 'Stale running jobs should be d
 $data = $store->read();
 assertSameValue('stale', $data['jobs'][3]['status'], 'Stale jobs should be marked stale.');
 assertSameValue(null, $data['workers']['node-stale']['current_job'], 'Stale jobs should clear the worker current_job field.');
+assertSameValue('queued', $data['jobs'][4]['status'], 'Stale jobs should be requeued to the end by default.');
+assertSameValue(1, $data['jobs'][4]['attempt'], 'Requeued stale jobs should increment attempt count.');
+
+
+$abandonStorePath = sys_get_temp_dir() . '/reflection_abandon_store_' . bin2hex(random_bytes(6)) . '.json';
+$abandonStore = new FarmStore($abandonStorePath);
+$abandonStore->updateSettings(['ess_soc_url' => '', 'stale_job_strategy' => 'requeue_to_end', 'stale_max_retries' => 1]);
+$abandonJob = $abandonStore->createJob('dummy_task', 'incoming/abandon.dat', 'outputs/abandon.txt', false);
+assertSameValue(true, $abandonStore->markJobRunning($abandonJob['task_id'], 'node-abandon'), 'Abandon test job should lock.');
+$response = reflection_handle_farm_api([
+    'action' => 'report_abandoned',
+    'version' => 'test-version',
+    'pc_id' => 'node-abandon',
+    'task_id' => $abandonJob['task_id'],
+    'error' => 'simulated crash recovery',
+], $abandonStore, ['required_version' => 'test-version']);
+assertSameValue('abandoned_confirmed_by_server', $response['status'], 'Workers should be able to abandon a recovered crashed job.');
+$abandonData = $abandonStore->read();
+assertSameValue('stale', $abandonData['jobs'][0]['status'], 'Abandoned jobs should be marked stale.');
+assertSameValue('queued', $abandonData['jobs'][1]['status'], 'Abandoned jobs should be requeued by stale policy.');
+assertSameValue(null, $abandonData['workers']['node-abandon']['current_job'], 'Abandoned jobs should clear the worker current_job field.');
+@unlink($abandonStorePath);
+@unlink($abandonStorePath . '.lock');
+
+$crashLoopStorePath = sys_get_temp_dir() . '/reflection_crash_loop_store_' . bin2hex(random_bytes(6)) . '.json';
+$crashLoopStore = new FarmStore($crashLoopStorePath);
+$crashLoopStore->updateSettings([
+    'ess_soc_url' => '',
+    'stale_job_strategy' => 'requeue_to_end',
+    'stale_max_retries' => 3,
+    'crash_loop_protection_enabled' => true,
+    'crash_loop_lost_attempts' => 2,
+    'crash_loop_distinct_workers' => 2,
+]);
+$crashLoopJob = $crashLoopStore->createJob('dummy_task', 'incoming/crash-loop.dat', 'outputs/crash-loop.txt', false);
+assertSameValue(true, $crashLoopStore->markJobRunning($crashLoopJob['task_id'], 'node-crash-a'), 'Crash-loop first attempt should lock.');
+assertSameValue(true, $crashLoopStore->abandonJob($crashLoopJob['task_id'], 'node-crash-a', 'first worker crashed'), 'Crash-loop first attempt should abandon.');
+$crashLoopData = $crashLoopStore->read();
+assertSameValue('stale', $crashLoopData['jobs'][0]['status'], 'First crash-loop loss should be marked stale.');
+assertSameValue('queued', $crashLoopData['jobs'][1]['status'], 'First crash-loop loss should still be retried.');
+assertSameValue(true, $crashLoopStore->markJobRunning($crashLoopData['jobs'][1]['task_id'], 'node-crash-b'), 'Crash-loop second attempt should lock on another worker.');
+assertSameValue(true, $crashLoopStore->abandonJob($crashLoopData['jobs'][1]['task_id'], 'node-crash-b', 'second worker crashed'), 'Crash-loop second attempt should abandon.');
+$crashLoopData = $crashLoopStore->read();
+assertSameValue('blocked', $crashLoopData['jobs'][1]['status'], 'Repeated lost attempts across workers should be blocked.');
+assertSameValue(2, count($crashLoopData['jobs']), 'Blocked crash-loop jobs should not be requeued again.');
+assertSameValue(null, $crashLoopData['workers']['node-crash-b']['current_job'], 'Blocked crash-loop jobs should clear the worker current_job field.');
+@unlink($crashLoopStorePath);
+@unlink($crashLoopStorePath . '.lock');
+
 
 unlink($storePath);
 @unlink($eventLogPath);

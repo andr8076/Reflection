@@ -122,6 +122,8 @@ function reflection_default_farm_settings(): array
             'enforce_version' => true,
             'failure_strategy' => 'mark_failed',
             'max_retries' => 0,
+            'stale_job_strategy' => 'requeue_to_end',
+            'stale_max_retries' => 1,
             'ess_soc_percent' => 100,
             'ess_soc_url' => 'http://192.168.1.245:8076',
             'ess_min_soc_percent' => 20,

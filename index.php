@@ -400,6 +400,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'enforce_version' => isset($_POST['enforce_version']),
             'failure_strategy' => (string) ($_POST['failure_strategy'] ?? 'mark_failed'),
             'max_retries' => (int) ($_POST['max_retries'] ?? 0),
+            'stale_job_strategy' => (string) ($_POST['stale_job_strategy'] ?? 'requeue_to_end'),
+            'stale_max_retries' => (int) ($_POST['stale_max_retries'] ?? 1),
+            'crash_loop_protection_enabled' => isset($_POST['crash_loop_protection_enabled']),
+            'crash_loop_lost_attempts' => (int) ($_POST['crash_loop_lost_attempts'] ?? 2),
+            'crash_loop_distinct_workers' => (int) ($_POST['crash_loop_distinct_workers'] ?? 1),
             'ess_soc_percent' => (int) ($_POST['ess_soc_percent'] ?? 100),
             'ess_soc_url' => trim((string) ($_POST['ess_soc_url'] ?? '')),
             'ess_min_soc_percent' => (int) ($_POST['ess_min_soc_percent'] ?? 20),
@@ -546,7 +551,7 @@ $workerStateCounts = reflection_count_worker_states($workerCards);
 $archiveInfo = $store->archiveInfo();
 $scriptDirectory = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '')), '/');
 $apiPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/farm_api.php';
-$validJobFilters = ['all', 'active', 'queued', 'running', 'success', 'failed', 'stale', 'finished'];
+$validJobFilters = ['all', 'active', 'queued', 'running', 'success', 'failed', 'stale', 'blocked', 'finished'];
 $jobStatus = (string) ($_GET['job_status'] ?? 'all');
 if (!in_array($jobStatus, $validJobFilters, true)) {
     $jobStatus = 'all';
@@ -564,7 +569,7 @@ $activeJobsPreviewLimit = 5;
 $activeJobsPreview = array_slice($activeJobsAll, 0, $activeJobsPreviewLimit);
 $activeJobsMore = array_slice($activeJobsAll, $activeJobsPreviewLimit);
 $activeJobsShownLimit = count($activeJobsAll);
-$completedInStore = (int) ($statusCounts['success'] ?? 0) + (int) ($statusCounts['failed'] ?? 0) + (int) ($statusCounts['stale'] ?? 0);
+$completedInStore = (int) ($statusCounts['success'] ?? 0) + (int) ($statusCounts['failed'] ?? 0) + (int) ($statusCounts['stale'] ?? 0) + (int) ($statusCounts['blocked'] ?? 0);
 $activeCount = (int) ($statusCounts['queued'] ?? 0) + (int) ($statusCounts['running'] ?? 0);
 $maintenanceChanged = array_sum($automaticMaintenance) > 0;
 ?>
@@ -650,7 +655,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
         <div class="alert warning">ESS SOC <?= reflection_h(reflection_ess_status_label($settings)) ?>. SOC-based worker limits are being ignored until the endpoint returns a valid SOC value again. <?= reflection_h($settings['ess_soc_error'] ?? '') ?></div>
     <?php endif; ?>
     <?php if ($staleCount > 0): ?>
-        <div class="alert warning"><?= reflection_h($staleCount) ?> stale job(s) were marked for operator review.</div>
+        <div class="alert warning"><?= reflection_h($staleCount) ?> lost/blocked job(s) were marked for operator review.</div>
     <?php endif; ?>
     <?php if ($maintenanceChanged): ?>
         <div class="alert muted">Automatic maintenance archived <?= (int) $automaticMaintenance['archived_jobs'] ?> old job(s), trimmed <?= (int) $automaticMaintenance['trimmed_events'] ?> event(s), and compacted <?= (int) $automaticMaintenance['trimmed_file_history'] ?> file-history item(s).</div>
@@ -896,7 +901,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
             </form>
         </div>
         <nav class="status-tabs" aria-label="Job status filters">
-            <?php foreach (['all', 'active', 'queued', 'running', 'success', 'failed', 'stale', 'finished'] as $filter): ?>
+            <?php foreach (['all', 'active', 'queued', 'running', 'success', 'failed', 'stale', 'blocked', 'finished'] as $filter): ?>
                 <?php
                     if ($filter === 'all') {
                         $tabCount = array_sum($statusCounts);
@@ -1053,8 +1058,34 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                         </select>
                     </label>
                     <label>
-                        Max retries
+                        Max task-failure retries
                         <input type="number" name="max_retries" min="0" value="<?= (int) ($settings['max_retries'] ?? 0) ?>">
+                    </label>
+                    <label>
+                        Lost/crashed job behavior
+                        <select name="stale_job_strategy">
+                            <option value="requeue_to_end" <?= ($settings['stale_job_strategy'] ?? 'requeue_to_end') === 'requeue_to_end' ? 'selected' : '' ?>>Requeue after heartbeat timeout</option>
+                            <option value="mark_stale" <?= ($settings['stale_job_strategy'] ?? '') === 'mark_stale' ? 'selected' : '' ?>>Mark stale only</option>
+                        </select>
+                        <small>Running jobs are considered lost if no worker heartbeat arrives before the stale timeout.</small>
+                    </label>
+                    <label>
+                        Max lost-job retries
+                        <input type="number" name="stale_max_retries" min="0" value="<?= (int) ($settings['stale_max_retries'] ?? 1) ?>">
+                    </label>
+                    <label class="check-row">
+                        <input type="checkbox" name="crash_loop_protection_enabled" value="1" <?= !empty($settings['crash_loop_protection_enabled']) ? 'checked' : '' ?>>
+                        Block repeated crash-loop jobs
+                        <small>If the same module/source keeps becoming lost or abandoned, stop requeueing it automatically.</small>
+                    </label>
+                    <label>
+                        Lost attempts before block
+                        <input type="number" name="crash_loop_lost_attempts" min="1" value="<?= (int) ($settings['crash_loop_lost_attempts'] ?? 2) ?>">
+                    </label>
+                    <label>
+                        Distinct workers before block
+                        <input type="number" name="crash_loop_distinct_workers" min="1" value="<?= (int) ($settings['crash_loop_distinct_workers'] ?? 1) ?>">
+                        <small>Use 2 if you only want to block after different computers fail on the same work item.</small>
                     </label>
                     <label>
                         ESS SOC %
