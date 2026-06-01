@@ -38,24 +38,22 @@ def _import_task_file(path: Path):
 
 def _find_task(tasks_dir: Path, task_name: str):
     matches = []
+    available = []
     for path in sorted(tasks_dir.glob("*.py")):
         if path.name.startswith("_"):
             continue
-        module = _import_task_file(path)
+        try:
+            module = _import_task_file(path)
+        except Exception:
+            available.append(path.stem + " (failed to load)")
+            continue
+
         name = str(getattr(module, "TASK_NAME", path.stem))
+        available.append(name)
         if name == task_name:
             matches.append((path, module))
 
     if not matches:
-        available = []
-        for path in sorted(tasks_dir.glob("*.py")):
-            if path.name.startswith("_"):
-                continue
-            try:
-                module = _import_task_file(path)
-                available.append(str(getattr(module, "TASK_NAME", path.stem)))
-            except Exception:
-                available.append(path.stem + " (failed to load)")
         raise KeyError(
             f"Unknown task '{task_name}'. Available tasks: {', '.join(available) or 'none'}"
         )
