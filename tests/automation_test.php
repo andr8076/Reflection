@@ -136,6 +136,11 @@ assertSameValue(0, $result['queued'], 'Unchanged files should not be queued twic
 $due = $automationStore->runDueRules($farmStore, true);
 assertSameValue(0, count($due), 'Recently scanned rule should not be due yet.');
 
+$automationStore->runDueRulesForWorkerCheckin($farmStore, false, 60);
+$cooldownCheck = $automationStore->runDueRulesForWorkerCheckin($farmStore, false, 60);
+assertSameValue('skipped', $cooldownCheck[0]['status'] ?? '', 'Repeated worker-triggered automation checks should respect the global cooldown.');
+assertSameValue('automation_check_cooldown', $cooldownCheck[0]['reason'] ?? '', 'Worker-triggered automation cooldown should report a clear reason.');
+
 array_map('unlink', glob($dataDir . DIRECTORY_SEPARATOR . '*') ?: []);
 array_map('unlink', glob($scanDir . DIRECTORY_SEPARATOR . '*') ?: []);
 @rmdir($scanDir);

@@ -176,7 +176,8 @@ function reflection_run_due_automation_on_worker_checkin(FarmStore $store, array
 
     try {
         $automationStore = new AutomationStore(dirname($storagePath));
-        return $automationStore->runDueRules($store, false);
+        $cooldownSeconds = max(0, (int) ($settings['automation_checkin_cooldown_seconds'] ?? 60));
+        return $automationStore->runDueRulesForWorkerCheckin($store, false, $cooldownSeconds);
     } catch (Throwable $exception) {
         // A broken automation rule must not stop workers from checking in.
         error_log('Reflection automation check-in scan failed: ' . $exception->getMessage());

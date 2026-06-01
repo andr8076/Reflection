@@ -5,7 +5,7 @@ declare(strict_types=1);
 return [
     // Give each deployed farm a stable id/name. These values also help derive
     // fallback temporary paths when the configured store is not writable.
-    'farm_id' => 'default',
+    'farm_id' => 'Master',
     'farm_name' => 'Reflection Farm',
 
     // Optional shared secret for worker API requests. REFLECTION_API_TOKEN overrides this value.
@@ -45,9 +45,9 @@ return [
     'runtime_defaults' => [
         'enforce_version' => true,
         'failure_strategy' => 'mark_failed',
-        'max_retries' => 0,
+        'max_retries' => 2,
         'stale_job_strategy' => 'requeue_to_end',
-        'stale_max_retries' => 1,
+        'stale_max_retries' => 2,
         'ess_soc_percent' => 100,
         'ess_soc_url' => 'http://192.168.1.245:8076',
         'ess_min_soc_percent' => 20,
@@ -55,6 +55,7 @@ return [
         'idle_shutdown_after_no_job_checks' => 0,
         'auto_wake_for_queued_jobs' => true,
         'automation_run_due_on_worker_checkin' => true,
+        'automation_checkin_cooldown_seconds' => 60,
         'wake_dispatch_mode' => 'worker_relay',
         'auto_wake_cooldown_seconds' => 300,
         'auto_wake_max_targets_per_run' => 20,

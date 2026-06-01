@@ -11,6 +11,8 @@ final class AutomationStore
     private string $statePath;
     private string $runLogPath;
     private string $lockPath;
+    private string $dueCheckLockPath;
+    private string $dueCheckStatePath;
 
     public function __construct(string $directory)
     {
@@ -19,6 +21,8 @@ final class AutomationStore
         $this->statePath = $directory . DIRECTORY_SEPARATOR . 'automation_state.json';
         $this->runLogPath = $directory . DIRECTORY_SEPARATOR . 'automation_runs.jsonl';
         $this->lockPath = $directory . DIRECTORY_SEPARATOR . 'automation.lock';
+        $this->dueCheckLockPath = $directory . DIRECTORY_SEPARATOR . 'automation_due_check.lock';
+        $this->dueCheckStatePath = $directory . DIRECTORY_SEPARATOR . 'automation_due_check.json';
 
         if (!is_dir($directory) && !@mkdir($directory, 0775, true) && !is_dir($directory)) {
             throw new RuntimeException(sprintf('Unable to create automation data directory: %s', $directory));
@@ -363,6 +367,78 @@ final class AutomationStore
         }
 
         return $results;
+    }
+
+    public function runDueRulesForWorkerCheckin(FarmStore $farmStore, bool $dryRun = false, int $cooldownSeconds = 60): array
+    {
+        if ($dryRun) {
+            return $this->runDueRules($farmStore, true);
+        }
+
+        $cooldownSeconds = max(0, $cooldownSeconds);
+        $lockHandle = @fopen($this->dueCheckLockPath, 'c+');
+        if ($lockHandle === false) {
+            // If the coordination lock cannot be opened, fall back to the
+            // normal due-rule logic rather than preventing workers from using
+            // the farm. The error will be visible in the PHP error log.
+            error_log('Reflection automation due-check lock could not be opened: ' . $this->dueCheckLockPath);
+            return $this->runDueRules($farmStore, false);
+        }
+
+        if (!@flock($lockHandle, LOCK_EX | LOCK_NB)) {
+            fclose($lockHandle);
+            return [[
+                'status' => 'skipped',
+                'reason' => 'automation_check_already_running',
+                'trigger' => 'worker_checkin',
+                'started_at' => gmdate(DATE_ATOM),
+            ]];
+        }
+
+        try {
+            $now = time();
+            $state = $this->readJson($this->dueCheckStatePath, []);
+            $lastFinished = strtotime((string) ($state['last_finished_at'] ?? ''));
+            $lastStarted = strtotime((string) ($state['last_started_at'] ?? ''));
+            $lastCheck = $lastFinished !== false ? $lastFinished : ($lastStarted !== false ? $lastStarted : null);
+
+            if ($cooldownSeconds > 0 && $lastCheck !== null && ($now - $lastCheck) < $cooldownSeconds) {
+                return [[
+                    'status' => 'skipped',
+                    'reason' => 'automation_check_cooldown',
+                    'trigger' => 'worker_checkin',
+                    'cooldown_seconds' => $cooldownSeconds,
+                    'seconds_remaining' => max(0, $cooldownSeconds - ($now - $lastCheck)),
+                    'last_finished_at' => (string) ($state['last_finished_at'] ?? ''),
+                ]];
+            }
+
+            $state['last_started_at'] = gmdate(DATE_ATOM);
+            $state['last_trigger'] = 'worker_checkin';
+            $state['last_status'] = 'running';
+            $this->atomicWriteJson($this->dueCheckStatePath, $state);
+
+            try {
+                $results = $this->runDueRules($farmStore, false);
+                $state['last_finished_at'] = gmdate(DATE_ATOM);
+                $state['last_status'] = 'complete';
+                $state['last_result_count'] = count(array_filter($results, static function ($result): bool {
+                    return is_array($result) && (($result['status'] ?? '') !== 'skipped');
+                }));
+                $state['last_error'] = '';
+                $this->atomicWriteJson($this->dueCheckStatePath, $state);
+                return $results;
+            } catch (Throwable $exception) {
+                $state['last_finished_at'] = gmdate(DATE_ATOM);
+                $state['last_status'] = 'failed';
+                $state['last_error'] = $this->limitString($exception->getMessage(), 500);
+                $this->atomicWriteJson($this->dueCheckStatePath, $state);
+                throw $exception;
+            }
+        } finally {
+            @flock($lockHandle, LOCK_UN);
+            fclose($lockHandle);
+        }
     }
 
     public function ruleIsDue(array $rule): bool

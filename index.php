@@ -420,6 +420,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'idle_shutdown_after_no_job_checks' => (int) ($_POST['idle_shutdown_after_no_job_checks'] ?? 0),
             'auto_wake_for_queued_jobs' => isset($_POST['auto_wake_for_queued_jobs']),
             'automation_run_due_on_worker_checkin' => isset($_POST['automation_run_due_on_worker_checkin']),
+            'automation_checkin_cooldown_seconds' => (int) ($_POST['automation_checkin_cooldown_seconds'] ?? 60),
             'wake_dispatch_mode' => (string) ($_POST['wake_dispatch_mode'] ?? 'worker_relay'),
             'auto_wake_cooldown_seconds' => (int) ($_POST['auto_wake_cooldown_seconds'] ?? 300),
             'auto_wake_max_targets_per_run' => (int) ($_POST['auto_wake_max_targets_per_run'] ?? 20),
@@ -1178,6 +1179,11 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                 <label class="check-row">
                     <input type="checkbox" name="automation_run_due_on_worker_checkin" value="1" <?= !empty($settings['automation_run_due_on_worker_checkin']) ? 'checked' : '' ?>>
                     Run due automation scans when a worker checks in
+                </label>
+                <label>
+                    Automation check-in cooldown seconds
+                    <input type="number" name="automation_checkin_cooldown_seconds" min="0" max="3600" value="<?= (int) ($settings['automation_checkin_cooldown_seconds'] ?? 60) ?>">
+                    <small>Prevents several farm PCs that boot together from all starting automation scans. One worker can perform the due-rule check; other check-ins skip it until this cooldown passes.</small>
                 </label>
                 <label>
                     Wake-on-LAN delivery method

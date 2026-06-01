@@ -691,6 +691,7 @@ final class FarmStore
             $data['settings']['idle_shutdown_after_no_job_checks'] = max(0, (int) ($data['settings']['idle_shutdown_after_no_job_checks'] ?? 0));
             $data['settings']['auto_wake_for_queued_jobs'] = !empty($data['settings']['auto_wake_for_queued_jobs']);
             $data['settings']['automation_run_due_on_worker_checkin'] = !empty($data['settings']['automation_run_due_on_worker_checkin']);
+            $data['settings']['automation_checkin_cooldown_seconds'] = max(0, min(3600, (int) ($data['settings']['automation_checkin_cooldown_seconds'] ?? 60)));
             $dispatchMode = (string) ($data['settings']['wake_dispatch_mode'] ?? 'worker_relay');
             $data['settings']['wake_dispatch_mode'] = in_array($dispatchMode, ['direct', 'worker_relay', 'direct_then_worker_relay'], true) ? $dispatchMode : 'worker_relay';
             $data['settings']['auto_wake_cooldown_seconds'] = max(0, (int) ($data['settings']['auto_wake_cooldown_seconds'] ?? 300));
@@ -1911,6 +1912,7 @@ final class FarmStore
             'idle_shutdown_after_no_job_checks' => 0,
             'auto_wake_for_queued_jobs' => true,
             'automation_run_due_on_worker_checkin' => true,
+            'automation_checkin_cooldown_seconds' => 60,
             'wake_dispatch_mode' => 'worker_relay',
             'auto_wake_cooldown_seconds' => 300,
             'auto_wake_max_targets_per_run' => 20,

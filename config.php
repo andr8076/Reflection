@@ -138,6 +138,7 @@ function reflection_default_farm_settings(): array
             'idle_shutdown_after_no_job_checks' => 0,
             'auto_wake_for_queued_jobs' => true,
             'automation_run_due_on_worker_checkin' => true,
+            'automation_checkin_cooldown_seconds' => 60,
             'wake_dispatch_mode' => 'worker_relay',
             'auto_wake_cooldown_seconds' => 300,
             'auto_wake_max_targets_per_run' => 20,
