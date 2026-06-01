@@ -311,6 +311,12 @@ final class FarmStore
     {
         return $this->withLock(function (array $data): ?array {
             foreach ($data['jobs'] as $job) {
+                if (($job['status'] ?? '') === 'queued' && $this->isControlModule((string) ($job['module'] ?? ''))) {
+                    return $job;
+                }
+            }
+
+            foreach ($data['jobs'] as $job) {
                 if (($job['status'] ?? '') === 'queued') {
                     return $job;
                 }
@@ -684,6 +690,9 @@ final class FarmStore
             $data['settings']['ess_soc_raw_sample'] = $this->limitString((string) ($data['settings']['ess_soc_raw_sample'] ?? ''), 500);
             $data['settings']['idle_shutdown_after_no_job_checks'] = max(0, (int) ($data['settings']['idle_shutdown_after_no_job_checks'] ?? 0));
             $data['settings']['auto_wake_for_queued_jobs'] = !empty($data['settings']['auto_wake_for_queued_jobs']);
+            $data['settings']['automation_run_due_on_worker_checkin'] = !empty($data['settings']['automation_run_due_on_worker_checkin']);
+            $dispatchMode = (string) ($data['settings']['wake_dispatch_mode'] ?? 'worker_relay');
+            $data['settings']['wake_dispatch_mode'] = in_array($dispatchMode, ['direct', 'worker_relay', 'direct_then_worker_relay'], true) ? $dispatchMode : 'worker_relay';
             $data['settings']['auto_wake_cooldown_seconds'] = max(0, (int) ($data['settings']['auto_wake_cooldown_seconds'] ?? 300));
             $data['settings']['auto_wake_max_targets_per_run'] = max(0, (int) ($data['settings']['auto_wake_max_targets_per_run'] ?? 20));
             $data['settings']['wake_broadcast_address'] = $this->limitString(trim((string) ($data['settings']['wake_broadcast_address'] ?? '255.255.255.255')), 100) ?: '255.255.255.255';
@@ -918,8 +927,174 @@ final class FarmStore
             return $plan;
         }
 
-        $plan['wake_result'] = $this->sendWakePackets($plan['targets'], $reason);
+        $plan['wake_result'] = $this->dispatchWakeTargets($plan['targets'], $reason);
         return $plan;
+    }
+
+
+    public function dispatchWakeTargets(array $targets, string $reason = 'manual', ?string $preferredWorkerId = null): array
+    {
+        $settings = $this->effectiveSettings();
+        $mode = (string) ($settings['wake_dispatch_mode'] ?? 'worker_relay');
+        if (!in_array($mode, ['direct', 'worker_relay', 'direct_then_worker_relay'], true)) {
+            $mode = 'worker_relay';
+        }
+
+        if ($mode === 'direct') {
+            $result = $this->sendWakePackets($targets, $reason);
+            $result['method'] = 'direct';
+            $result['queued'] = 0;
+            return $result;
+        }
+
+        if ($mode === 'direct_then_worker_relay') {
+            $direct = $this->sendWakePackets($targets, $reason);
+            if ((int) ($direct['failed'] ?? 0) === 0) {
+                $direct['method'] = 'direct';
+                $direct['queued'] = 0;
+                return $direct;
+            }
+
+            $failedTargets = [];
+            foreach (($direct['errors'] ?? []) as $error) {
+                if (is_array($error) && trim((string) ($error['mac'] ?? '')) !== '') {
+                    $failedTargets[] = $error;
+                }
+            }
+            $relay = $this->queueWakeRelayJob($failedTargets !== [] ? $failedTargets : $targets, $reason, $preferredWorkerId);
+            $relay['method'] = 'direct_then_worker_relay';
+            $relay['direct_result'] = $direct;
+            return $relay;
+        }
+
+        $relay = $this->queueWakeRelayJob($targets, $reason, $preferredWorkerId);
+        $relay['method'] = 'worker_relay';
+        return $relay;
+    }
+
+    public function queueWakeRelayJob(array $targets, string $reason = 'manual', ?string $preferredWorkerId = null): array
+    {
+        $settings = $this->effectiveSettings();
+        $broadcast = trim((string) ($settings['wake_broadcast_address'] ?? '255.255.255.255')) ?: '255.255.255.255';
+        $port = max(1, min(65535, (int) ($settings['wake_udp_port'] ?? 9)));
+        $cleanTargets = [];
+        foreach ($targets as $target) {
+            $target = is_array($target) ? $target : ['mac' => (string) $target];
+            $mac = trim((string) ($target['mac'] ?? ''));
+            if ($mac === '') {
+                continue;
+            }
+            $cleanTargets[] = [
+                'pc_id' => (string) ($target['pc_id'] ?? ''),
+                'mac' => $mac,
+            ];
+        }
+
+        if ($cleanTargets === []) {
+            return [
+                'sent' => 0,
+                'failed' => 0,
+                'queued' => 0,
+                'errors' => [],
+                'relay_job' => null,
+                'relay_pending' => false,
+            ];
+        }
+
+        $payload = json_encode([
+            'targets' => $cleanTargets,
+            'broadcast' => $broadcast,
+            'port' => $port,
+        ], JSON_UNESCAPED_SLASHES);
+        if ($payload === false) {
+            return [
+                'sent' => 0,
+                'failed' => count($cleanTargets),
+                'queued' => 0,
+                'errors' => [['error' => 'Unable to encode Wake-on-LAN relay payload.']],
+                'relay_job' => null,
+                'relay_pending' => false,
+            ];
+        }
+
+        $nowText = gmdate(DATE_ATOM);
+        $result = $this->withLock(function (array $data) use ($payload, $cleanTargets, $reason, $preferredWorkerId, $nowText): array {
+            foreach ($data['jobs'] as $job) {
+                if (($job['module'] ?? '') === 'wake_farm' && in_array((string) ($job['status'] ?? ''), ['queued', 'running'], true)) {
+                    return ['data' => $data, 'result' => [
+                        'job' => $job,
+                        'created' => false,
+                        'pending' => true,
+                    ]];
+                }
+            }
+
+            $job = [
+                'task_id' => $this->nextJobId($data),
+                'module' => 'wake_farm',
+                'source' => $payload,
+                'delivery' => '',
+                'overwrite_allowed' => false,
+                'attempt' => 0,
+                'parent_task_id' => null,
+                'status' => 'queued',
+                'worker' => null,
+                'error' => '',
+                'created_at' => $nowText,
+                'started_at' => null,
+                'heartbeat_at' => null,
+                'finished_at' => null,
+                'crash_key' => null,
+                'control_reason' => 'wake_relay',
+                'wake_reason' => $reason,
+                'preferred_worker' => $preferredWorkerId !== null ? $preferredWorkerId : '',
+            ];
+            $job['crash_key'] = $this->jobCrashKey($job);
+            $data['jobs'][] = $job;
+
+            $history = is_array($data['wake_history'] ?? null) ? $data['wake_history'] : [];
+            foreach ($cleanTargets as $target) {
+                $key = $this->wakeTargetKey($target);
+                $history[$key] = [
+                    'pc_id' => (string) ($target['pc_id'] ?? ''),
+                    'mac' => (string) ($target['mac'] ?? ''),
+                    'last_wake_at' => $nowText,
+                    'reason' => $reason,
+                    'success' => null,
+                    'status' => 'queued_for_worker_relay',
+                    'error' => '',
+                ];
+            }
+            uasort($history, static function (array $a, array $b): int {
+                return strcmp((string) ($b['last_wake_at'] ?? ''), (string) ($a['last_wake_at'] ?? ''));
+            });
+            $data['wake_history'] = array_slice($history, 0, 500, true);
+
+            return ['data' => $data, 'result' => [
+                'job' => $job,
+                'created' => true,
+                'pending' => false,
+            ]];
+        }, true);
+
+        $job = is_array($result['job'] ?? null) ? $result['job'] : null;
+        if (!empty($result['created']) && $job !== null) {
+            $this->recordEvent('wake_relay_queued', $job);
+            $this->recordSystemEvent('wake_relay_queued', '', [
+                'reason' => $reason,
+                'targets' => $cleanTargets,
+                'relay_task_id' => (string) ($job['task_id'] ?? ''),
+            ]);
+        }
+
+        return [
+            'sent' => 0,
+            'failed' => 0,
+            'queued' => !empty($result['created']) ? count($cleanTargets) : 0,
+            'errors' => [],
+            'relay_job' => $job,
+            'relay_pending' => !empty($result['pending']),
+        ];
     }
 
     public function wakeTargetsForCurrentSoc(bool $excludeOnline = false, int $staleAfterSeconds = 900): array
@@ -1735,6 +1910,8 @@ final class FarmStore
             'ess_soc_last_failure_at' => null,
             'idle_shutdown_after_no_job_checks' => 0,
             'auto_wake_for_queued_jobs' => true,
+            'automation_run_due_on_worker_checkin' => true,
+            'wake_dispatch_mode' => 'worker_relay',
             'auto_wake_cooldown_seconds' => 300,
             'auto_wake_max_targets_per_run' => 20,
             'wake_broadcast_address' => '255.255.255.255',

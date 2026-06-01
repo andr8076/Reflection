@@ -5,6 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
 require_once __DIR__ . '/StorageStore.php';
+require_once __DIR__ . '/AutomationStore.php';
 
 function reflection_json_response(array $payload, int $statusCode = 200): void
 {
@@ -161,15 +162,40 @@ function reflection_is_control_task(string $module): bool
     return in_array($module, ['noop', 'status', 'reload_tasks', 'shutdown', 'wake_farm'], true);
 }
 
+function reflection_run_due_automation_on_worker_checkin(FarmStore $store, array $config): array
+{
+    $settings = $store->effectiveSettings();
+    if (empty($settings['automation_run_due_on_worker_checkin'])) {
+        return [];
+    }
+
+    $storagePath = (string) ($config['storage_path'] ?? '');
+    if ($storagePath === '') {
+        return [];
+    }
+
+    try {
+        $automationStore = new AutomationStore(dirname($storagePath));
+        return $automationStore->runDueRules($store, false);
+    } catch (Throwable $exception) {
+        // A broken automation rule must not stop workers from checking in.
+        error_log('Reflection automation check-in scan failed: ' . $exception->getMessage());
+        return [];
+    }
+}
+
 function reflection_api_request_task(FarmStore $store, array $config, string $pcId): array
 {
-    $store->requeueStaleJobs((int) ($config['stale_after_seconds'] ?? 900));
+    $staleAfterSeconds = (int) ($config['stale_after_seconds'] ?? 900);
+    $store->requeueStaleJobs($staleAfterSeconds);
 
     // If this worker already had a running job and is now asking for new work,
     // the master treats the old job as lost/crashed. The worker does not need
     // local recovery state or a special crash-report action; the request itself
     // is enough information.
     $store->recoverInterruptedJobForWorker($pcId);
+
+    reflection_run_due_automation_on_worker_checkin($store, $config);
 
     $allowedWorkers = $store->allowedActiveWorkers();
     $settings = $store->effectiveSettings();
@@ -179,6 +205,10 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
 
     if ($allowedWorkers !== PHP_INT_MAX && $store->runningWorkerCount() >= $allowedWorkers) {
         return reflection_api_no_jobs_response($store, $pcId, $settings, 'ess_worker_limit');
+    }
+
+    if (!empty($settings['auto_wake_for_queued_jobs'])) {
+        $store->autoWakeForQueuedJobs($staleAfterSeconds, 'worker_checkin');
     }
 
     $job = $store->nextQueuedJob();

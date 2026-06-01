@@ -137,6 +137,8 @@ function reflection_default_farm_settings(): array
             'ess_soc_last_failure_at' => null,
             'idle_shutdown_after_no_job_checks' => 0,
             'auto_wake_for_queued_jobs' => true,
+            'automation_run_due_on_worker_checkin' => true,
+            'wake_dispatch_mode' => 'worker_relay',
             'auto_wake_cooldown_seconds' => 300,
             'auto_wake_max_targets_per_run' => 20,
             'wake_broadcast_address' => '255.255.255.255',

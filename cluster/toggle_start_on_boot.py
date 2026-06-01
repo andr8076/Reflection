@@ -115,7 +115,12 @@ RUN_SCRIPT={run_script}
 
 {chr(10).join(terminal_blocks)}
 else
-    exec "$RUN_SCRIPT"
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send "Reflection Farm Agent" "No supported terminal emulator was found. Install x-terminal-emulator, gnome-terminal, xfce4-terminal, mate-terminal, konsole, lxterminal, or xterm."
+    fi
+    echo "No supported terminal emulator was found." >&2
+    echo "Cannot start Reflection in a visible terminal." >&2
+    exit 127
 fi
 """
 

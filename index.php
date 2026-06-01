@@ -367,9 +367,16 @@ function reflection_auto_wake_notice(FarmStore $store, int $staleAfterSeconds, s
     }
 
     $sent = (int) ($plan['wake_result']['sent'] ?? 0);
+    $queued = (int) ($plan['wake_result']['queued'] ?? 0);
     $failed = (int) ($plan['wake_result']['failed'] ?? 0);
     $needed = (int) ($plan['needed'] ?? 0);
     $ready = (int) ($plan['ready_targets'] ?? 0);
+    if ($queued > 0) {
+        return 'Demand wake queued a worker relay task for ' . $queued . ' computer' . ($queued === 1 ? '' : 's') . '.';
+    }
+    if (!empty($plan['wake_result']['relay_pending'])) {
+        return 'Demand wake is waiting for an already queued/running Wake-on-LAN relay task.';
+    }
     if ($sent > 0) {
         $notice = 'Demand wake sent to ' . $sent . ' computer' . ($sent === 1 ? '' : 's') . ' for ' . (int) ($plan['queued_work'] ?? 0) . ' queued job' . ((int) ($plan['queued_work'] ?? 0) === 1 ? '' : 's') . '.';
         if ($failed > 0) {
@@ -412,6 +419,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'ess_ignore_when_unavailable' => isset($_POST['ess_ignore_when_unavailable']),
             'idle_shutdown_after_no_job_checks' => (int) ($_POST['idle_shutdown_after_no_job_checks'] ?? 0),
             'auto_wake_for_queued_jobs' => isset($_POST['auto_wake_for_queued_jobs']),
+            'automation_run_due_on_worker_checkin' => isset($_POST['automation_run_due_on_worker_checkin']),
+            'wake_dispatch_mode' => (string) ($_POST['wake_dispatch_mode'] ?? 'worker_relay'),
             'auto_wake_cooldown_seconds' => (int) ($_POST['auto_wake_cooldown_seconds'] ?? 300),
             'auto_wake_max_targets_per_run' => (int) ($_POST['auto_wake_max_targets_per_run'] ?? 20),
             'wake_broadcast_address' => trim((string) ($_POST['wake_broadcast_address'] ?? '255.255.255.255')),
@@ -432,8 +441,17 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         if ($targets === []) {
             $error = 'No Wake-on-LAN targets are currently eligible. Check configured machines, MAC addresses, SOC margins, and current online workers.';
         } else {
-            $wakeResult = $store->sendWakePackets($targets, 'manual');
-            $message = 'Sent Wake-on-LAN packets to ' . (int) ($wakeResult['sent'] ?? 0) . ' computer(s).';
+            $wakeResult = $store->dispatchWakeTargets($targets, 'manual');
+            $sent = (int) ($wakeResult['sent'] ?? 0);
+            $queued = (int) ($wakeResult['queued'] ?? 0);
+            if ($queued > 0) {
+                $message = 'Queued a Wake-on-LAN relay task for ' . $queued . ' computer' . ($queued === 1 ? '' : 's') . '. The next worker that checks in will send the packets.';
+            } else {
+                $message = 'Sent Wake-on-LAN packets to ' . $sent . ' computer' . ($sent === 1 ? '' : 's') . '.';
+            }
+            if (!empty($wakeResult['relay_pending'])) {
+                $message = 'A Wake-on-LAN relay task is already queued or running.';
+            }
             if ((int) ($wakeResult['failed'] ?? 0) > 0) {
                 $error = (int) ($wakeResult['failed'] ?? 0) . ' Wake-on-LAN attempt(s) failed. Check recent events for details.';
             }
@@ -1156,6 +1174,20 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                 <label class="check-row">
                     <input type="checkbox" name="auto_wake_for_queued_jobs" value="1" <?= !empty($settings['auto_wake_for_queued_jobs']) ? 'checked' : '' ?>>
                     Automatically wake enough eligible machines for queued work
+                </label>
+                <label class="check-row">
+                    <input type="checkbox" name="automation_run_due_on_worker_checkin" value="1" <?= !empty($settings['automation_run_due_on_worker_checkin']) ? 'checked' : '' ?>>
+                    Run due automation scans when a worker checks in
+                </label>
+                <label>
+                    Wake-on-LAN delivery method
+                    <select name="wake_dispatch_mode">
+                        <?php $wakeMode = (string) ($settings['wake_dispatch_mode'] ?? 'worker_relay'); ?>
+                        <option value="worker_relay" <?= $wakeMode === 'worker_relay' ? 'selected' : '' ?>>Worker relay task</option>
+                        <option value="direct" <?= $wakeMode === 'direct' ? 'selected' : '' ?>>Direct from master PHP</option>
+                        <option value="direct_then_worker_relay" <?= $wakeMode === 'direct_then_worker_relay' ? 'selected' : '' ?>>Try direct, then worker relay</option>
+                    </select>
+                    <small>Use worker relay on Synology if Web Station cannot send UDP broadcast packets. The master queues a <code>wake_farm</code> control task, and an awake farm PC sends the Wake-on-LAN packets.</small>
                 </label>
                 <label>
                     Farm computers available for Wake-on-LAN

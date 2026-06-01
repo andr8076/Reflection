@@ -491,45 +491,75 @@ def _system_shutdown(source, delivery, overwrite_allowed):
     }
 
 
-def _normalize_wake_targets(source):
+def _normalize_wake_job(source):
+    """Parse legacy MAC lists and newer relay payloads from the master."""
     if not source:
-        return []
+        return [], "255.255.255.255", 9
 
+    broadcast = "255.255.255.255"
+    port = 9
     try:
         parsed = json.loads(source)
     except (TypeError, json.JSONDecodeError):
         parsed = [part.strip() for part in str(source).replace(",", "\n").splitlines()]
 
+    if isinstance(parsed, dict):
+        broadcast = str(parsed.get("broadcast") or broadcast).strip() or broadcast
+        try:
+            port = int(parsed.get("port") or port)
+        except (TypeError, ValueError):
+            port = 9
+        parsed_targets = parsed.get("targets", [])
+    else:
+        parsed_targets = parsed
+
     targets = []
-    for entry in parsed:
+    for entry in parsed_targets:
         if isinstance(entry, dict):
             mac = str(entry.get("mac", "")).strip()
         else:
             mac = str(entry).strip()
         if mac:
             targets.append(mac)
-    return targets
+
+    port = max(1, min(65535, port))
+    return targets, broadcast, port
 
 
-def _send_wake_packet(mac_address):
+def _send_wake_packet(mac_address, broadcast="255.255.255.255", port=9):
     clean_mac = mac_address.replace(":", "").replace("-", "").replace(".", "")
     if len(clean_mac) != 12:
         raise ValueError(f"Invalid MAC address: {mac_address}")
     payload = bytes.fromhex("FF" * 6 + clean_mac * 16)
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as wol_socket:
         wol_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        wol_socket.sendto(payload, ("255.255.255.255", 9))
+        wol_socket.sendto(payload, (broadcast, port))
 
 
 def _system_wake_farm(source, delivery, overwrite_allowed):
     """Built-in task that sends Wake-on-LAN packets for configured machines."""
-    targets = _normalize_wake_targets(source)
+    targets, broadcast, port = _normalize_wake_job(source)
+    errors = []
+    sent = 0
     for mac in targets:
-        _send_wake_packet(mac)
+        try:
+            _send_wake_packet(mac, broadcast, port)
+            sent += 1
+        except Exception as exc:
+            errors.append(f"{mac}: {exc}")
+            logging.warning("Wake-on-LAN failed for %s: %s", mac, exc)
+
+    if errors:
+        return {
+            "success": False,
+            "cleanup_source": False,
+            "message": f"Sent {sent}/{len(targets)} Wake-on-LAN packet(s). Errors: {'; '.join(errors)}",
+        }
+
     return {
         "success": True,
         "cleanup_source": False,
-        "message": f"Sent Wake-on-LAN packets to {len(targets)} target(s).",
+        "message": f"Sent Wake-on-LAN packets to {len(targets)} target(s) via {broadcast}:{port}.",
     }
 
 
