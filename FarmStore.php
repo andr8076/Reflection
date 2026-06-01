@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/FarmDefaults.php';
+require_once __DIR__ . '/config.php';
 
 final class FarmStore
 {
@@ -2078,7 +2078,7 @@ final class FarmStore
 
     private function defaultSettings(): array
     {
-        return array_merge(FarmDefaults::runtimeSettings(), $this->configuredDefaultSettings);
+        return array_merge(reflection_default_runtime_settings(), $this->configuredDefaultSettings);
     }
 
     private function nextJobId(array &$data): string

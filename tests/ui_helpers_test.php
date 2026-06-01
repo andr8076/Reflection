@@ -30,14 +30,14 @@ assertSameValue(
 );
 
 $defaults = reflection_default_farm_settings();
-assertSameValue(FarmDefaults::runtimeSettings(), $defaults['runtime_defaults'], 'Master config should use canonical runtime defaults.');
-assertSameValue(FarmDefaults::allowedTasks(), $defaults['allowed_tasks'], 'Master config should use canonical allowed tasks.');
+assertSameValue(reflection_default_runtime_settings(), $defaults['runtime_defaults'], 'Master config should use canonical runtime defaults.');
+assertSameValue(reflection_default_allowed_tasks(), $defaults['allowed_tasks'], 'Master config should use canonical allowed tasks.');
 assertSameValue(true, array_key_exists('compress_archive', $defaults['allowed_tasks']), 'Canonical tasks should include archive compression.');
 assertSameValue(true, array_key_exists('invert_image', $defaults['allowed_tasks']), 'Canonical tasks should include image inversion.');
 
 $storePath = sys_get_temp_dir() . '/reflection_ui_helpers_' . bin2hex(random_bytes(6)) . '.json';
 $store = new FarmStore($storePath);
-assertSameValue(FarmDefaults::runtimeSettings(), $store->effectiveSettings(), 'FarmStore should seed canonical runtime defaults.');
+assertSameValue(reflection_default_runtime_settings(), $store->effectiveSettings(), 'FarmStore should seed canonical runtime defaults.');
 @unlink($storePath);
 @unlink($storePath . '.lock');
 
