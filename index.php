@@ -343,6 +343,7 @@ function reflection_run_store_maintenance(FarmStore $store, array $settings): ar
             (int) ($settings['file_history_keep_paths'] ?? 500),
             (int) ($settings['file_history_keep_entries_per_path'] ?? 10),
         ),
+        'trimmed_job_archive' => $store->trimJobArchive((int) ($settings['job_archive_keep_lines'] ?? 5000)),
     ];
 }
 
@@ -412,7 +413,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'crash_loop_protection_enabled' => isset($_POST['crash_loop_protection_enabled']),
             'crash_loop_lost_attempts' => (int) ($_POST['crash_loop_lost_attempts'] ?? 2),
             'crash_loop_distinct_workers' => (int) ($_POST['crash_loop_distinct_workers'] ?? 1),
-            'ess_soc_percent' => (int) ($_POST['ess_soc_percent'] ?? 100),
             'ess_soc_url' => trim((string) ($_POST['ess_soc_url'] ?? '')),
             'ess_min_soc_percent' => (int) ($_POST['ess_min_soc_percent'] ?? 20),
             'ess_shutdown_below_minimum' => isset($_POST['ess_shutdown_below_minimum']),
@@ -430,13 +430,16 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'event_log_keep_lines' => (int) ($_POST['event_log_keep_lines'] ?? 1000),
             'file_history_keep_paths' => (int) ($_POST['file_history_keep_paths'] ?? 500),
             'file_history_keep_entries_per_path' => (int) ($_POST['file_history_keep_entries_per_path'] ?? 10),
+            'job_archive_keep_lines' => (int) ($_POST['job_archive_keep_lines'] ?? 5000),
+            'worker_temp_max_age_hours' => (int) ($_POST['worker_temp_max_age_hours'] ?? 24),
+            'quarantine_keep_days' => (int) ($_POST['quarantine_keep_days'] ?? 14),
         ]);
         $store->updateMachines(reflection_parse_machine_list((string) ($_POST['machines'] ?? '')));
         $maintenance = reflection_run_store_maintenance($store, $settings);
-        $message = 'Saved options. Archived ' . $maintenance['archived_jobs'] . ' old completed job(s), trimmed ' . $maintenance['trimmed_events'] . ' event(s), and compacted ' . $maintenance['trimmed_file_history'] . ' file-history item(s).';
+        $message = 'Saved options. Archived ' . $maintenance['archived_jobs'] . ' old completed job(s), trimmed ' . $maintenance['trimmed_events'] . ' event(s), compacted ' . $maintenance['trimmed_file_history'] . ' file-history item(s), and trimmed ' . $maintenance['trimmed_job_archive'] . ' archived job line(s).';
     } elseif ($formAction === 'maintenance') {
         $maintenance = reflection_run_store_maintenance($store, $store->effectiveSettings());
-        $message = 'Maintenance complete. Archived ' . $maintenance['archived_jobs'] . ' old completed job(s), trimmed ' . $maintenance['trimmed_events'] . ' event(s), and compacted ' . $maintenance['trimmed_file_history'] . ' file-history item(s).';
+        $message = 'Maintenance complete. Archived ' . $maintenance['archived_jobs'] . ' old completed job(s), trimmed ' . $maintenance['trimmed_events'] . ' event(s), compacted ' . $maintenance['trimmed_file_history'] . ' file-history item(s), and trimmed ' . $maintenance['trimmed_job_archive'] . ' archived job line(s).';
     } elseif ($formAction === 'wake_farm') {
         $targets = $store->wakeTargetsForCurrentSoc(true, (int) ($config['stale_after_seconds'] ?? 900));
         if ($targets === []) {
@@ -570,7 +573,7 @@ $workerStateCounts = reflection_count_worker_states($workerCards);
 $archiveInfo = $store->archiveInfo();
 $scriptDirectory = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '')), '/');
 $apiPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/farm_api.php';
-$validJobFilters = ['all', 'active', 'queued', 'running', 'success', 'failed', 'stale', 'blocked', 'finished'];
+$validJobFilters = ['all', 'active', 'queued', 'running', 'success', 'failed', 'stale', 'blocked', 'ignored', 'finished'];
 $jobStatus = (string) ($_GET['job_status'] ?? 'all');
 if (!in_array($jobStatus, $validJobFilters, true)) {
     $jobStatus = 'all';
@@ -588,7 +591,7 @@ $activeJobsPreviewLimit = 5;
 $activeJobsPreview = array_slice($activeJobsAll, 0, $activeJobsPreviewLimit);
 $activeJobsMore = array_slice($activeJobsAll, $activeJobsPreviewLimit);
 $activeJobsShownLimit = count($activeJobsAll);
-$completedInStore = (int) ($statusCounts['success'] ?? 0) + (int) ($statusCounts['failed'] ?? 0) + (int) ($statusCounts['stale'] ?? 0) + (int) ($statusCounts['blocked'] ?? 0);
+$completedInStore = (int) ($statusCounts['success'] ?? 0) + (int) ($statusCounts['failed'] ?? 0) + (int) ($statusCounts['stale'] ?? 0) + (int) ($statusCounts['blocked'] ?? 0) + (int) ($statusCounts['ignored'] ?? 0);
 $activeCount = (int) ($statusCounts['queued'] ?? 0) + (int) ($statusCounts['running'] ?? 0);
 $maintenanceChanged = array_sum($automaticMaintenance) > 0;
 ?>
@@ -608,13 +611,15 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
             <p class="lede">Queue cluster work, watch active machines, and keep the master store small enough to stay quick.</p>
             <div class="hero-pills">
                 <span>Farm <code><?= reflection_h($config['farm_id'] ?? 'default') ?></code></span>
-                <span>API <code><?= reflection_h($apiPath) ?></code></span>
-                <span><?= $config['api_token'] !== '' ? 'API token enabled' : 'API token not set' ?></span>
+                <span>Worker endpoint <code><?= reflection_h($apiPath) ?></code></span>
+                <span><?= $config['worker_access_token'] !== '' ? 'Worker access token enabled' : 'Worker access token not set' ?></span>
             </div>
             <nav class="top-nav">
                 <a class="active" href="index.php">Dashboard</a>
                 <a href="automation.php">Automation</a>
                 <a href="storage_servers.php">Storage servers</a>
+                <a href="blocked_jobs.php">Blocked jobs</a>
+                <a href="system_checks.php">System checks</a>
             </nav>
         </div>
         <aside class="version-card active-work-card">
@@ -677,7 +682,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
         <div class="alert warning"><?= reflection_h($staleCount) ?> lost/blocked job(s) were marked for operator review.</div>
     <?php endif; ?>
     <?php if ($maintenanceChanged): ?>
-        <div class="alert muted">Automatic maintenance archived <?= (int) $automaticMaintenance['archived_jobs'] ?> old job(s), trimmed <?= (int) $automaticMaintenance['trimmed_events'] ?> event(s), and compacted <?= (int) $automaticMaintenance['trimmed_file_history'] ?> file-history item(s).</div>
+        <div class="alert muted">Automatic maintenance archived <?= (int) $automaticMaintenance['archived_jobs'] ?> old job(s), trimmed <?= (int) $automaticMaintenance['trimmed_events'] ?> event(s), compacted <?= (int) $automaticMaintenance['trimmed_file_history'] ?> file-history item(s), and trimmed <?= (int) $automaticMaintenance['trimmed_job_archive'] ?> archived job line(s).</div>
     <?php endif; ?>
 
     <section class="overview-grid">
@@ -920,7 +925,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
             </form>
         </div>
         <nav class="status-tabs" aria-label="Job status filters">
-            <?php foreach (['all', 'active', 'queued', 'running', 'success', 'failed', 'stale', 'blocked', 'finished'] as $filter): ?>
+            <?php foreach (['all', 'active', 'queued', 'running', 'success', 'failed', 'stale', 'blocked', 'ignored', 'finished'] as $filter): ?>
                 <?php
                     if ($filter === 'all') {
                         $tabCount = array_sum($statusCounts);
@@ -1107,10 +1112,6 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                         <small>Use 2 if you only want to block after different computers fail on the same work item.</small>
                     </label>
                     <label>
-                        ESS SOC %
-                        <input type="number" name="ess_soc_percent" min="0" max="100" value="<?= (int) ($settings['ess_soc_percent'] ?? 100) ?>">
-                    </label>
-                    <label>
                         Minimum SOC %
                         <input type="number" name="ess_min_soc_percent" min="0" max="100" value="<?= (int) ($settings['ess_min_soc_percent'] ?? 20) ?>">
                     </label>
@@ -1149,6 +1150,20 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                     <label>
                         Entries per file-history path
                         <input type="number" name="file_history_keep_entries_per_path" min="0" value="<?= (int) ($settings['file_history_keep_entries_per_path'] ?? 10) ?>">
+                    </label>
+                    <label>
+                        Archived job lines to keep
+                        <input type="number" name="job_archive_keep_lines" min="0" value="<?= (int) ($settings['job_archive_keep_lines'] ?? 5000) ?>">
+                    </label>
+                    <label>
+                        Worker temp cleanup age hours
+                        <input type="number" name="worker_temp_max_age_hours" min="1" value="<?= (int) ($settings['worker_temp_max_age_hours'] ?? 24) ?>">
+                        <small>Sent to workers with jobs so old crashed temp folders can be cleaned up locally.</small>
+                    </label>
+                    <label>
+                        Remote quarantine keep days
+                        <input type="number" name="quarantine_keep_days" min="1" value="<?= (int) ($settings['quarantine_keep_days'] ?? 14) ?>">
+                        <small>Used by safe overwrite jobs; originals are moved to <code>.reflection_quarantine</code>.</small>
                     </label>
                 </div>
                 <label>
@@ -1206,7 +1221,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
     </section>
 
     <footer>
-        <p>Protect this dashboard with your web server, VPN, or reverse-proxy auth. Worker API requests can also require <code>REFLECTION_API_TOKEN</code>.</p>
+        <p>Protect this dashboard with your web server, VPN, or reverse-proxy auth. Worker requests can also require <code>REFLECTION_WORKER_ACCESS_TOKEN</code>.</p>
         <p><a href="json_tool.php">Open JSON Tool</a></p>
     </footer>
 

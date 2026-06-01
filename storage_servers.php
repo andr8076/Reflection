@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/StorageStore.php';
+require_once __DIR__ . '/FarmStore.php';
 
 $config = reflection_master_config();
 $dataDirectory = dirname((string) $config['storage_path']);
 $storageStore = new StorageStore($dataDirectory, $config['transfer_server'] ?? null);
+$farmStore = reflection_farm_store($config);
 $message = null;
 $error = null;
 $editingId = (string) ($_GET['edit'] ?? '');
@@ -66,6 +68,15 @@ try {
                 $message = 'Storage server was not deleted. Built-in/default servers cannot be deleted here.';
             }
             $editingId = '';
+        } elseif ($action === 'test_server') {
+            $id = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($_POST['server_id'] ?? '')) ?: '';
+            $server = $storageStore->server($id);
+            if ($server === null) {
+                throw new RuntimeException('Choose a saved storage server to test.');
+            }
+            $job = $farmStore->createJob('storage_test', json_encode(['server_id' => $id], JSON_UNESCAPED_SLASHES), '', false, ['transfer_server_id' => $id]);
+            $message = 'Queued storage test job ' . ($job['task_id'] ?? '') . '. The next worker that checks in will test this server using its local login.';
+            $editingId = $id;
         }
     }
 } catch (Throwable $exception) {
@@ -107,6 +118,8 @@ if ($editingServer === null) {
                 <a href="index.php">Dashboard</a>
                 <a href="automation.php">Automation</a>
                 <a class="active" href="storage_servers.php">Storage servers</a>
+                <a href="blocked_jobs.php">Blocked jobs</a>
+                <a href="system_checks.php">System checks</a>
             </nav>
         </div>
         <div class="version-card storage-help-card">
@@ -241,6 +254,15 @@ if ($editingServer === null) {
                     <a class="ghost-button" href="automation.php">Back to Automation</a>
                 </div>
             </form>
+
+            <?php if (($editingServer['id'] ?? '') !== ''): ?>
+                <form method="post" class="button-row">
+                    <input type="hidden" name="storage_action" value="test_server">
+                    <input type="hidden" name="server_id" value="<?= reflection_h($editingServer['id'] ?? '') ?>">
+                    <button type="submit" class="ghost-button">Queue worker storage test</button>
+                    <small>The test uses an online worker's local FTP/SFTP login and verifies create/read/rename/delete access.</small>
+                </form>
+            <?php endif; ?>
         </section>
     </main>
 

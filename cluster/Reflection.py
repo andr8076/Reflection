@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import os
+import platform
 import shutil
 import socket
 import subprocess
@@ -27,7 +28,11 @@ DEFAULT_TASK_TIMEOUT_SECONDS = 12 * 60 * 60
 DEFAULT_TASK_LOG_TAIL_BYTES = 12000
 DEFAULT_TASK_ISOLATION = True
 DEFAULT_PC_ID = socket.gethostname()
-DEFAULT_API_TOKEN = os.environ.get("REFLECTION_API_TOKEN", "")
+DEFAULT_API_TOKEN = os.environ.get("REFLECTION_WORKER_ACCESS_TOKEN", os.environ.get("REFLECTION_API_TOKEN", ""))
+DEFAULT_MIN_FREE_SPACE_GB = 5
+DEFAULT_MIN_FREE_SPACE_MULTIPLIER = 2.0
+DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS = 24
+DEFAULT_QUARANTINE_KEEP_DAYS = 14
 DEFAULT_CLEANUP_ROOTS = []
 DEFAULT_TRANSFER_AUTH = {
     "scheme": "ftp",
@@ -55,12 +60,17 @@ def load_agent_config(config_path=None):
         "server_url": DEFAULT_SERVER_URL,
         "poll_interval": DEFAULT_POLL_INTERVAL,
         "pc_id": DEFAULT_PC_ID,
+        "worker_access_token": DEFAULT_API_TOKEN,
         "api_token": DEFAULT_API_TOKEN,
         "cleanup_roots": list(DEFAULT_CLEANUP_ROOTS),
         "task_timeout_seconds": DEFAULT_TASK_TIMEOUT_SECONDS,
         "task_timeouts": {},
         "task_log_tail_bytes": DEFAULT_TASK_LOG_TAIL_BYTES,
         "task_isolation": DEFAULT_TASK_ISOLATION,
+        "min_free_space_gb": DEFAULT_MIN_FREE_SPACE_GB,
+        "min_free_space_multiplier": DEFAULT_MIN_FREE_SPACE_MULTIPLIER,
+        "local_temp_max_age_hours": DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS,
+        "quarantine_keep_days": DEFAULT_QUARANTINE_KEEP_DAYS,
     }
     env_cleanup_roots = _cleanup_roots_from_env()
     if env_cleanup_roots:
@@ -119,13 +129,30 @@ def load_agent_config(config_path=None):
     if "task_isolation" in loaded:
         config["task_isolation"] = bool(loaded["task_isolation"])
 
+
+    if "min_free_space_gb" in loaded:
+        config["min_free_space_gb"] = max(0.0, float(loaded["min_free_space_gb"]))
+
+    if "min_free_space_multiplier" in loaded:
+        config["min_free_space_multiplier"] = max(0.0, float(loaded["min_free_space_multiplier"]))
+
+    if "local_temp_max_age_hours" in loaded:
+        config["local_temp_max_age_hours"] = max(1, int(loaded["local_temp_max_age_hours"]))
+
+    if "quarantine_keep_days" in loaded:
+        config["quarantine_keep_days"] = max(1, int(loaded["quarantine_keep_days"]))
+
     if "pc_id" in loaded:
         pc_id = str(loaded["pc_id"]).strip()
         if pc_id:
             config["pc_id"] = pc_id
 
-    if "api_token" in loaded:
+    if "worker_access_token" in loaded:
+        config["worker_access_token"] = str(loaded["worker_access_token"])
+        config["api_token"] = str(loaded["worker_access_token"])
+    elif "api_token" in loaded:
         config["api_token"] = str(loaded["api_token"])
+        config["worker_access_token"] = str(loaded["api_token"])
 
     cleanup_roots = _normalize_cleanup_roots(loaded.get("cleanup_roots", []))
     env_cleanup_roots = _cleanup_roots_from_env()
@@ -281,7 +308,7 @@ POLL_INTERVAL = AGENT_CONFIG["poll_interval"]  # Seconds to wait before checking
 HEARTBEAT_INTERVAL = int(AGENT_CONFIG.get("heartbeat_interval", DEFAULT_HEARTBEAT_INTERVAL))
 PC_ID = AGENT_CONFIG["pc_id"]  # Unique identifier for this node
 LOCAL_TRANSFER_AUTH = AGENT_CONFIG.get("transfer_auth", {})
-API_TOKEN = str(AGENT_CONFIG.get("api_token", ""))
+API_TOKEN = str(AGENT_CONFIG.get("worker_access_token", AGENT_CONFIG.get("api_token", "")))
 CLEANUP_ROOTS = tuple(AGENT_CONFIG.get("cleanup_roots", []))
 TASKS_DIR = Path(__file__).with_name("tasks")
 TASK_TIMEOUT_SECONDS = int(AGENT_CONFIG.get("task_timeout_seconds", DEFAULT_TASK_TIMEOUT_SECONDS))
@@ -289,6 +316,11 @@ TASK_TIMEOUTS = dict(AGENT_CONFIG.get("task_timeouts", {}))
 TASK_LOG_TAIL_BYTES = int(AGENT_CONFIG.get("task_log_tail_bytes", DEFAULT_TASK_LOG_TAIL_BYTES))
 TASK_ISOLATION = bool(AGENT_CONFIG.get("task_isolation", DEFAULT_TASK_ISOLATION))
 TASK_RUNNER_PATH = Path(__file__).with_name("task_runner.py")
+MIN_FREE_SPACE_BYTES = int(float(AGENT_CONFIG.get("min_free_space_gb", DEFAULT_MIN_FREE_SPACE_GB)) * 1024 * 1024 * 1024)
+MIN_FREE_SPACE_MULTIPLIER = float(AGENT_CONFIG.get("min_free_space_multiplier", DEFAULT_MIN_FREE_SPACE_MULTIPLIER))
+LOCAL_TEMP_MAX_AGE_HOURS = int(AGENT_CONFIG.get("local_temp_max_age_hours", DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS))
+QUARANTINE_KEEP_DAYS = int(AGENT_CONFIG.get("quarantine_keep_days", DEFAULT_QUARANTINE_KEEP_DAYS))
+_ACTIVE_TRANSFER_AUTH = {}
 
 # Setup logging to see what the farm bot is doing
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
@@ -563,6 +595,17 @@ def _system_wake_farm(source, delivery, overwrite_allowed):
     }
 
 
+
+def _system_storage_test(source, delivery, overwrite_allowed):
+    """Built-in task that verifies worker credentials against the supplied storage server."""
+    message = _storage_test_operation(_ACTIVE_TRANSFER_AUTH)
+    logging.info(message)
+    return {
+        "success": True,
+        "cleanup_source": False,
+        "message": message,
+    }
+
 def built_in_tasks():
     """Return control tasks that are always available without task files."""
     return {
@@ -590,6 +633,11 @@ def built_in_tasks():
             name="wake_farm",
             run=_system_wake_farm,
             description="Built-in control task that sends Wake-on-LAN packets to configured farm computers.",
+        ),
+        "storage_test": TaskDefinition(
+            name="storage_test",
+            run=_system_storage_test,
+            description="Built-in control task that tests storage server access with this worker's local login.",
         ),
     }
 
@@ -714,6 +762,84 @@ def _transfer_connection_details(parsed_uri, transfer_auth):
     return scheme, host, port, username, password
 
 
+
+def cleanup_stale_worker_temp_dirs(max_age_hours):
+    """Remove old Reflection temp folders left behind by crashes."""
+    cutoff = time.time() - max(1, int(max_age_hours)) * 3600
+    temp_root = Path(tempfile.gettempdir())
+    patterns = ("reflection-*",)
+    removed = 0
+    for pattern in patterns:
+        for candidate in temp_root.glob(pattern):
+            try:
+                if not candidate.is_dir() or candidate.stat().st_mtime > cutoff:
+                    continue
+                shutil.rmtree(candidate, ignore_errors=True)
+                removed += 1
+            except Exception as exc:
+                logging.warning("Could not remove stale temp folder %s: %s", candidate, exc)
+    if removed:
+        logging.info("Removed %s stale Reflection temp folder(s).", removed)
+
+
+def _ensure_local_space(directory, source_size=None):
+    """Fail early if local temp storage is too small for a job."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(str(directory)).free
+    required = int(MIN_FREE_SPACE_BYTES)
+    if source_size is not None and source_size > 0:
+        required = max(required, int(float(source_size) * MIN_FREE_SPACE_MULTIPLIER))
+    if required > 0 and free < required:
+        raise RuntimeError(
+            f"Not enough local temp space. Free {free} bytes, required at least {required} bytes."
+        )
+
+
+def _ftp_remote_exists(ftp, remote_path):
+    try:
+        ftp.size(remote_path)
+        return True
+    except Exception:
+        return False
+
+
+def _ftp_remote_size(ftp, remote_path):
+    try:
+        size = ftp.size(remote_path)
+        return int(size) if size is not None else None
+    except Exception:
+        return None
+
+
+def _sftp_remote_exists(client, remote_path):
+    try:
+        client.stat(remote_path)
+        return True
+    except Exception:
+        return False
+
+
+def _sftp_remote_size(client, remote_path):
+    try:
+        return int(client.stat(remote_path).st_size)
+    except Exception:
+        return None
+
+
+def _remote_side_paths(remote_path, task_id):
+    remote = Path(remote_path)
+    parent = str(remote.parent)
+    if parent == ".":
+        parent = ""
+    basename = remote.name or "delivery"
+    stamp = str(task_id or int(time.time()))
+    tmp_dir = (parent.rstrip("/") + "/.reflection_tmp").replace("//", "/") if parent else ".reflection_tmp"
+    quarantine_dir = (parent.rstrip("/") + "/.reflection_quarantine").replace("//", "/") if parent else ".reflection_quarantine"
+    tmp_path = f"{tmp_dir}/{basename}.{stamp}.tmp"
+    quarantine_path = f"{quarantine_dir}/{basename}.{stamp}.original"
+    return tmp_dir, tmp_path, quarantine_dir, quarantine_path
+
 def _ftp_connection(parsed_uri, transfer_auth):
     """Open an FTP/FTPS connection using URI credentials first, then task auth."""
     scheme, host, port, username, password = _transfer_connection_details(parsed_uri, transfer_auth)
@@ -768,6 +894,7 @@ def _download_ftp_file(uri, transfer_auth, local_directory):
     safe_uri = parsed._replace(netloc=parsed.hostname or "").geturl()
     logging.info("Downloading FTP source %s to local worker storage.", safe_uri)
     with contextlib.closing(_ftp_connection(parsed, transfer_auth)) as ftp:
+        _ensure_local_space(local_directory, _ftp_remote_size(ftp, remote_path))
         with local_path.open("wb") as local_file:
             ftp.retrbinary(f"RETR {remote_path}", local_file.write)
     return str(local_path)
@@ -784,6 +911,7 @@ def _download_sftp_file(uri, transfer_auth, local_directory):
     logging.info("Downloading SFTP source %s to local worker storage.", safe_uri)
     client, transport = _sftp_client(parsed, transfer_auth)
     try:
+        _ensure_local_space(local_directory, _sftp_remote_size(client, remote_path))
         client.get(remote_path, str(local_path))
     finally:
         client.close()
@@ -833,7 +961,7 @@ def _verify_ftp_upload_md5(ftp, local_path, remote_path):
     logging.info("FTP delivery upload verified by MD5: %s", remote_path)
 
 
-def _upload_ftp_file(local_path, uri, transfer_auth):
+def _upload_ftp_file(local_path, uri, transfer_auth, overwrite_allowed=False):
     """Upload one local file to an FTP/FTPS URI and verify it by MD5."""
     parsed = urlparse(str(uri))
     remote_path = _ftp_uri_path(parsed)
@@ -845,6 +973,8 @@ def _upload_ftp_file(local_path, uri, transfer_auth):
     logging.info("Uploading task delivery to FTP target %s.", safe_uri)
     with contextlib.closing(_ftp_connection(parsed, transfer_auth)) as ftp:
         _ensure_ftp_directory(ftp, str(Path(remote_path).parent))
+        if not overwrite_allowed and _ftp_remote_exists(ftp, remote_path):
+            raise FileExistsError(f"Remote delivery exists and overwrite is disabled: {remote_path}")
         with source_path.open("rb") as source_file:
             ftp.storbinary(f"STOR {remote_path}", source_file)
         _verify_ftp_upload_md5(ftp, source_path, remote_path)
@@ -889,7 +1019,7 @@ def _verify_sftp_upload_md5(client, local_path, remote_path):
     logging.info("SFTP delivery upload verified by MD5: %s", remote_path)
 
 
-def _upload_sftp_file(local_path, uri, transfer_auth):
+def _upload_sftp_file(local_path, uri, transfer_auth, overwrite_allowed=False):
     """Upload one local file to an SFTP URI and verify it by MD5."""
     parsed = urlparse(str(uri))
     remote_path = _transfer_uri_path(parsed)
@@ -902,12 +1032,168 @@ def _upload_sftp_file(local_path, uri, transfer_auth):
     client, transport = _sftp_client(parsed, transfer_auth)
     try:
         _ensure_sftp_directory(client, str(Path(remote_path).parent))
+        if not overwrite_allowed and _sftp_remote_exists(client, remote_path):
+            raise FileExistsError(f"Remote delivery exists and overwrite is disabled: {remote_path}")
         client.put(str(source_path), remote_path)
         _verify_sftp_upload_md5(client, source_path, remote_path)
     finally:
         client.close()
         transport.close()
 
+
+
+
+def _call_upload_ftp_file(local_path, uri, transfer_auth, overwrite_allowed=False):
+    try:
+        return _upload_ftp_file(local_path, uri, transfer_auth, overwrite_allowed=overwrite_allowed)
+    except TypeError as exc:
+        if "overwrite_allowed" not in str(exc):
+            raise
+        # Backward-compatible for tests/plugins that monkeypatch the old 3-arg helper.
+        return _upload_ftp_file(local_path, uri, transfer_auth)
+
+
+def _call_upload_sftp_file(local_path, uri, transfer_auth, overwrite_allowed=False):
+    try:
+        return _upload_sftp_file(local_path, uri, transfer_auth, overwrite_allowed=overwrite_allowed)
+    except TypeError as exc:
+        if "overwrite_allowed" not in str(exc):
+            raise
+        return _upload_sftp_file(local_path, uri, transfer_auth)
+
+def _safe_replace_ftp_file(local_path, uri, transfer_auth, task_id):
+    """Upload to temp, verify, move original to quarantine, then rename temp into place."""
+    parsed = urlparse(str(uri))
+    remote_path = _ftp_uri_path(parsed)
+    source_path = Path(local_path)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"FTP safe replace expected a file: {source_path}")
+
+    tmp_dir, tmp_path, quarantine_dir, quarantine_path = _remote_side_paths(remote_path, task_id)
+    logging.info("Safely replacing FTP target %s via temp upload %s.", remote_path, tmp_path)
+    with contextlib.closing(_ftp_connection(parsed, transfer_auth)) as ftp:
+        _ensure_ftp_directory(ftp, tmp_dir)
+        _ensure_ftp_directory(ftp, quarantine_dir)
+        with source_path.open("rb") as source_file:
+            ftp.storbinary(f"STOR {tmp_path}", source_file)
+        _verify_ftp_upload_md5(ftp, source_path, tmp_path)
+        if _ftp_remote_exists(ftp, remote_path):
+            with contextlib.suppress(Exception):
+                ftp.delete(quarantine_path)
+            ftp.rename(remote_path, quarantine_path)
+        ftp.rename(tmp_path, remote_path)
+        _verify_ftp_upload_md5(ftp, source_path, remote_path)
+        _cleanup_ftp_quarantine(ftp, quarantine_dir)
+
+
+def _safe_replace_sftp_file(local_path, uri, transfer_auth, task_id):
+    """Upload to temp, verify, move original to quarantine, then rename temp into place."""
+    parsed = urlparse(str(uri))
+    remote_path = _transfer_uri_path(parsed)
+    source_path = Path(local_path)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"SFTP safe replace expected a file: {source_path}")
+
+    tmp_dir, tmp_path, quarantine_dir, quarantine_path = _remote_side_paths(remote_path, task_id)
+    logging.info("Safely replacing SFTP target %s via temp upload %s.", remote_path, tmp_path)
+    client, transport = _sftp_client(parsed, transfer_auth)
+    try:
+        _ensure_sftp_directory(client, tmp_dir)
+        _ensure_sftp_directory(client, quarantine_dir)
+        client.put(str(source_path), tmp_path)
+        _verify_sftp_upload_md5(client, source_path, tmp_path)
+        if _sftp_remote_exists(client, remote_path):
+            with contextlib.suppress(Exception):
+                client.remove(quarantine_path)
+            client.rename(remote_path, quarantine_path)
+        client.rename(tmp_path, remote_path)
+        _verify_sftp_upload_md5(client, source_path, remote_path)
+        _cleanup_sftp_quarantine(client, quarantine_dir)
+    finally:
+        client.close()
+        transport.close()
+
+
+
+def _cleanup_ftp_quarantine(ftp, quarantine_dir):
+    """Best-effort cleanup of old FTP quarantine files."""
+    cutoff = time.time() - max(1, int(QUARANTINE_KEEP_DAYS)) * 86400
+    try:
+        for name, facts in ftp.mlsd(quarantine_dir):
+            if name in {".", ".."}:
+                continue
+            modified = facts.get("modify") if isinstance(facts, dict) else None
+            if not modified or len(modified) < 14:
+                continue
+            try:
+                mtime = time.mktime(time.strptime(modified[:14], "%Y%m%d%H%M%S"))
+            except Exception:
+                continue
+            if mtime < cutoff:
+                with contextlib.suppress(Exception):
+                    ftp.delete(f"{quarantine_dir.rstrip('/')}/{name}")
+    except Exception as exc:
+        logging.info("FTP quarantine cleanup skipped for %s: %s", quarantine_dir, exc)
+
+
+def _cleanup_sftp_quarantine(client, quarantine_dir):
+    """Best-effort cleanup of old SFTP quarantine files."""
+    cutoff = time.time() - max(1, int(QUARANTINE_KEEP_DAYS)) * 86400
+    try:
+        for entry in client.listdir_attr(quarantine_dir):
+            if getattr(entry, "st_mtime", time.time()) < cutoff:
+                with contextlib.suppress(Exception):
+                    client.remove(f"{quarantine_dir.rstrip('/')}/{entry.filename}")
+    except Exception as exc:
+        logging.info("SFTP quarantine cleanup skipped for %s: %s", quarantine_dir, exc)
+
+def _storage_test_operation(transfer_auth):
+    """Verify that this worker can create, verify, rename, and delete a remote file."""
+    if not _transfer_server_is_usable(transfer_auth):
+        raise RuntimeError("No usable transfer server was supplied for the storage test.")
+    scheme = str(transfer_auth.get("scheme", "ftp")).lower()
+    host = str(transfer_auth.get("host", "")).strip()
+    default_port = 22 if scheme == "sftp" else (990 if scheme == "ftps" else 21)
+    port = int(transfer_auth.get("port") or default_port)
+    root = str(transfer_auth.get("root", "")).strip().rstrip("/")
+    base = (root + "/.reflection_tests") if root else "/.reflection_tests"
+    test_name = f"{PC_ID}-{int(time.time())}.txt".replace("/", "_")
+    remote_path = f"{base}/{test_name}"
+    renamed_path = f"{base}/{test_name}.renamed"
+    with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as handle:
+        local = Path(handle.name)
+        handle.write(f"Reflection storage test from {PC_ID} at {time.time()}\n")
+    try:
+        uri = f"{scheme}://{host}:{port}{_quote_remote_path(remote_path)}"
+        renamed_uri = f"{scheme}://{host}:{port}{_quote_remote_path(renamed_path)}"
+        if scheme in {"ftp", "ftps"}:
+            parsed = urlparse(uri)
+            with contextlib.closing(_ftp_connection(parsed, transfer_auth)) as ftp:
+                _ensure_ftp_directory(ftp, base)
+                with local.open("rb") as source_file:
+                    ftp.storbinary(f"STOR {remote_path}", source_file)
+                _verify_ftp_upload_md5(ftp, local, remote_path)
+                ftp.rename(remote_path, renamed_path)
+                _verify_ftp_upload_md5(ftp, local, renamed_path)
+                ftp.delete(renamed_path)
+        elif scheme == "sftp":
+            parsed = urlparse(uri)
+            client, transport = _sftp_client(parsed, transfer_auth)
+            try:
+                _ensure_sftp_directory(client, base)
+                client.put(str(local), remote_path)
+                _verify_sftp_upload_md5(client, local, remote_path)
+                client.rename(remote_path, renamed_path)
+                _verify_sftp_upload_md5(client, local, renamed_path)
+                client.remove(renamed_path)
+            finally:
+                client.close(); transport.close()
+        else:
+            raise RuntimeError(f"Unsupported storage-test scheme: {scheme}")
+        return f"Storage test passed for {scheme}://{host}:{port}{base}. Created, verified, renamed, and deleted a test file."
+    finally:
+        with contextlib.suppress(Exception):
+            local.unlink()
 
 def _transfer_uri_with_child(uri, child_name):
     """Return a transfer URI with child_name appended to its path."""
@@ -1232,27 +1518,38 @@ def _run_task_with_transfer_handling(
             and hasattr(agent, "task_registry")
             and module_name not in built_in_tasks()
         )
-        if should_isolate:
-            task_outcome = _run_task_in_subprocess(
-                module_name,
-                prepared_source,
-                prepared_delivery,
-                overwrite_allowed,
-                task_id,
-                workspace_root,
-            )
-        else:
-            task_outcome = agent.run_task(
-                module_name,
-                prepared_source,
-                prepared_delivery,
-                overwrite_allowed,
-            )
+        global _ACTIVE_TRANSFER_AUTH
+        _ACTIVE_TRANSFER_AUTH = dict(transfer_auth or {})
+        try:
+            if should_isolate:
+                task_outcome = _run_task_in_subprocess(
+                    module_name,
+                    prepared_source,
+                    prepared_delivery,
+                    overwrite_allowed,
+                    task_id,
+                    workspace_root,
+                )
+            else:
+                task_outcome = agent.run_task(
+                    module_name,
+                    prepared_source,
+                    prepared_delivery,
+                    overwrite_allowed,
+                )
+        finally:
+            _ACTIVE_TRANSFER_AUTH = {}
 
         if task_outcome.success and _is_ftp_uri(upload_delivery):
-            _upload_ftp_file(prepared_delivery, upload_delivery, transfer_auth)
+            if overwrite_allowed:
+                _safe_replace_ftp_file(prepared_delivery, upload_delivery, transfer_auth, task_id)
+            else:
+                _call_upload_ftp_file(prepared_delivery, upload_delivery, transfer_auth, overwrite_allowed=False)
         elif task_outcome.success and _is_sftp_uri(upload_delivery):
-            _upload_sftp_file(prepared_delivery, upload_delivery, transfer_auth)
+            if overwrite_allowed:
+                _safe_replace_sftp_file(prepared_delivery, upload_delivery, transfer_auth, task_id)
+            else:
+                _call_upload_sftp_file(prepared_delivery, upload_delivery, transfer_auth, overwrite_allowed=False)
         return task_outcome
     except Exception as e:
         error_message = str(e)
@@ -1307,8 +1604,9 @@ class FarmAgent:
         """Helper to handle API communication safely."""
         if API_TOKEN:
             payload = dict(payload)
+            payload["worker_access_token"] = API_TOKEN
             payload["api_token"] = API_TOKEN
-            self.session.headers.update({"X-Reflection-Api-Token": API_TOKEN})
+            self.session.headers.update({"X-Reflection-Worker-Access-Token": API_TOKEN})
         try:
             response = self.session.post(SERVER_URL, json=payload, timeout=30)
             if response.status_code == 200:
@@ -1318,12 +1616,28 @@ class FarmAgent:
             logging.error("Network error connecting to server: %s", e)
         return None
 
+    def worker_capabilities(self):
+        total, used, free = shutil.disk_usage(tempfile.gettempdir())
+        return {
+            "tasks": sorted(self.task_registry),
+            "can_send_wol": True,
+            "ffmpeg": shutil.which("ffmpeg") is not None,
+            "ffprobe": shutil.which("ffprobe") is not None,
+            "task_isolation": TASK_ISOLATION,
+            "free_temp_bytes": int(free),
+            "free_disk_bytes": int(free),
+            "temp_dir": tempfile.gettempdir(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+        }
+
     def check_for_task(self):
         """Step 1 & 2: Connect to server, post status, receive job."""
         payload = {
             "action": "request_task",
             "version": VERSION,
             "pc_id": PC_ID,
+            "capabilities": self.worker_capabilities(),
         }
         logging.info("Checking server for available tasks...")
         return self.post_to_server(payload)
@@ -1417,6 +1731,7 @@ class FarmAgent:
             "enabled" if TASK_ISOLATION else "disabled",
             TASK_TIMEOUT_SECONDS,
         )
+        cleanup_stale_worker_temp_dirs(LOCAL_TEMP_MAX_AGE_HOURS)
 
         while True:
             try:
@@ -1471,6 +1786,9 @@ class FarmAgent:
             task.get("transfer_server", {}),
             task.get("transfer_auth", {}),
         )
+        global QUARANTINE_KEEP_DAYS, LOCAL_TEMP_MAX_AGE_HOURS
+        QUARANTINE_KEEP_DAYS = max(1, int(task.get("quarantine_keep_days", QUARANTINE_KEEP_DAYS) or QUARANTINE_KEEP_DAYS))
+        LOCAL_TEMP_MAX_AGE_HOURS = max(1, int(task.get("worker_temp_max_age_hours", LOCAL_TEMP_MAX_AGE_HOURS) or LOCAL_TEMP_MAX_AGE_HOURS))
         use_transfer_server_for_plain_paths = (
             task.get("path_mode") == "transfer"
             and isinstance(task.get("transfer_server"), dict)

@@ -16,7 +16,7 @@ function reflection_json_response(array $payload, int $statusCode = 200): void
 
 function reflection_request_api_token(array $payload): string
 {
-    $headerToken = (string) ($_SERVER['HTTP_X_REFLECTION_API_TOKEN'] ?? '');
+    $headerToken = (string) (($_SERVER['HTTP_X_REFLECTION_WORKER_ACCESS_TOKEN'] ?? ($_SERVER['HTTP_X_REFLECTION_API_TOKEN'] ?? '')) ?? '');
     if ($headerToken !== '') {
         return $headerToken;
     }
@@ -26,7 +26,7 @@ function reflection_request_api_token(array $payload): string
 
 function reflection_api_token_is_valid(array $payload, array $config): bool
 {
-    $requiredToken = (string) ($config['api_token'] ?? '');
+    $requiredToken = (string) ($config['worker_access_token'] ?? ($config['api_token'] ?? ''));
     if ($requiredToken === '') {
         return true;
     }
@@ -37,7 +37,7 @@ function reflection_api_token_is_valid(array $payload, array $config): bool
 function reflection_handle_farm_api(array $payload, FarmStore $store, array $config): array
 {
     if (!reflection_api_token_is_valid($payload, $config)) {
-        return ['status' => 'unauthorized', 'error' => 'Invalid or missing API token.'];
+        return ['status' => 'unauthorized', 'error' => 'Invalid or missing worker access token.'];
     }
 
     $action = (string) ($payload['action'] ?? '');
@@ -48,7 +48,8 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
         return ['status' => 'error', 'error' => 'Missing action or pc_id.'];
     }
 
-    $store->recordWorkerCheckIn($pcId, $version);
+    $capabilities = is_array($payload['capabilities'] ?? null) ? $payload['capabilities'] : [];
+    $store->recordWorkerCheckIn($pcId, $version, $capabilities);
     $store->refreshEssSocFromConfiguredEndpoint();
 
     $settings = $store->effectiveSettings();
@@ -159,7 +160,7 @@ function reflection_worker_transfer_server_for_job(array $job, array $config): ?
 
 function reflection_is_control_task(string $module): bool
 {
-    return in_array($module, ['noop', 'status', 'reload_tasks', 'shutdown', 'wake_farm'], true);
+    return in_array($module, ['noop', 'status', 'reload_tasks', 'shutdown', 'wake_farm', 'storage_test'], true);
 }
 
 function reflection_run_due_automation_on_worker_checkin(FarmStore $store, array $config): array
@@ -226,12 +227,14 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
         'delivery' => $job['delivery'],
         'overwrite_allowed' => (bool) $job['overwrite_allowed'],
         'shutdown_after_task' => !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 1,
+        'quarantine_keep_days' => max(1, (int) ($settings['quarantine_keep_days'] ?? 14)),
+        'worker_temp_max_age_hours' => max(1, (int) ($settings['worker_temp_max_age_hours'] ?? 24)),
     ];
 
     $transferServer = reflection_worker_transfer_server_for_job($job, $config);
-    if ($transferServer !== null && !reflection_is_control_task((string) $job['module'])) {
+    if ($transferServer !== null && (!reflection_is_control_task((string) $job['module']) || (string) $job['module'] === 'storage_test')) {
         $task['transfer_server'] = $transferServer;
-        $task['path_mode'] = 'transfer';
+        $task['path_mode'] = reflection_is_control_task((string) $job['module']) ? 'control' : 'transfer';
     }
 
     if (!empty($config['send_transfer_credentials'])) {

@@ -236,12 +236,17 @@ def collect_agent_config(
             "server_url": DEFAULT_SERVER_URL,
             "poll_interval": DEFAULT_POLL_INTERVAL,
             "pc_id": DEFAULT_PC_ID,
+            "worker_access_token": DEFAULT_API_TOKEN,
             "api_token": DEFAULT_API_TOKEN,
             "cleanup_roots": list(DEFAULT_CLEANUP_ROOTS),
             "task_timeout_seconds": DEFAULT_TASK_TIMEOUT_SECONDS,
             "task_timeouts": {},
             "task_log_tail_bytes": DEFAULT_TASK_LOG_TAIL_BYTES,
             "task_isolation": DEFAULT_TASK_ISOLATION,
+            "min_free_space_gb": 5,
+            "min_free_space_multiplier": 2.0,
+            "local_temp_max_age_hours": 24,
+            "quarantine_keep_days": 14,
         }
 
     should_prompt = sys.stdin.isatty() if interactive is None else interactive
@@ -274,8 +279,8 @@ def collect_agent_config(
     )
 
     api_token = _prompt_secret(
-        "Worker API token (blank disables token use)",
-        str(current_config.get("api_token") or DEFAULT_API_TOKEN),
+        "Worker access token (blank disables token use)",
+        str(current_config.get("worker_access_token") or current_config.get("api_token") or DEFAULT_API_TOKEN),
         interactive=should_prompt,
     )
     current_cleanup_roots = _parse_cleanup_roots(
@@ -316,6 +321,7 @@ def collect_agent_config(
         "server_url": server_url,
         "poll_interval": poll_interval,
         "pc_id": pc_id,
+        "worker_access_token": api_token,
         "api_token": api_token,
         "cleanup_roots": cleanup_roots,
         "task_isolation": task_isolation,

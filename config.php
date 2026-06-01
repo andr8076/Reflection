@@ -101,6 +101,7 @@ function reflection_default_farm_settings(): array
     return [
         'farm_id' => 'default',
         'farm_name' => 'Reflection Farm',
+        'worker_access_token' => '',
         'api_token' => '',
         'transfer_server' => [
             'scheme' => 'ftp',
@@ -144,6 +145,9 @@ function reflection_default_farm_settings(): array
             'auto_wake_max_targets_per_run' => 20,
             'wake_broadcast_address' => '255.255.255.255',
             'wake_udp_port' => 9,
+            'job_archive_keep_lines' => 5000,
+            'worker_temp_max_age_hours' => 24,
+            'quarantine_keep_days' => 14,
             'job_history_keep_completed' => 500,
             'event_log_keep_lines' => 1000,
             'file_history_keep_paths' => 500,
@@ -158,6 +162,7 @@ function reflection_default_farm_settings(): array
             'reload_tasks' => 'Ask a worker to reload its local task registry.',
             'shutdown' => 'Ask a worker to stop after reporting success.',
             'wake_farm' => 'Ask a worker to send Wake-on-LAN packets to configured farm computers.',
+            'storage_test' => 'Ask a worker to verify read/write/rename/delete access to a configured storage server.',
         ],
     ];
 }
@@ -192,9 +197,16 @@ function reflection_env_string(string $name): ?string
     return $value !== false && $value !== '' ? $value : null;
 }
 
+function reflection_worker_access_token_config(array $settings): string
+{
+    return reflection_env_string('REFLECTION_WORKER_ACCESS_TOKEN')
+        ?? reflection_env_string('REFLECTION_API_TOKEN')
+        ?? (string) ($settings['worker_access_token'] ?? ($settings['api_token'] ?? ''));
+}
+
 function reflection_api_token_config(array $settings): string
 {
-    return reflection_env_string('REFLECTION_API_TOKEN') ?? (string) ($settings['api_token'] ?? '');
+    return reflection_worker_access_token_config($settings);
 }
 
 function reflection_transfer_auth_config(array $settings): array
@@ -280,7 +292,8 @@ function reflection_master_config(?array $farmSettings = null): array
     return [
         'farm_id' => (string) ($settings['farm_id'] ?? 'default'),
         'farm_name' => (string) ($settings['farm_name'] ?? 'Reflection Farm'),
-        'api_token' => reflection_api_token_config($settings),
+        'worker_access_token' => reflection_worker_access_token_config($settings),
+        'api_token' => reflection_worker_access_token_config($settings),
         'transfer_auth' => reflection_transfer_auth_config($settings),
         'transfer_server' => reflection_transfer_server_config($settings),
         'storage_path' => $storeConfig['storage_path'],

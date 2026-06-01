@@ -8,8 +8,10 @@ return [
     'farm_id' => 'Master',
     'farm_name' => 'Reflection Farm',
 
-    // Optional shared secret for worker API requests. REFLECTION_API_TOKEN overrides this value.
+    // Shared secret for farm worker requests. REFLECTION_WORKER_ACCESS_TOKEN overrides this value.
+    // Legacy REFLECTION_API_TOKEN / api_token are still accepted for older deployments.
     // Leave blank only on a trusted private network while testing.
+    'worker_access_token' => '',
     'api_token' => '',
 
     // Connection details for the shared file server. The master sends these to workers.
@@ -48,7 +50,7 @@ return [
         'max_retries' => 2,
         'stale_job_strategy' => 'requeue_to_end',
         'stale_max_retries' => 2,
-        'ess_soc_percent' => 100,
+        'ess_soc_percent' => 100, // read-only live value; updated from ess_soc_url
         'ess_soc_url' => 'http://192.168.1.245:8076',
         'ess_min_soc_percent' => 20,
         'ess_shutdown_below_minimum' => true,
@@ -61,6 +63,9 @@ return [
         'auto_wake_max_targets_per_run' => 20,
         'wake_broadcast_address' => '255.255.255.255',
         'wake_udp_port' => 9,
+        'job_archive_keep_lines' => 5000,
+        'worker_temp_max_age_hours' => 24,
+        'quarantine_keep_days' => 14,
     ],
 
     'allowed_tasks' => [
@@ -74,5 +79,6 @@ return [
         'reload_tasks' => 'Ask a worker to reload its local task registry.',
         'shutdown' => 'Ask a worker to stop after reporting success.',
         'wake_farm' => 'Ask a worker to send Wake-on-LAN packets to configured farm computers.',
+        'storage_test' => 'Ask a worker to verify read/write/rename/delete access to a configured storage server.',
     ],
 ];

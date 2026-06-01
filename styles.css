@@ -1984,3 +1984,28 @@ pre {
     gap: 1rem;
     padding: clamp(1rem, 2vw, 1.25rem);
 }
+
+.ok-card {
+    border-color: rgba(34, 197, 94, 0.35);
+    background: rgba(240, 253, 244, 0.8);
+}
+
+.warning-card {
+    border-color: rgba(245, 158, 11, 0.4);
+    background: rgba(255, 251, 235, 0.9);
+}
+
+.table-actions {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.table-actions form {
+    margin: 0;
+}
+
+.small-button {
+    font-size: 0.78rem;
+    padding: 0.45rem 0.65rem;
+}

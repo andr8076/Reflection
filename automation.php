@@ -273,6 +273,8 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                 <a href="index.php">Dashboard</a>
                 <a class="active" href="automation.php">Automation</a>
                 <a href="storage_servers.php">Storage servers</a>
+                <a href="blocked_jobs.php">Blocked jobs</a>
+                <a href="system_checks.php">System checks</a>
             </nav>
         </div>
         <div class="version-card">
