@@ -311,6 +311,32 @@ class TaskOutcomeTest(unittest.TestCase):
         self.assertFalse(outcome.restart_agent)
 
 
+class WakeFarmTest(unittest.TestCase):
+    def test_wake_job_reads_relay_payload_and_sends_each_target(self):
+        source = json.dumps({
+            "targets": [{"pc_id": "node-1", "mac": "AA:BB:CC:DD:EE:01"}, "AA:BB:CC:DD:EE:02"],
+            "broadcast": "192.0.2.255",
+            "port": 7,
+        })
+        seen = []
+        original_sender = Reflection._send_wake_packet
+        try:
+            Reflection._send_wake_packet = lambda mac, broadcast, port: seen.append((mac, broadcast, port))
+            outcome = Reflection._normalize_task_result(Reflection._system_wake_farm(source, "", False))
+        finally:
+            Reflection._send_wake_packet = original_sender
+
+        self.assertTrue(outcome.success)
+        self.assertEqual([
+            ("AA:BB:CC:DD:EE:01", "192.0.2.255", 7),
+            ("AA:BB:CC:DD:EE:02", "192.0.2.255", 7),
+        ], seen)
+
+    def test_wake_job_rejects_missing_target_payload(self):
+        with self.assertRaisesRegex(ValueError, "did not include any target MAC addresses"):
+            Reflection._system_wake_farm(None, "", False)
+
+
 class WorkerUpdateTest(unittest.TestCase):
     def test_update_worker_runs_updater_and_requests_restart(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -207,6 +207,35 @@ function reflection_append_message(?string $message, string $addition): string
     return $current === '' ? $addition : $current . ' ' . $addition;
 }
 
+function reflection_manual_wake_result(FarmStore $store, int $staleAfterSeconds): array
+{
+    $targets = $store->wakeTargetsForCurrentSoc(true, $staleAfterSeconds);
+    if ($targets === []) {
+        return [
+            'message' => null,
+            'error' => 'No Wake-on-LAN targets are currently eligible. Check configured machines, MAC addresses, SOC margins, and current online workers.',
+        ];
+    }
+
+    $wakeResult = $store->dispatchWakeTargets($targets, 'manual');
+    $sent = (int) ($wakeResult['sent'] ?? 0);
+    $queued = (int) ($wakeResult['queued'] ?? 0);
+    if ($queued > 0) {
+        $message = 'Queued a Wake-on-LAN relay task for ' . $queued . ' computer' . ($queued === 1 ? '' : 's') . '. The next worker that checks in will send the packets.';
+    } else {
+        $message = 'Sent Wake-on-LAN packets to ' . $sent . ' computer' . ($sent === 1 ? '' : 's') . '.';
+    }
+    if (!empty($wakeResult['relay_pending'])) {
+        $message = 'A Wake-on-LAN relay task is already queued or running.';
+    }
+
+    $failed = (int) ($wakeResult['failed'] ?? 0);
+    return [
+        'message' => $message,
+        'error' => $failed > 0 ? $failed . ' Wake-on-LAN attempt(s) failed. Check recent events for details.' : null,
+    ];
+}
+
 function reflection_auto_wake_notice(FarmStore $store, int $staleAfterSeconds, string $reason): ?string
 {
     $store->refreshEssSocFromConfiguredEndpoint();
@@ -288,26 +317,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     } elseif ($formAction === 'maintenance') {
         $maintenance = reflection_run_store_maintenance($store, $store->effectiveSettings());
         $message = 'Maintenance complete. Archived ' . $maintenance['archived_jobs'] . ' old completed job(s), trimmed ' . $maintenance['trimmed_events'] . ' event(s), compacted ' . $maintenance['trimmed_file_history'] . ' file-history item(s), and trimmed ' . $maintenance['trimmed_job_archive'] . ' archived job line(s).';
-    } elseif ($formAction === 'wake_farm') {
-        $targets = $store->wakeTargetsForCurrentSoc(true, (int) ($config['stale_after_seconds'] ?? 900));
-        if ($targets === []) {
-            $error = 'No Wake-on-LAN targets are currently eligible. Check configured machines, MAC addresses, SOC margins, and current online workers.';
-        } else {
-            $wakeResult = $store->dispatchWakeTargets($targets, 'manual');
-            $sent = (int) ($wakeResult['sent'] ?? 0);
-            $queued = (int) ($wakeResult['queued'] ?? 0);
-            if ($queued > 0) {
-                $message = 'Queued a Wake-on-LAN relay task for ' . $queued . ' computer' . ($queued === 1 ? '' : 's') . '. The next worker that checks in will send the packets.';
-            } else {
-                $message = 'Sent Wake-on-LAN packets to ' . $sent . ' computer' . ($sent === 1 ? '' : 's') . '.';
-            }
-            if (!empty($wakeResult['relay_pending'])) {
-                $message = 'A Wake-on-LAN relay task is already queued or running.';
-            }
-            if ((int) ($wakeResult['failed'] ?? 0) > 0) {
-                $error = (int) ($wakeResult['failed'] ?? 0) . ' Wake-on-LAN attempt(s) failed. Check recent events for details.';
-            }
-        }
+    } elseif ($formAction === 'wake_farm' || $module === 'wake_farm') {
+        $wake = reflection_manual_wake_result($store, (int) ($config['stale_after_seconds'] ?? 900));
+        $message = $wake['message'];
+        $error = $wake['error'];
     } elseif ($formAction === 'bulk') {
         $importText = (string) ($_POST['source_list'] ?? '');
         $uploadedText = reflection_uploaded_import_text('source_file');

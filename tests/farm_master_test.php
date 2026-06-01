@@ -162,6 +162,13 @@ assertSameValue(1, $wakePlan['idle_online_workers'], 'Demand wake should treat i
 assertSameValue(2, $wakePlan['needed'], 'Demand wake should only request workers for queued jobs not covered by idle online workers.');
 assertSameValue(1, count($wakePlan['targets']), 'Demand wake should still respect SOC margins after existing online workers consume budget.');
 assertSameValue('node-wake-2', $wakePlan['targets'][0]['pc_id'], 'Demand wake should choose the cheapest eligible offline machine first.');
+$relayResult = $wakeStore->dispatchWakeTargets($wakePlan['targets'], 'manual');
+assertSameValue('worker_relay', $relayResult['method'], 'Manual wake should queue a worker relay job by default.');
+assertSameValue(1, $relayResult['queued'], 'Manual wake should queue one target for the relay worker.');
+$relayPayload = json_decode((string) ($relayResult['relay_job']['source'] ?? ''), true);
+assertSameValue('AA:BB:CC:DD:EE:02', $relayPayload['targets'][0]['mac'] ?? null, 'Wake relay jobs should include the target MAC address in their source payload.');
+assertSameValue('255.255.255.255', $relayPayload['broadcast'] ?? null, 'Wake relay jobs should include the configured broadcast address.');
+assertSameValue(9, $relayPayload['port'] ?? null, 'Wake relay jobs should include the configured UDP port.');
 @unlink($wakeStorePath);
 @unlink($wakeStorePath . '.lock');
 

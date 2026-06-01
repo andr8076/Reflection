@@ -541,6 +541,9 @@ def _send_wake_packet(mac_address, broadcast="255.255.255.255", port=9):
 def _system_wake_farm(source, delivery, overwrite_allowed):
     """Built-in task that sends Wake-on-LAN packets for configured machines."""
     targets, broadcast, port = _normalize_wake_job(source)
+    if not targets:
+        raise ValueError("Wake-on-LAN task did not include any target MAC addresses.")
+
     errors = []
     sent = 0
     for mac in targets:
