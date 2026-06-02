@@ -1,6 +1,7 @@
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from urllib.parse import urlparse
@@ -519,6 +520,46 @@ class WorkerUpdateTest(unittest.TestCase):
             Reflection._request_system_reboot = original_reboot
 
         self.assertEqual(seen, ["reboot"])
+
+
+class TaskHeartbeatTest(unittest.TestCase):
+    def test_non_acknowledged_heartbeat_requests_local_relinquish(self):
+        class FakeAgent:
+            def heartbeat_task(self, task_id):
+                return {"status": "task_held", "instruction": "relinquish_task"}
+
+        heartbeat = Reflection.TaskHeartbeat(FakeAgent(), "job-held", 5)
+        heartbeat.interval = 0.01
+        heartbeat.__enter__()
+        try:
+            self.assertTrue(heartbeat.cancel_event.wait(1))
+            self.assertEqual(heartbeat.cancel_reason, "task_held")
+        finally:
+            heartbeat.__exit__(None, None, None)
+
+    def test_isolated_process_is_killed_when_master_relinquishes_task(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tasks_dir = Path(temp_dir) / "tasks"
+            tasks_dir.mkdir()
+            (tasks_dir / "slow_task.py").write_text(
+                "import time\n\ndef run(source, delivery, overwrite_allowed=False):\n    time.sleep(30)\n    return {'success': True}\n",
+                encoding="utf-8",
+            )
+            cancel_event = threading.Event()
+            original_tasks_dir = Reflection.TASKS_DIR
+            try:
+                Reflection.TASKS_DIR = tasks_dir
+                timer = threading.Timer(0.1, cancel_event.set)
+                timer.start()
+                outcome = Reflection._run_task_in_subprocess(
+                    "slow_task", "", "", False, "job-held", temp_dir, cancel_event
+                )
+            finally:
+                Reflection.TASKS_DIR = original_tasks_dir
+                timer.cancel()
+
+        self.assertFalse(outcome.success)
+        self.assertTrue(outcome.relinquished)
 
 
 class ShutdownRequestTest(unittest.TestCase):

@@ -25,7 +25,7 @@ from task_registry import TaskDefinition, discover_task_definitions, normalize_t
 # --- CONFIGURATION ---
 DEFAULT_SERVER_URL = "http://your-server-domain.com/farm_api.php"
 DEFAULT_POLL_INTERVAL = 10
-DEFAULT_HEARTBEAT_INTERVAL = 30
+DEFAULT_HEARTBEAT_INTERVAL = 60
 DEFAULT_TASK_TIMEOUT_SECONDS = 12 * 60 * 60
 DEFAULT_TASK_LOG_TAIL_BYTES = 12000
 DEFAULT_TASK_ISOLATION = True
@@ -407,6 +407,7 @@ class TaskOutcome:
     reload_tasks: bool = False
     cleanup_source: bool = False
     message: str = ""
+    relinquished: bool = False
 
 
 def run_task_installer(task_name):
@@ -1481,7 +1482,7 @@ def _format_isolated_failure(prefix, stdout_path, stderr_path):
     return "\n\n".join(parts)
 
 
-def _run_task_in_subprocess(module_name, source, delivery, overwrite_allowed, task_id, workspace_root):
+def _run_task_in_subprocess(module_name, source, delivery, overwrite_allowed, task_id, workspace_root, cancellation_event=None):
     """Run an external task in an isolated subprocess so the worker survives task crashes."""
     if not TASK_RUNNER_PATH.is_file():
         raise FileNotFoundError(f"Missing task runner: {TASK_RUNNER_PATH}")
@@ -1527,17 +1528,22 @@ def _run_task_in_subprocess(module_name, source, delivery, overwrite_allowed, ta
         )
         _launch_task_log_terminal(module_name, task_id, stdout_path, stderr_path, done_path)
         try:
-            try:
-                process.wait(timeout=timeout_seconds or None)
-            except subprocess.TimeoutExpired:
-                _terminate_process_tree(process)
-                message = _format_isolated_failure(
-                    f"Task '{module_name}' timed out after {timeout_seconds} seconds and was killed.",
-                    stdout_path,
-                    stderr_path,
-                )
-                logging.error(message)
-                return TaskOutcome(success=False, message=message)
+            started_at = time.monotonic()
+            while process.poll() is None:
+                if cancellation_event is not None and cancellation_event.wait(1):
+                    _terminate_process_tree(process)
+                    message = f"Task '{module_name}' was relinquished by the master and its process was killed."
+                    logging.warning(message)
+                    return TaskOutcome(success=False, relinquished=True, message=message)
+                if timeout_seconds and time.monotonic() - started_at >= timeout_seconds:
+                    _terminate_process_tree(process)
+                    message = _format_isolated_failure(
+                        f"Task '{module_name}' timed out after {timeout_seconds} seconds and was killed.",
+                        stdout_path,
+                        stderr_path,
+                    )
+                    logging.error(message)
+                    return TaskOutcome(success=False, message=message)
         finally:
             done_path.touch()
 
@@ -1601,6 +1607,7 @@ def _run_task_with_transfer_handling(
     task_id,
     transfer_auth,
     use_transfer_server_for_plain_paths=False,
+    cancellation_event=None,
 ):
     """Run one task and treat download/upload/process errors as task failures."""
     transfer_workspace = None
@@ -1641,6 +1648,7 @@ def _run_task_with_transfer_handling(
                     overwrite_allowed,
                     task_id,
                     workspace_root,
+                    cancellation_event,
                 )
             else:
                 task_outcome = agent.run_task(
@@ -1651,6 +1659,13 @@ def _run_task_with_transfer_handling(
                 )
         finally:
             _ACTIVE_TRANSFER_AUTH = {}
+
+        if cancellation_event is not None and cancellation_event.is_set():
+            return TaskOutcome(
+                success=False,
+                relinquished=True,
+                message=f"Task '{module_name}' was relinquished by the master; temporary files were removed.",
+            )
 
         if task_outcome.success and _is_ftp_uri(upload_delivery):
             if overwrite_allowed:
@@ -1682,6 +1697,8 @@ class TaskHeartbeat:
         self.task_id = task_id
         self.interval = max(5, int(interval))
         self.stop_event = threading.Event()
+        self.cancel_event = threading.Event()
+        self.cancel_reason = ""
         self.thread = threading.Thread(target=self._loop, name=f"reflection-heartbeat-{task_id}", daemon=True)
 
     def __enter__(self):
@@ -1698,9 +1715,15 @@ class TaskHeartbeat:
                 response = self.agent.heartbeat_task(self.task_id)
                 if response and response.get("status") == "heartbeat_acknowledged":
                     continue
-                logging.warning("Heartbeat for task %s was not acknowledged: %s", self.task_id, response)
+                self.cancel_reason = str((response or {}).get("status", "no_response"))
+                self.cancel_event.set()
+                logging.warning("Heartbeat for task %s was not acknowledged; relinquishing local work: %s", self.task_id, response)
+                return
             except Exception as exc:
-                logging.warning("Heartbeat for task %s failed: %s", self.task_id, exc)
+                self.cancel_reason = str(exc)
+                self.cancel_event.set()
+                logging.warning("Heartbeat for task %s failed; relinquishing local work: %s", self.task_id, exc)
+                return
 
 # --- CORE FARM AGENT CLASS ---
 def _command_from_env(env_name):
@@ -2076,7 +2099,7 @@ class FarmAgent:
         task_outcome = TaskOutcome(success=False)
         error_message = ""
 
-        with TaskHeartbeat(self, task_id, HEARTBEAT_INTERVAL):
+        with TaskHeartbeat(self, task_id, HEARTBEAT_INTERVAL) as heartbeat:
             task_outcome = _run_task_with_transfer_handling(
                 self,
                 module_name,
@@ -2086,8 +2109,17 @@ class FarmAgent:
                 task_id,
                 transfer_auth,
                 use_transfer_server_for_plain_paths,
+                heartbeat.cancel_event,
             )
         error_message = task_outcome.message
+        if heartbeat.cancel_event.is_set() or task_outcome.relinquished:
+            logging.warning(
+                "Task %s was relinquished after master heartbeat instruction %s. Temporary work files were cleaned; requesting another task.",
+                task_id,
+                heartbeat.cancel_reason or "relinquish_task",
+            )
+            return True
+
         # 5 & 6. Report done & get server final confirmation
         server_response = self.report_task_done(task_id, task_outcome.success, error_message)
         server_confirmed = bool(server_response and server_response.get("status") == "confirmed_by_server")

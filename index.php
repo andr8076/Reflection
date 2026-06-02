@@ -310,7 +310,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             if ($jobAction === 'delete') {
                 $message = $store->deleteJob($taskId)
                     ? 'Job deleted from the live store.'
-                    : 'Job was not deleted. Running jobs cannot be deleted.';
+                    : 'Job was not deleted. Running jobs must be held before deletion.';
+            } elseif ($jobAction === 'hold') {
+                $message = $store->holdJob($taskId)
+                    ? 'Job placed on hold. Any assigned worker will relinquish it at its next heartbeat.'
+                    : 'Job was not held. Only queued or running jobs can be held.';
+            } elseif ($jobAction === 'release') {
+                $message = $store->releaseHeldJob($taskId)
+                    ? 'Job released back to the queue.'
+                    : 'Job was not released. Only held jobs can be released.';
             } elseif ($jobAction === 'move_earlier') {
                 $message = $store->moveQueuedJob($taskId, 'earlier')
                     ? 'Job moved sooner in the queue.'
@@ -508,7 +516,7 @@ $workerStaleAfterSeconds = max(1, (int) ($config['stale_after_seconds'] ?? 900))
 $workerCards = reflection_worker_cards($workers, $machines, $workerStaleAfterSeconds);
 $workerStateCounts = reflection_count_worker_states($workerCards);
 $archiveInfo = $store->archiveInfo();
-$validJobFilters = ['all', 'active', 'queued', 'running', 'success', 'failed', 'stale', 'blocked', 'ignored', 'finished'];
+$validJobFilters = ['all', 'active', 'queued', 'running', 'held', 'success', 'failed', 'stale', 'blocked', 'ignored', 'finished'];
 $jobStatus = (string) ($_GET['job_status'] ?? 'all');
 if (!in_array($jobStatus, $validJobFilters, true)) {
     $jobStatus = 'all';
@@ -527,7 +535,7 @@ $activeJobsPreview = array_slice($activeJobsAll, 0, $activeJobsPreviewLimit);
 $activeJobsMore = array_slice($activeJobsAll, $activeJobsPreviewLimit);
 $activeJobsShownLimit = count($activeJobsAll);
 $completedInStore = (int) ($statusCounts['success'] ?? 0) + (int) ($statusCounts['failed'] ?? 0) + (int) ($statusCounts['stale'] ?? 0) + (int) ($statusCounts['blocked'] ?? 0) + (int) ($statusCounts['ignored'] ?? 0);
-$activeCount = (int) ($statusCounts['queued'] ?? 0) + (int) ($statusCounts['running'] ?? 0);
+$activeCount = (int) ($statusCounts['queued'] ?? 0) + (int) ($statusCounts['running'] ?? 0) + (int) ($statusCounts['held'] ?? 0);
 $maintenanceChanged = array_sum($automaticMaintenance) > 0;
 
 // Handle AJAX dashboard refresh
@@ -540,7 +548,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
     <article class="metric primary">
         <span>Active jobs</span>
         <strong><?= $activeCount ?></strong>
-        <small><?= (int) ($statusCounts['queued'] ?? 0) ?> queued · <?= (int) ($statusCounts['running'] ?? 0) ?> running</small>
+        <small><?= (int) ($statusCounts['queued'] ?? 0) ?> queued · <?= (int) ($statusCounts['running'] ?? 0) ?> running · <?= (int) ($statusCounts['held'] ?? 0) ?> held</small>
     </article>
     <article class="metric <?= $essSocIgnored ? 'warning-metric' : '' ?>">
         <span>ESS SOC</span>
@@ -649,6 +657,21 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                             <button class="ghost-button small-button" type="submit">Later</button>
                         </form>
                     <?php endif; ?>
+                    <?php if (in_array($jobStatusValue, ['queued', 'running'], true)): ?>
+                        <form method="post" style="display: inline;">
+                            <input type="hidden" name="form_action" value="job_action">
+                            <input type="hidden" name="job_action" value="hold">
+                            <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
+                            <button class="ghost-button small-button" type="submit">Hold</button>
+                        </form>
+                    <?php elseif ($jobStatusValue === 'held'): ?>
+                        <form method="post" style="display: inline;">
+                            <input type="hidden" name="form_action" value="job_action">
+                            <input type="hidden" name="job_action" value="release">
+                            <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
+                            <button class="ghost-button small-button" type="submit">Release</button>
+                        </form>
+                    <?php endif; ?>
                     <?php if ($jobStatusValue !== 'running'): ?>
                         <form method="post" style="display: inline;" onsubmit="return confirm('Delete this job from the live store?');">
                             <input type="hidden" name="form_action" value="job_action">
@@ -657,7 +680,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                             <button class="danger-button small-button" type="submit">Delete</button>
                         </form>
                     <?php else: ?>
-                        <span class="api-note">Running jobs cannot be changed.</span>
+                        <span class="api-note">Hold a running job before deleting it.</span>
                     <?php endif; ?>
                 </div>
             </td>
@@ -811,7 +834,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
         <article class="metric primary">
             <span>Active jobs</span>
             <strong><?= $activeCount ?></strong>
-            <small><?= (int) ($statusCounts['queued'] ?? 0) ?> queued · <?= (int) ($statusCounts['running'] ?? 0) ?> running</small>
+            <small><?= (int) ($statusCounts['queued'] ?? 0) ?> queued · <?= (int) ($statusCounts['running'] ?? 0) ?> running · <?= (int) ($statusCounts['held'] ?? 0) ?> held</small>
         </article>
         <article class="metric <?= $essSocIgnored ? 'warning-metric' : '' ?>">
             <span>ESS SOC</span>
@@ -1056,7 +1079,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
             </form>
         </div>
         <nav class="status-tabs" aria-label="Job status filters" data-job-status-tabs>
-            <?php foreach (['all', 'active', 'queued', 'running', 'success', 'failed', 'stale', 'blocked', 'ignored', 'finished'] as $filter): ?>
+            <?php foreach (['all', 'active', 'queued', 'running', 'held', 'success', 'failed', 'stale', 'blocked', 'ignored', 'finished'] as $filter): ?>
                 <?php
                     if ($filter === 'all') {
                         $tabCount = array_sum($statusCounts);
@@ -1119,6 +1142,21 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                                         <button class="ghost-button small-button" type="submit">Later</button>
                                     </form>
                                 <?php endif; ?>
+                                <?php if (in_array($jobStatusValue, ['queued', 'running'], true)): ?>
+                                    <form method="post">
+                                        <input type="hidden" name="form_action" value="job_action">
+                                        <input type="hidden" name="job_action" value="hold">
+                                        <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
+                                        <button class="ghost-button small-button" type="submit">Hold</button>
+                                    </form>
+                                <?php elseif ($jobStatusValue === 'held'): ?>
+                                    <form method="post">
+                                        <input type="hidden" name="form_action" value="job_action">
+                                        <input type="hidden" name="job_action" value="release">
+                                        <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
+                                        <button class="ghost-button small-button" type="submit">Release</button>
+                                    </form>
+                                <?php endif; ?>
                                 <?php if ($jobStatusValue !== 'running'): ?>
                                     <form method="post" onsubmit="return confirm('Delete this job from the live store?');">
                                         <input type="hidden" name="form_action" value="job_action">
@@ -1127,7 +1165,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                                         <button class="danger-button small-button" type="submit">Delete</button>
                                     </form>
                                 <?php else: ?>
-                                    <span class="api-note">Running jobs cannot be changed.</span>
+                                    <span class="api-note">Hold a running job before deleting it.</span>
                                 <?php endif; ?>
                             </div>
                         </td>
