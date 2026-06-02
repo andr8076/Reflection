@@ -138,6 +138,7 @@ function reflection_worker_cards(array $workers, array $machines, int $staleAfte
             'mac' => $machine['mac'] ?? '',
             'soc_margin_percent' => $machine['soc_margin_percent'] ?? 5,
             'wake_enabled' => !empty($machine['wake_enabled']),
+            'shutdown_layer' => max(0, (int) ($machine['shutdown_layer'] ?? 0)),
             'version' => '—',
             'current_job' => null,
             'last_check_in' => null,
@@ -151,9 +152,7 @@ function reflection_worker_cards(array $workers, array $machines, int $staleAfte
         $lastCheckIn = (string) ($worker['last_check_in'] ?? '');
         $lastSeen = $lastCheckIn !== '' ? strtotime($lastCheckIn) : false;
         $state = !empty($worker['current_job']) ? 'running' : 'idle';
-        if (trim((string) ($worker['shutdown_requested_at'] ?? '')) !== '') {
-            $state = 'stale';
-        } elseif ($lastSeen === false || (time() - $lastSeen) > $staleAfterSeconds) {
+        if ($lastSeen === false || (time() - $lastSeen) > $staleAfterSeconds) {
             $state = 'stale';
         }
 
@@ -162,12 +161,11 @@ function reflection_worker_cards(array $workers, array $machines, int $staleAfte
             'mac' => '',
             'soc_margin_percent' => 5,
             'wake_enabled' => false,
+                'shutdown_layer' => 0,
         ], [
             'version' => $worker['version'] ?? '—',
             'current_job' => $worker['current_job'] ?? null,
             'last_check_in' => $worker['last_check_in'] ?? null,
-            'shutdown_requested_at' => $worker['shutdown_requested_at'] ?? null,
-            'shutdown_reason' => $worker['shutdown_reason'] ?? null,
             'idle_no_job_checkins' => max(0, (int) ($worker['idle_no_job_checkins'] ?? 0)),
             'state' => $state,
         ]);
@@ -802,6 +800,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                         <div><dt>Version</dt><dd><code><?= reflection_h($card['version'] ?? '—') ?></code></dd></div>
                         <div><dt>Wake</dt><dd><?= !empty($card['wake_enabled']) ? 'enabled' : 'disabled' ?><?= !empty($card['mac']) ? ' · ' . reflection_h($card['mac']) : '' ?></dd></div>
                         <div><dt>SOC margin</dt><dd><?= (int) ($card['soc_margin_percent'] ?? 0) ?>%</dd></div>
+                        <div><dt>Shutdown layer</dt><dd><?= (int) ($card['shutdown_layer'] ?? 0) ?></dd></div>
                     </dl>
                     <?php if (($card['state'] ?? '') === 'stale'): ?>
                         <form method="post" class="button-row computer-actions" onsubmit="return confirm('Remove this stale worker check-in from the board?');">

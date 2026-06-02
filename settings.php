@@ -293,8 +293,8 @@ $dataDirectory = dirname((string) $config['storage_path']);
                     <h3>Farm computers and Wake-on-LAN</h3>
                     <label>
                         Machine list
-                        <textarea name="machines" rows="8" placeholder="render-01,AA:BB:CC:DD:EE:01,5,1&#10;render-02,AA:BB:CC:DD:EE:02,8,1"><?= reflection_h(reflection_machine_list_text($machines)) ?></textarea>
-                        <small>One per line: <code>pc_id,mac,soc_margin_percent,wake_enabled</code>. SOC margin is checked per computer against current ESS headroom: SOC minus minimum SOC.</small>
+                        <textarea name="machines" rows="8" placeholder="render-01,AA:BB:CC:DD:EE:01,5,1,2&#10;render-02,AA:BB:CC:DD:EE:02,8,1,1"><?= reflection_h(reflection_machine_list_text($machines)) ?></textarea>
+                        <small>One per line: <code>pc_id,mac,soc_margin_percent,wake_enabled,shutdown_layer</code>. Higher shutdown layers power off first. Lower layers are not allowed to shut down until all higher online layers are offline. SOC margin is checked per computer against current ESS headroom: SOC minus minimum SOC.</small>
                     </label>
                 </div>
 

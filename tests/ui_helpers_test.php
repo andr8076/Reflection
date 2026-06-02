@@ -20,11 +20,11 @@ assertSameValue('abcdef…', reflection_short_value('abcdefgh', 7), 'Short-value
 
 $machines = reflection_parse_machine_list("# ignored\nworker-a,aa:bb:cc:dd:ee:ff,7,off\nworker-b,11:22:33:44:55:66");
 assertSameValue([
-    ['pc_id' => 'worker-a', 'mac' => 'aa:bb:cc:dd:ee:ff', 'soc_margin_percent' => 7, 'wake_enabled' => false],
-    ['pc_id' => 'worker-b', 'mac' => '11:22:33:44:55:66', 'soc_margin_percent' => 5, 'wake_enabled' => true],
+    ['pc_id' => 'worker-a', 'mac' => 'aa:bb:cc:dd:ee:ff', 'soc_margin_percent' => 7, 'wake_enabled' => false, 'shutdown_layer' => 0],
+    ['pc_id' => 'worker-b', 'mac' => '11:22:33:44:55:66', 'soc_margin_percent' => 5, 'wake_enabled' => true, 'shutdown_layer' => 0],
 ], $machines, 'Machine-list parser should preserve dashboard behavior.');
 assertSameValue(
-    "worker-a,aa:bb:cc:dd:ee:ff,7,0\nworker-b,11:22:33:44:55:66,5,1",
+    "worker-a,aa:bb:cc:dd:ee:ff,7,0,0\nworker-b,11:22:33:44:55:66,5,1,0",
     reflection_machine_list_text($machines),
     'Machine-list formatter should preserve dashboard behavior.'
 );

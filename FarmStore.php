@@ -282,8 +282,6 @@ final class FarmStore
                 'last_check_in' => gmdate(DATE_ATOM),
             ]);
 
-            unset($worker['shutdown_requested_at'], $worker['shutdown_reason']);
-
             if ($capabilities !== []) {
                 $worker['capabilities'] = $this->cleanWorkerCapabilities($capabilities);
             }
@@ -316,40 +314,63 @@ final class FarmStore
         }, true);
     }
 
-    public function markWorkerShutdownRequested(string $pcId, string $reason = 'server_shutdown'): void
+    public function markWorkerExpectedOffline(string $pcId, string $reason = 'shutdown_requested'): void
     {
         $pcId = trim($pcId);
         if ($pcId === '') {
             return;
         }
 
-        $nowText = gmdate(DATE_ATOM);
-        $reason = $this->limitString($reason, 120);
-        $this->withLock(function (array $data) use ($pcId, $reason, $nowText): array {
+        $offlineAt = gmdate(DATE_ATOM, time() - 31536000);
+        $this->withLock(function (array $data) use ($pcId, $reason, $offlineAt): array {
             $worker = $data['workers'][$pcId] ?? ['pc_id' => $pcId];
-            $worker['pc_id'] = $pcId;
             $worker['current_job'] = null;
-            $worker['shutdown_requested_at'] = $nowText;
-            $worker['shutdown_reason'] = $reason;
+            $worker['last_check_in'] = $offlineAt;
+            $worker['expected_offline'] = true;
+            $worker['expected_offline_reason'] = $reason;
+            $worker['expected_offline_at'] = gmdate(DATE_ATOM);
             $data['workers'][$pcId] = $worker;
-
             return ['data' => $data, 'result' => null];
         }, true);
 
-        $this->recordSystemEvent('worker_shutdown_requested', '', [
+        $this->recordSystemEvent('worker_expected_offline', '', [
             'worker' => $pcId,
             'pc_id' => $pcId,
             'reason' => $reason,
         ]);
     }
 
+    public function shutdownLayerStatus(string $pcId, int $staleAfterSeconds): array
+    {
+        $data = $this->read();
+        return $this->shutdownLayerStatusFromData($data, $pcId, $staleAfterSeconds);
+    }
+
+    public function workerMayShutdownByLayer(string $pcId, int $staleAfterSeconds): bool
+    {
+        $status = $this->shutdownLayerStatus($pcId, $staleAfterSeconds);
+        return !empty($status['allowed']);
+    }
+
     public function nextQueuedJob(): ?array
     {
-        return $this->withLock(function (array $data): ?array {
+        return $this->nextQueuedJobForWorker('', 900);
+    }
+
+    public function nextQueuedJobForWorker(string $pcId, int $staleAfterSeconds): ?array
+    {
+        return $this->withLock(function (array $data) use ($pcId, $staleAfterSeconds): ?array {
             foreach ($data['jobs'] as $job) {
-                if (($job['status'] ?? '') === 'queued' && $this->isControlModule((string) ($job['module'] ?? ''))) {
-                    return $job;
+                if (($job['status'] ?? '') !== 'queued' || !$this->isControlModule((string) ($job['module'] ?? ''))) {
+                    continue;
                 }
+                if (($job['module'] ?? '') === 'shutdown' && $pcId !== '') {
+                    $layer = $this->shutdownLayerStatusFromData($data, $pcId, $staleAfterSeconds);
+                    if (empty($layer['allowed'])) {
+                        continue;
+                    }
+                }
+                return $job;
             }
 
             foreach ($data['jobs'] as $job) {
@@ -1033,6 +1054,7 @@ final class FarmStore
                     'mac' => $mac,
                     'soc_margin_percent' => max(0, (int) ($machine['soc_margin_percent'] ?? 5)),
                     'wake_enabled' => !empty($machine['wake_enabled']),
+                    'shutdown_layer' => max(0, (int) ($machine['shutdown_layer'] ?? 0)),
                 ];
             }
 
@@ -1788,6 +1810,48 @@ final class FarmStore
     }
 
 
+    private function machineShutdownLayerByPcId(array $data, string $pcId): int
+    {
+        foreach (($data['machines'] ?? []) as $machine) {
+            if (!is_array($machine)) {
+                continue;
+            }
+            if ((string) ($machine['pc_id'] ?? '') === $pcId) {
+                return max(0, (int) ($machine['shutdown_layer'] ?? 0));
+            }
+        }
+
+        return 0;
+    }
+
+    private function shutdownLayerStatusFromData(array $data, string $pcId, int $staleAfterSeconds): array
+    {
+        $pcId = trim($pcId);
+        $ownLayer = $this->machineShutdownLayerByPcId($data, $pcId);
+        $onlineWorkers = $this->onlineWorkersFromData($data, $staleAfterSeconds);
+        $highestOnlineLayer = $ownLayer;
+        $higherOnline = [];
+
+        foreach ($onlineWorkers as $workerId => $worker) {
+            $workerLayer = $this->machineShutdownLayerByPcId($data, (string) $workerId);
+            $highestOnlineLayer = max($highestOnlineLayer, $workerLayer);
+            if ($workerLayer > $ownLayer) {
+                $higherOnline[] = [
+                    'pc_id' => (string) $workerId,
+                    'shutdown_layer' => $workerLayer,
+                ];
+            }
+        }
+
+        return [
+            'allowed' => $higherOnline === [],
+            'pc_id' => $pcId,
+            'shutdown_layer' => $ownLayer,
+            'highest_online_layer' => $highestOnlineLayer,
+            'higher_online_workers' => $higherOnline,
+        ];
+    }
+
     private function isControlModule(string $module): bool
     {
         return in_array($module, ['noop', 'status', 'reload_tasks', 'shutdown', 'update_worker', 'wake_farm', 'storage_test'], true);
@@ -1802,10 +1866,6 @@ final class FarmStore
             if (!is_array($worker)) {
                 continue;
             }
-            if (trim((string) ($worker['shutdown_requested_at'] ?? '')) !== '') {
-                continue;
-            }
-
             $lastCheckIn = strtotime((string) ($worker['last_check_in'] ?? ''));
             if ($lastCheckIn !== false && $lastCheckIn >= $cutoff) {
                 $pcId = trim((string) ($worker['pc_id'] ?? ''));

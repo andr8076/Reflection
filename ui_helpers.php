@@ -27,6 +27,7 @@ function reflection_parse_machine_list(string $raw): array
             'mac' => $parts[1] ?? '',
             'soc_margin_percent' => (int) ($parts[2] ?? 5),
             'wake_enabled' => !isset($parts[3]) || !in_array(strtolower($parts[3]), ['0', 'false', 'no', 'off'], true),
+            'shutdown_layer' => max(0, (int) ($parts[4] ?? 0)),
         ];
     }
 
@@ -42,6 +43,7 @@ function reflection_machine_list_text(array $machines): string
             $machine['mac'] ?? '',
             $machine['soc_margin_percent'] ?? 5,
             !empty($machine['wake_enabled']) ? '1' : '0',
+            max(0, (int) ($machine['shutdown_layer'] ?? 0)),
         ]);
     }
 

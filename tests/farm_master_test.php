@@ -430,30 +430,6 @@ assertSameValue('idle_no_job_check_limit', $response['reason'], 'No-job limit sh
 assertSameValue(2, $response['idle_shutdown_after_no_job_checks'], 'No-job limit responses should publish the configured limit.');
 assertSameValue(false, $response['shutdown_debug_mode'], 'No-job limit responses should publish disabled shutdown debug mode.');
 
-$shutdownStorePath = sys_get_temp_dir() . '/reflection_shutdown_store_' . bin2hex(random_bytes(6)) . '.json';
-$shutdownStore = new FarmStore($shutdownStorePath);
-$shutdownStore->updateSettings([
-    'ess_soc_url' => '',
-    'idle_shutdown_after_no_job_checks' => 1,
-    'shutdown_debug_mode' => true,
-]);
-$shutdownResponse = reflection_handle_farm_api([
-    'action' => 'request_task',
-    'version' => 'test-version',
-    'pc_id' => 'node-debug-shutdown',
-], $shutdownStore, ['required_version' => 'test-version']);
-assertSameValue('no_jobs', $shutdownResponse['status'], 'Debug shutdown worker should receive no_jobs when queue is empty.');
-assertSameValue(true, $shutdownResponse['shutdown_after_task'], 'Debug shutdown should still be requested by the master.');
-assertSameValue(true, $shutdownResponse['shutdown_debug_mode'], 'Debug shutdown mode should be sent to the worker.');
-assertSameValue(0, $shutdownStore->idleOnlineWorkerCount(900), 'Workers with a shutdown request should stop counting as online immediately.');
-$shutdownData = $shutdownStore->read();
-assertSameValue(true, !empty($shutdownData['workers']['node-debug-shutdown']['shutdown_requested_at']), 'Shutdown requests should mark the worker as expected offline.');
-$shutdownStore->recordWorkerCheckIn('node-debug-shutdown', 'test-version');
-$shutdownData = $shutdownStore->read();
-assertSameValue(false, array_key_exists('shutdown_requested_at', $shutdownData['workers']['node-debug-shutdown']), 'A later worker check-in should clear the expected-offline shutdown marker.');
-@unlink($shutdownStorePath);
-@unlink($shutdownStorePath . '.lock');
-
 $retryJob = $store->createJob('dummy_task', 'incoming/retry.dat', 'outputs/retry.txt', false);
 assertSameValue(true, $store->markJobRunning($retryJob['task_id'], 'node-04'), 'Retry test job should lock.');
 assertSameValue(true, $store->finishJob($retryJob['task_id'], 'node-04', 'failed', 'simulated'), 'Retry test job should finish as failed.');
@@ -562,6 +538,44 @@ assertSameValue(null, $crashLoopData['workers']['node-crash-b']['current_job'], 
 @unlink($crashLoopStorePath);
 @unlink($crashLoopStorePath . '.lock');
 
+
+
+$layerStorePath = sys_get_temp_dir() . '/reflection_shutdown_layer_store_' . bin2hex(random_bytes(6)) . '.json';
+$layerStore = new FarmStore($layerStorePath);
+$layerStore->updateSettings([
+    'ess_soc_url' => '',
+    'idle_shutdown_after_no_job_checks' => 1,
+    'shutdown_debug_mode' => true,
+]);
+$layerStore->updateMachines([
+    ['pc_id' => 'core-switch-node', 'mac' => '', 'soc_margin_percent' => 5, 'wake_enabled' => false, 'shutdown_layer' => 0],
+    ['pc_id' => 'endpoint-node', 'mac' => '', 'soc_margin_percent' => 5, 'wake_enabled' => false, 'shutdown_layer' => 2],
+]);
+$layerStore->recordWorkerCheckIn('core-switch-node', 'test-version');
+$layerStore->recordWorkerCheckIn('endpoint-node', 'test-version');
+$coreResponse = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'test-version',
+    'pc_id' => 'core-switch-node',
+], $layerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
+assertSameValue(false, $coreResponse['shutdown_after_task'], 'Lower shutdown layers must stay online while higher layers are still online.');
+assertSameValue('shutdown_layer_waiting', $coreResponse['reason'], 'Layer-blocked shutdowns should explain why the worker stays online.');
+$endpointResponse = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'test-version',
+    'pc_id' => 'endpoint-node',
+], $layerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
+assertSameValue(true, $endpointResponse['shutdown_after_task'], 'Highest online shutdown layer should be allowed to power off first.');
+$layerData = $layerStore->read();
+assertSameValue(true, !empty($layerData['workers']['endpoint-node']['expected_offline']), 'Shutdown approval should mark a debug worker expected-offline immediately.');
+$coreResponseAfterEndpoint = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'test-version',
+    'pc_id' => 'core-switch-node',
+], $layerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
+assertSameValue(true, $coreResponseAfterEndpoint['shutdown_after_task'], 'Lower layers should power off after higher online layers are offline.');
+@unlink($layerStorePath);
+@unlink($layerStorePath . '.lock');
 
 unlink($storePath);
 @unlink($eventLogPath);
