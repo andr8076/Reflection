@@ -312,7 +312,7 @@ $dataDirectory = dirname((string) $config['storage_path']);
     </main>
 
     <footer>
-        <p>Protect this dashboard with your web server, VPN, or reverse-proxy auth. Worker requests can require <code>REFLECTION_WORKER_ACCESS_TOKEN</code>.</p>
+        <p>Protect this dashboard with your web server, VPN, or reverse-proxy auth.</p>
         <p><a href="index.php">Back to dashboard</a></p>
     </footer>
 </body>

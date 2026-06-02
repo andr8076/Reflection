@@ -155,8 +155,6 @@ function reflection_default_farm_settings(): array
     return [
         'farm_id' => 'default',
         'farm_name' => 'Reflection Farm',
-        'worker_access_token' => '',
-        'api_token' => '',
         'transfer_server' => [
             'scheme' => 'ftp',
             'host' => '',
@@ -206,13 +204,6 @@ function reflection_env_string(string $name): ?string
 {
     $value = getenv($name);
     return $value !== false && $value !== '' ? $value : null;
-}
-
-function reflection_worker_access_token_config(array $settings): string
-{
-    return reflection_env_string('REFLECTION_WORKER_ACCESS_TOKEN')
-        ?? reflection_env_string('REFLECTION_API_TOKEN')
-        ?? (string) ($settings['worker_access_token'] ?? ($settings['api_token'] ?? ''));
 }
 
 function reflection_transfer_auth_config(array $settings): array
@@ -298,8 +289,6 @@ function reflection_master_config(?array $farmSettings = null): array
     return [
         'farm_id' => (string) ($settings['farm_id'] ?? 'default'),
         'farm_name' => (string) ($settings['farm_name'] ?? 'Reflection Farm'),
-        'worker_access_token' => reflection_worker_access_token_config($settings),
-        'api_token' => reflection_worker_access_token_config($settings),
         'transfer_auth' => reflection_transfer_auth_config($settings),
         'transfer_server' => reflection_transfer_server_config($settings),
         'storage_path' => $storeConfig['storage_path'],

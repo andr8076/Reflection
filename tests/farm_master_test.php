@@ -41,22 +41,22 @@ assertSameValue(
     array_key_exists('default_login', $defaultConfig),
     'Master website login should not be configured.'
 );
-assertSameValue('', $defaultConfig['api_token'], 'Default API token should be blank until configured.');
+assertSameValue(false, array_key_exists('api_token', $defaultConfig), 'Worker API token config should not be present.');
+assertSameValue(false, array_key_exists('worker_access_token', $defaultConfig), 'Worker access-token config should not be present.');
 assertSameValue('', $defaultConfig['transfer_auth']['username'], 'Default FTP username should be blank until configured.');
 assertSameValue('', $defaultConfig['transfer_auth']['password'], 'Default FTP password should be blank until configured.');
 
 $localSettingsPath = __DIR__ . '/../farm_settings.local.php';
 file_put_contents($localSettingsPath, "<?php
-return ['api_token' => 'local-token'];
+return ['farm_id' => 'local-farm'];
 ");
-assertSameValue('local-token', reflection_load_farm_settings()['api_token'], 'Local untracked settings should override farm_settings.php.');
+assertSameValue('local-farm', reflection_load_farm_settings()['farm_id'], 'Local untracked settings should override farm_settings.php.');
 unlink($localSettingsPath);
 
 $customStorePath = sys_get_temp_dir() . '/reflection_custom_defaults_' . bin2hex(random_bytes(6)) . '.json';
 $customConfig = reflection_master_config([
     'farm_id' => 'paint-farm',
     'farm_name' => 'Paint Farm',
-    'api_token' => 'paint-token',
     'transfer_auth' => [
         'scheme' => 'ftps',
         'host' => 'ftp.example.test',
@@ -72,7 +72,6 @@ $customConfig = reflection_master_config([
 ]);
 assertSameValue('paint-farm', $customConfig['farm_id'], 'Custom farm id should be loaded from farm settings.');
 assertSameValue('Paint Farm', $customConfig['farm_name'], 'Custom farm name should be loaded from farm settings.');
-assertSameValue('paint-token', $customConfig['api_token'], 'Custom API token should be loaded from farm settings.');
 assertSameValue('paint-user', $customConfig['transfer_auth']['username'], 'Custom FTP username should be loaded from farm settings.');
 assertSameValue('paint-pass', $customConfig['transfer_auth']['password'], 'Custom FTP password should be loaded from farm settings.');
 assertSameValue('ftp.example.test', $customConfig['transfer_auth']['host'], 'Custom FTP host should be loaded from farm settings.');
@@ -171,26 +170,6 @@ assertSameValue('255.255.255.255', $relayPayload['broadcast'] ?? null, 'Wake rel
 assertSameValue(9, $relayPayload['port'] ?? null, 'Wake relay jobs should include the configured UDP port.');
 @unlink($wakeStorePath);
 @unlink($wakeStorePath . '.lock');
-
-$tokenStorePath = sys_get_temp_dir() . '/reflection_token_store_' . bin2hex(random_bytes(6)) . '.json';
-$tokenStore = new FarmStore($tokenStorePath);
-$tokenStore->updateSettings(['ess_soc_url' => '']);
-$tokenConfig = ['api_token' => 'expected-token', 'required_version' => 'token-version'];
-$response = reflection_handle_farm_api([
-    'action' => 'request_task',
-    'version' => 'token-version',
-    'pc_id' => 'node-token',
-], $tokenStore, $tokenConfig);
-assertSameValue('unauthorized', $response['status'], 'Configured API tokens should reject missing tokens.');
-$response = reflection_handle_farm_api([
-    'action' => 'request_task',
-    'version' => 'token-version',
-    'pc_id' => 'node-token',
-    'api_token' => 'expected-token',
-], $tokenStore, $tokenConfig);
-assertSameValue('no_jobs', $response['status'], 'Configured API tokens should accept matching tokens.');
-unlink($tokenStorePath);
-@unlink($tokenStorePath . '.lock');
 
 function assertSameValue($expected, $actual, string $message): void
 {
@@ -426,6 +405,42 @@ assertSameValue('queued', $interruptData['jobs'][1]['status'], 'Interrupted jobs
 assertSameValue('worker_requested_new_task_without_completion', $interruptData['jobs'][0]['loss_reason'], 'Interrupted jobs should record why the master marked them lost.');
 @unlink($interruptStorePath);
 @unlink($interruptStorePath . '.lock');
+
+$orderStorePath = sys_get_temp_dir() . '/reflection_order_store_' . bin2hex(random_bytes(6)) . '.json';
+$orderStore = new FarmStore($orderStorePath);
+$orderStore->updateSettings(['ess_soc_url' => '']);
+$orderJobA = $orderStore->createJob('dummy_task', 'incoming/order-a.dat', null, false);
+$orderJobB = $orderStore->createJob('dummy_task', 'incoming/order-b.dat', null, false);
+$orderJobC = $orderStore->createJob('dummy_task', 'incoming/order-c.dat', null, false);
+assertSameValue($orderJobA['task_id'], $orderStore->nextQueuedJob()['task_id'], 'The oldest queued job should be offered first by default.');
+assertSameValue(true, $orderStore->moveQueuedJob($orderJobC['task_id'], 'earlier'), 'Queued jobs should be movable earlier.');
+assertSameValue(true, $orderStore->moveQueuedJob($orderJobC['task_id'], 'earlier'), 'Queued jobs should be movable to the front.');
+assertSameValue($orderJobC['task_id'], $orderStore->nextQueuedJob()['task_id'], 'Moving a queued job earlier should change worker pick-up order.');
+assertSameValue(true, $orderStore->moveQueuedJob($orderJobC['task_id'], 'later'), 'Queued jobs should be movable later.');
+assertSameValue($orderJobA['task_id'], $orderStore->nextQueuedJob()['task_id'], 'Moving a queued job later should restore the next queued item.');
+assertSameValue(true, $orderStore->markJobRunning($orderJobA['task_id'], 'node-order'), 'Order test job should lock before delete checks.');
+assertSameValue(false, $orderStore->deleteJob($orderJobA['task_id']), 'Running jobs should not be deleted from the dashboard.');
+assertSameValue(false, $orderStore->moveQueuedJob($orderJobA['task_id'], 'later'), 'Running jobs should not be reordered.');
+assertSameValue(true, $orderStore->deleteJob($orderJobB['task_id']), 'Queued jobs should be deletable from the dashboard.');
+$orderData = $orderStore->read();
+assertSameValue(2, count($orderData['jobs']), 'Deleted jobs should be removed from the live store.');
+@unlink($orderStorePath);
+@unlink($orderStorePath . '.lock');
+
+$workerStorePath = sys_get_temp_dir() . '/reflection_worker_cleanup_store_' . bin2hex(random_bytes(6)) . '.json';
+$workerStore = new FarmStore($workerStorePath);
+$workerStore->updateSettings(['ess_soc_url' => '']);
+$workerStore->recordWorkerCheckIn('node-fresh-cleanup', 'test-version');
+assertSameValue(false, $workerStore->removeWorker('node-fresh-cleanup', true, 900), 'Fresh worker check-ins should not be removed by stale cleanup.');
+$workerStore->recordWorkerCheckIn('node-stale-cleanup', 'test-version');
+$workerData = $workerStore->read();
+$workerData['workers']['node-stale-cleanup']['last_check_in'] = gmdate(DATE_ATOM, time() - 3600);
+file_put_contents($workerStorePath, json_encode($workerData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+assertSameValue(true, $workerStore->removeWorker('node-stale-cleanup', true, 900), 'Stale worker check-ins should be removable from the dashboard board.');
+$workerData = $workerStore->read();
+assertSameValue(false, array_key_exists('node-stale-cleanup', $workerData['workers']), 'Removed stale workers should disappear from the worker map.');
+@unlink($workerStorePath);
+@unlink($workerStorePath . '.lock');
 
 $crashLoopStorePath = sys_get_temp_dir() . '/reflection_crash_loop_store_' . bin2hex(random_bytes(6)) . '.json';
 $crashLoopStore = new FarmStore($crashLoopStorePath);

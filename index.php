@@ -123,9 +123,10 @@ function reflection_uploaded_import_text(string $field): string
     return (string) file_get_contents($tmpName);
 }
 
-function reflection_worker_cards(array $workers, array $machines): array
+function reflection_worker_cards(array $workers, array $machines, int $staleAfterSeconds = 900): array
 {
     $cards = [];
+    $staleAfterSeconds = max(1, $staleAfterSeconds);
     foreach ($machines as $machine) {
         $pcId = (string) ($machine['pc_id'] ?? '');
         if ($pcId === '') {
@@ -150,7 +151,7 @@ function reflection_worker_cards(array $workers, array $machines): array
         $lastCheckIn = (string) ($worker['last_check_in'] ?? '');
         $lastSeen = $lastCheckIn !== '' ? strtotime($lastCheckIn) : false;
         $state = !empty($worker['current_job']) ? 'running' : 'idle';
-        if ($lastSeen !== false && (time() - $lastSeen) > 15 * 60) {
+        if ($lastSeen === false || (time() - $lastSeen) > $staleAfterSeconds) {
             $state = 'stale';
         }
 
@@ -280,7 +281,52 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $transferServerId = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($_POST['transfer_server_id'] ?? '')) ?: '';
     $transferExtra = (!$isControlTask && $transferServerId !== '') ? ['transfer_server_id' => $transferServerId] : [];
 
-    if ($formAction === 'settings') {
+    if ($formAction === 'job_action') {
+        $jobAction = (string) ($_POST['job_action'] ?? '');
+        $taskId = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($_POST['task_id'] ?? '')) ?: '';
+        try {
+            if ($taskId === '') {
+                throw new RuntimeException('Missing task id.');
+            }
+
+            if ($jobAction === 'delete') {
+                $message = $store->deleteJob($taskId)
+                    ? 'Job deleted from the live store.'
+                    : 'Job was not deleted. Running jobs cannot be deleted.';
+            } elseif ($jobAction === 'move_earlier') {
+                $message = $store->moveQueuedJob($taskId, 'earlier')
+                    ? 'Job moved sooner in the queue.'
+                    : 'Job was not moved. Only queued jobs can be reordered.';
+            } elseif ($jobAction === 'move_later') {
+                $message = $store->moveQueuedJob($taskId, 'later')
+                    ? 'Job moved later in the queue.'
+                    : 'Job was not moved. Only queued jobs can be reordered.';
+            } else {
+                throw new RuntimeException('Unknown job action.');
+            }
+        } catch (Throwable $exception) {
+            $error = $exception->getMessage();
+        }
+    } elseif ($formAction === 'worker_action') {
+        $workerAction = (string) ($_POST['worker_action'] ?? '');
+        $pcId = trim((string) ($_POST['pc_id'] ?? ''));
+        try {
+            if ($pcId === '' || preg_match('/[\x00-\x1F\x7F]/', $pcId) === 1) {
+                throw new RuntimeException('Missing or invalid computer id.');
+            }
+
+            if ($workerAction === 'remove_stale') {
+                $staleAfterSeconds = max(1, (int) ($config['stale_after_seconds'] ?? 900));
+                $message = $store->removeWorker($pcId, true, $staleAfterSeconds)
+                    ? 'Stale worker check-in removed.'
+                    : 'Worker check-in was not removed. It may already be active again.';
+            } else {
+                throw new RuntimeException('Unknown worker action.');
+            }
+        } catch (Throwable $exception) {
+            $error = $exception->getMessage();
+        }
+    } elseif ($formAction === 'settings') {
         $settings = $store->updateSettings([
             'enforce_version' => isset($_POST['enforce_version']),
             'failure_strategy' => (string) ($_POST['failure_strategy'] ?? 'mark_failed'),
@@ -429,11 +475,10 @@ $workerLimitDisplay = $essSocIgnored
 $workerLimitHelp = $essSocIgnored
     ? 'ESS unavailable'
     : ($allowedActiveWorkers === PHP_INT_MAX ? 'no SOC cap' : 'allowed active workers');
-$workerCards = reflection_worker_cards($workers, $machines);
+$workerStaleAfterSeconds = max(1, (int) ($config['stale_after_seconds'] ?? 900));
+$workerCards = reflection_worker_cards($workers, $machines, $workerStaleAfterSeconds);
 $workerStateCounts = reflection_count_worker_states($workerCards);
 $archiveInfo = $store->archiveInfo();
-$scriptDirectory = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '')), '/');
-$apiPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/farm_api.php';
 $validJobFilters = ['all', 'active', 'queued', 'running', 'success', 'failed', 'stale', 'blocked', 'ignored', 'finished'];
 $jobStatus = (string) ($_GET['job_status'] ?? 'all');
 if (!in_array($jobStatus, $validJobFilters, true)) {
@@ -472,8 +517,6 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
             <p class="lede">Queue cluster work, watch active machines, and keep the master store small enough to stay quick.</p>
             <div class="hero-pills">
                 <span>Farm <code><?= reflection_h($config['farm_id'] ?? 'default') ?></code></span>
-                <span>Worker endpoint <code><?= reflection_h($apiPath) ?></code></span>
-                <span><?= $config['worker_access_token'] !== '' ? 'Worker access token enabled' : 'Worker access token not set' ?></span>
             </div>
             <nav class="top-nav">
                 <a class="active" href="index.php">Dashboard</a>
@@ -755,6 +798,14 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                         <div><dt>Wake</dt><dd><?= !empty($card['wake_enabled']) ? 'enabled' : 'disabled' ?><?= !empty($card['mac']) ? ' · ' . reflection_h($card['mac']) : '' ?></dd></div>
                         <div><dt>SOC margin</dt><dd><?= (int) ($card['soc_margin_percent'] ?? 0) ?>%</dd></div>
                     </dl>
+                    <?php if (($card['state'] ?? '') === 'stale'): ?>
+                        <form method="post" class="button-row computer-actions" onsubmit="return confirm('Remove this stale worker check-in from the board?');">
+                            <input type="hidden" name="form_action" value="worker_action">
+                            <input type="hidden" name="worker_action" value="remove_stale">
+                            <input type="hidden" name="pc_id" value="<?= reflection_h($card['pc_id'] ?? '') ?>">
+                            <button type="submit" class="danger-button small-button">Remove stale check-in</button>
+                        </form>
+                    <?php endif; ?>
                 </article>
             <?php endforeach; ?>
         </div>
@@ -765,12 +816,12 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
             <div>
                 <p class="eyebrow">Queue store</p>
                 <h2>Jobs</h2>
-                <p class="api-note">Showing <?= count($jobs) ?> of <?= (int) $jobPageData['total'] ?> job(s). Older completed jobs are moved out of the live store and appended to <code>data/farm_job_archive.jsonl</code>.</p>
+                <p class="api-note">Showing <?= count($jobs) ?> of <?= (int) $jobPageData['total'] ?> job(s). Choose a filter and press Apply filters; the table will not reload while you are just switching filters. Queued jobs can be moved earlier or later in the worker pick-up order.</p>
             </div>
             <form method="get" class="toolbar">
                 <label>
                     Status
-                    <select name="job_status">
+                    <select name="job_status" id="job-status-select">
                         <?php foreach ($validJobFilters as $filter): ?>
                             <option value="<?= reflection_h($filter) ?>" <?= $jobStatus === $filter ? 'selected' : '' ?>><?= reflection_h($filter) ?></option>
                         <?php endforeach; ?>
@@ -784,10 +835,10 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                         <?php endforeach; ?>
                     </select>
                 </label>
-                <button type="submit" class="secondary-button">Apply</button>
+                <button type="submit" class="secondary-button">Apply filters</button>
             </form>
         </div>
-        <nav class="status-tabs" aria-label="Job status filters">
+        <nav class="status-tabs" aria-label="Job status filters" data-job-status-tabs>
             <?php foreach (['all', 'active', 'queued', 'running', 'success', 'failed', 'stale', 'blocked', 'ignored', 'finished'] as $filter): ?>
                 <?php
                     if ($filter === 'all') {
@@ -800,7 +851,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                         $tabCount = (int) ($statusCounts[$filter] ?? 0);
                     }
                 ?>
-                <a class="<?= $jobStatus === $filter ? 'active' : '' ?>" href="<?= reflection_h(reflection_url_with(['job_status' => $filter, 'job_page' => 1])) ?>"><?= reflection_h($filter) ?> <span><?= $tabCount ?></span></a>
+                <button type="button" class="<?= $jobStatus === $filter ? 'active' : '' ?>" data-job-status-filter="<?= reflection_h($filter) ?>"><?= reflection_h($filter) ?> <span><?= $tabCount ?></span></button>
             <?php endforeach; ?>
         </nav>
         <div class="table-wrap">
@@ -814,17 +865,19 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                         <th>Source → Delivery</th>
                         <th>Timing</th>
                         <th>Error</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                 <?php if ($jobs === []): ?>
-                    <tr><td colspan="7" class="empty">No jobs match this filter.</td></tr>
+                    <tr><td colspan="8" class="empty">No jobs match this filter.</td></tr>
                 <?php endif; ?>
                 <?php foreach ($jobs as $job): ?>
+                    <?php $jobStatusValue = (string) ($job['status'] ?? 'unknown'); ?>
                     <tr>
                         <td><code><?= reflection_h($job['task_id'] ?? '—') ?></code></td>
                         <td><?= reflection_h($job['module'] ?? '—') ?></td>
-                        <td><span class="badge <?= reflection_h(reflection_status_class($job['status'] ?? 'unknown')) ?>"><?= reflection_h($job['status'] ?? 'unknown') ?></span></td>
+                        <td><span class="badge <?= reflection_h(reflection_status_class($jobStatusValue)) ?>"><?= reflection_h($jobStatusValue) ?></span></td>
                         <td><?= reflection_h($job['worker'] ?? '—') ?></td>
                         <td class="path-cell"><code title="<?= reflection_h($job['source'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['source'] ?? '—')) ?></code><br><code title="<?= reflection_h($job['delivery'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['delivery'] ?? '—')) ?></code></td>
                         <td>
@@ -833,6 +886,34 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                             <span title="<?= reflection_h($job['finished_at'] ?? '') ?>">Finished <?= reflection_h(reflection_relative_time($job['finished_at'] ?? null)) ?></span>
                         </td>
                         <td><?= reflection_h(reflection_short_value($job['error'] ?? '', 140)) ?></td>
+                        <td>
+                            <div class="button-row table-actions">
+                                <?php if ($jobStatusValue === 'queued'): ?>
+                                    <form method="post">
+                                        <input type="hidden" name="form_action" value="job_action">
+                                        <input type="hidden" name="job_action" value="move_earlier">
+                                        <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
+                                        <button class="ghost-button small-button" type="submit">Sooner</button>
+                                    </form>
+                                    <form method="post">
+                                        <input type="hidden" name="form_action" value="job_action">
+                                        <input type="hidden" name="job_action" value="move_later">
+                                        <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
+                                        <button class="ghost-button small-button" type="submit">Later</button>
+                                    </form>
+                                <?php endif; ?>
+                                <?php if ($jobStatusValue !== 'running'): ?>
+                                    <form method="post" onsubmit="return confirm('Delete this job from the live store?');">
+                                        <input type="hidden" name="form_action" value="job_action">
+                                        <input type="hidden" name="job_action" value="delete">
+                                        <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
+                                        <button class="danger-button small-button" type="submit">Delete</button>
+                                    </form>
+                                <?php else: ?>
+                                    <span class="api-note">Running jobs cannot be changed.</span>
+                                <?php endif; ?>
+                            </div>
+                        </td>
                     </tr>
                 <?php endforeach; ?>
                 </tbody>
@@ -922,20 +1003,9 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
         </section>
     </section>
 
-    <section class="panel quick-settings-link">
-        <div class="panel-head">
-            <div>
-                <p class="eyebrow">Configuration</p>
-                <h2>Settings moved</h2>
-            </div>
-            <a class="ghost-button" href="settings.php">Open Settings</a>
-        </div>
-        <p class="api-note">Farm policy, ESS, Wake-on-LAN, retention, crash-loop limits, and machine definitions now live on the Settings page.</p>
-    </section>
 
     <footer>
-        <p>Protect this dashboard with your web server, VPN, or reverse-proxy auth. Worker requests can also require <code>REFLECTION_WORKER_ACCESS_TOKEN</code>.</p>
-        <p><a href="json_tool.php">Open JSON Tool</a></p>
+        <p>Protect this dashboard with your web server, VPN, or reverse-proxy auth.</p>
     </footer>
 
     <script>
@@ -959,6 +1029,28 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
             }
             mode.addEventListener('change', syncMode);
             syncMode();
+        }());
+
+        (function () {
+            var select = document.getElementById('job-status-select');
+            var tabs = document.querySelector('[data-job-status-tabs]');
+            if (!select || !tabs) {
+                return;
+            }
+            function setActive(value) {
+                tabs.querySelectorAll('[data-job-status-filter]').forEach(function (button) {
+                    button.classList.toggle('active', button.getAttribute('data-job-status-filter') === value);
+                });
+            }
+            tabs.querySelectorAll('[data-job-status-filter]').forEach(function (button) {
+                button.addEventListener('click', function () {
+                    select.value = button.getAttribute('data-job-status-filter') || 'all';
+                    setActive(select.value);
+                });
+            });
+            select.addEventListener('change', function () {
+                setActive(select.value);
+            });
         }());
         (function () {
             var more = document.getElementById('active-work-more');

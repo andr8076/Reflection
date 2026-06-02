@@ -6,26 +6,6 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
 require_once __DIR__ . '/AutomationStore.php';
 
-function reflection_tick_token_from_request(): string
-{
-    if (PHP_SAPI === 'cli') {
-        global $argv;
-        foreach (($argv ?? []) as $argument) {
-            if (strpos((string) $argument, '--token=') === 0) {
-                return substr((string) $argument, 8);
-            }
-        }
-        return '';
-    }
-
-    $headerToken = (string) ($_SERVER['HTTP_X_REFLECTION_API_TOKEN'] ?? '');
-    if ($headerToken !== '') {
-        return $headerToken;
-    }
-
-    return (string) ($_GET['token'] ?? '');
-}
-
 function reflection_tick_output(array $payload, int $statusCode = 200): void
 {
     if (PHP_SAPI !== 'cli') {
@@ -36,12 +16,6 @@ function reflection_tick_output(array $payload, int $statusCode = 200): void
 }
 
 $config = reflection_master_config();
-$requiredToken = (string) ($config['api_token'] ?? '');
-if ($requiredToken !== '' && !hash_equals($requiredToken, reflection_tick_token_from_request())) {
-    reflection_tick_output(['status' => 'unauthorized', 'error' => 'Invalid or missing API token.'], 401);
-    return;
-}
-
 try {
     $farmStore = reflection_farm_store($config);
     $automationStore = new AutomationStore(dirname((string) $config['storage_path']));

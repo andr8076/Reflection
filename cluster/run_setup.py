@@ -15,7 +15,6 @@ from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
 from Reflection import (
-    DEFAULT_API_TOKEN,
     DEFAULT_CLEANUP_ROOTS,
     DEFAULT_PC_ID,
     DEFAULT_POLL_INTERVAL,
@@ -236,8 +235,6 @@ def collect_agent_config(
             "server_url": DEFAULT_SERVER_URL,
             "poll_interval": DEFAULT_POLL_INTERVAL,
             "pc_id": DEFAULT_PC_ID,
-            "worker_access_token": DEFAULT_API_TOKEN,
-            "api_token": DEFAULT_API_TOKEN,
             "cleanup_roots": list(DEFAULT_CLEANUP_ROOTS),
             "task_timeout_seconds": DEFAULT_TASK_TIMEOUT_SECONDS,
             "task_timeouts": {},
@@ -278,11 +275,6 @@ def collect_agent_config(
         )
     )
 
-    api_token = _prompt_secret(
-        "Worker access token (blank disables token use)",
-        str(current_config.get("worker_access_token") or current_config.get("api_token") or DEFAULT_API_TOKEN),
-        interactive=should_prompt,
-    )
     current_cleanup_roots = _parse_cleanup_roots(
         current_config.get("cleanup_roots") or DEFAULT_CLEANUP_ROOTS
     )
@@ -321,8 +313,6 @@ def collect_agent_config(
         "server_url": server_url,
         "poll_interval": poll_interval,
         "pc_id": pc_id,
-        "worker_access_token": api_token,
-        "api_token": api_token,
         "cleanup_roots": cleanup_roots,
         "task_isolation": task_isolation,
         "task_timeout_seconds": task_timeout_seconds,

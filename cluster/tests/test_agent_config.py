@@ -34,8 +34,6 @@ class AgentConfigTest(unittest.TestCase):
                     "server_url": "https://farm.example.test/farm_api.php",
                     "poll_interval": 15,
                     "pc_id": "worker-01",
-                    "worker_access_token": "",
-                    "api_token": "",
                     "cleanup_roots": [],
                     "task_timeout_seconds": Reflection.DEFAULT_TASK_TIMEOUT_SECONDS,
                     "task_timeouts": {},
@@ -56,7 +54,6 @@ class AgentConfigTest(unittest.TestCase):
                     "server_url": "http://localhost/farm_api.php",
                     "poll_interval": 5,
                     "pc_id": "local-worker",
-                    "api_token": "",
                     "cleanup_roots": [],
                 },
                 config_path,
@@ -68,8 +65,6 @@ class AgentConfigTest(unittest.TestCase):
                     "server_url": "http://localhost/farm_api.php",
                     "poll_interval": 5,
                     "pc_id": "local-worker",
-                    "worker_access_token": "",
-                    "api_token": "",
                     "cleanup_roots": [],
                     "task_timeout_seconds": Reflection.DEFAULT_TASK_TIMEOUT_SECONDS,
                     "task_timeouts": {},
@@ -82,7 +77,7 @@ class AgentConfigTest(unittest.TestCase):
                 },
             )
 
-    def test_load_agent_config_accepts_api_token_and_cleanup_roots(self):
+    def test_load_agent_config_accepts_cleanup_roots(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             cleanup_root = Path(temp_dir) / "worker-input"
             config_path = Path(temp_dir) / "agent.json"
@@ -92,7 +87,6 @@ class AgentConfigTest(unittest.TestCase):
                         "server_url": "https://farm.example.test/farm_api.php",
                         "poll_interval": 15,
                         "pc_id": "worker-01",
-                        "api_token": "shared-secret",
                         "cleanup_roots": [str(cleanup_root)],
                     }
                 ),
@@ -101,7 +95,6 @@ class AgentConfigTest(unittest.TestCase):
 
             loaded = Reflection.load_agent_config(config_path)
 
-            self.assertEqual(loaded["api_token"], "shared-secret")
             self.assertEqual(loaded["cleanup_roots"], [str(cleanup_root.resolve())])
 
     def test_load_agent_config_accepts_local_transfer_auth(self):

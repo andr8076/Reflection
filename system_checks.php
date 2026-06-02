@@ -43,7 +43,6 @@ $archive = $store->archiveInfo();
 $checks = [];
 $checks[] = reflection_check_row('Data directory writable', is_dir($dataDirectory) && is_writable($dataDirectory), $dataDirectory, 'The web server user must be able to write here.');
 $checks[] = reflection_check_row('Farm store readable', is_file((string) $config['storage_path']) || is_writable($dataDirectory), (string) $config['storage_path']);
-$checks[] = reflection_check_row('Worker access token', (string) ($config['worker_access_token'] ?? '') !== '', (string) ($config['worker_access_token'] ?? '') !== '' ? 'enabled' : 'not set', 'Set REFLECTION_WORKER_ACCESS_TOKEN for a safer LAN setup.');
 $checks[] = reflection_check_row('Storage servers configured', count($servers) > 0, count($servers) . ' enabled server(s)', 'Add FTP/SFTP endpoints under Storage servers.');
 $checks[] = reflection_check_row('Online/recent workers', count($workers) > 0, count($workers) . ' worker record(s)', 'Start a worker if this is empty.');
 $checks[] = reflection_check_row('Automation rules', count($automationRules) > 0, count($automationRules) . ' rule(s)', 'Rules are optional but needed for automatic file discovery.');

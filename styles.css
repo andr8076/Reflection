@@ -531,7 +531,8 @@ dd {
     margin-bottom: 0.9rem;
 }
 
-.status-tabs a {
+.status-tabs a,
+.status-tabs button {
     background: var(--panel-soft);
     border: 1px solid var(--line);
     border-radius: 999px;
@@ -540,10 +541,16 @@ dd {
     padding: 0.45rem 0.75rem;
 }
 
-.status-tabs a.active {
+.status-tabs a.active,
+.status-tabs button.active {
     background: var(--accent);
     border-color: var(--accent);
     color: #fff;
+}
+
+.status-tabs button {
+    cursor: pointer;
+    font: inherit;
 }
 
 .status-tabs span {

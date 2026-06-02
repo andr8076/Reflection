@@ -28,7 +28,6 @@ DEFAULT_TASK_TIMEOUT_SECONDS = 12 * 60 * 60
 DEFAULT_TASK_LOG_TAIL_BYTES = 12000
 DEFAULT_TASK_ISOLATION = True
 DEFAULT_PC_ID = socket.gethostname()
-DEFAULT_API_TOKEN = os.environ.get("REFLECTION_WORKER_ACCESS_TOKEN", os.environ.get("REFLECTION_API_TOKEN", ""))
 DEFAULT_MIN_FREE_SPACE_GB = 5
 DEFAULT_MIN_FREE_SPACE_MULTIPLIER = 2.0
 DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS = 24
@@ -60,8 +59,6 @@ def load_agent_config(config_path=None):
         "server_url": DEFAULT_SERVER_URL,
         "poll_interval": DEFAULT_POLL_INTERVAL,
         "pc_id": DEFAULT_PC_ID,
-        "worker_access_token": DEFAULT_API_TOKEN,
-        "api_token": DEFAULT_API_TOKEN,
         "cleanup_roots": list(DEFAULT_CLEANUP_ROOTS),
         "task_timeout_seconds": DEFAULT_TASK_TIMEOUT_SECONDS,
         "task_timeouts": {},
@@ -146,13 +143,6 @@ def load_agent_config(config_path=None):
         pc_id = str(loaded["pc_id"]).strip()
         if pc_id:
             config["pc_id"] = pc_id
-
-    if "worker_access_token" in loaded:
-        config["worker_access_token"] = str(loaded["worker_access_token"])
-        config["api_token"] = str(loaded["worker_access_token"])
-    elif "api_token" in loaded:
-        config["api_token"] = str(loaded["api_token"])
-        config["worker_access_token"] = str(loaded["api_token"])
 
     cleanup_roots = _normalize_cleanup_roots(loaded.get("cleanup_roots", []))
     env_cleanup_roots = _cleanup_roots_from_env()
@@ -308,7 +298,6 @@ POLL_INTERVAL = AGENT_CONFIG["poll_interval"]  # Seconds to wait before checking
 HEARTBEAT_INTERVAL = int(AGENT_CONFIG.get("heartbeat_interval", DEFAULT_HEARTBEAT_INTERVAL))
 PC_ID = AGENT_CONFIG["pc_id"]  # Unique identifier for this node
 LOCAL_TRANSFER_AUTH = AGENT_CONFIG.get("transfer_auth", {})
-API_TOKEN = str(AGENT_CONFIG.get("worker_access_token", AGENT_CONFIG.get("api_token", "")))
 CLEANUP_ROOTS = tuple(AGENT_CONFIG.get("cleanup_roots", []))
 TASKS_DIR = Path(__file__).with_name("tasks")
 TASK_TIMEOUT_SECONDS = int(AGENT_CONFIG.get("task_timeout_seconds", DEFAULT_TASK_TIMEOUT_SECONDS))
@@ -1572,12 +1561,7 @@ class FarmAgent:
         self.task_registry = discover_tasks()
 
     def post_to_server(self, payload):
-        """Helper to handle API communication safely."""
-        if API_TOKEN:
-            payload = dict(payload)
-            payload["worker_access_token"] = API_TOKEN
-            payload["api_token"] = API_TOKEN
-            self.session.headers.update({"X-Reflection-Worker-Access-Token": API_TOKEN})
+        """Send a worker request to the master endpoint."""
         try:
             response = self.session.post(SERVER_URL, json=payload, timeout=30)
             if response.status_code == 200:

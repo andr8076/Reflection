@@ -822,6 +822,100 @@ final class FarmStore
         return false;
     }
 
+    public function moveQueuedJob(string $taskId, string $direction): bool
+    {
+        $direction = $direction === 'later' ? 'later' : 'earlier';
+        $result = $this->withLock(function (array $data) use ($taskId, $direction): array {
+            $queuedIndexes = [];
+            foreach ($data['jobs'] as $index => $job) {
+                if (($job['status'] ?? '') === 'queued') {
+                    $queuedIndexes[] = $index;
+                }
+            }
+
+            $position = null;
+            foreach ($queuedIndexes as $queuePosition => $jobIndex) {
+                if (($data['jobs'][$jobIndex]['task_id'] ?? '') === $taskId) {
+                    $position = $queuePosition;
+                    break;
+                }
+            }
+
+            if ($position === null) {
+                return ['data' => $data, 'result' => null];
+            }
+
+            $targetPosition = $direction === 'earlier' ? $position - 1 : $position + 1;
+            if (!isset($queuedIndexes[$targetPosition])) {
+                return ['data' => $data, 'result' => null];
+            }
+
+            $currentIndex = $queuedIndexes[$position];
+            $targetIndex = $queuedIndexes[$targetPosition];
+            $movedJob = $data['jobs'][$currentIndex];
+            $data['jobs'][$currentIndex] = $data['jobs'][$targetIndex];
+            $data['jobs'][$targetIndex] = $movedJob;
+
+            return ['data' => $data, 'result' => $movedJob];
+        }, true);
+
+        if (is_array($result)) {
+            $this->recordEvent('job_moved_' . $direction, $result);
+            return true;
+        }
+        return false;
+    }
+
+    public function removeWorker(string $pcId, bool $onlyIfStale = true, int $staleAfterSeconds = 900): bool
+    {
+        $pcId = trim($pcId);
+        if ($pcId === '') {
+            return false;
+        }
+
+        $result = $this->withLock(function (array $data) use ($pcId, $onlyIfStale, $staleAfterSeconds): array {
+            if (!isset($data['workers'][$pcId]) || !is_array($data['workers'][$pcId])) {
+                return ['data' => $data, 'result' => null];
+            }
+
+            $worker = $data['workers'][$pcId];
+            $currentJob = trim((string) ($worker['current_job'] ?? ''));
+            if ($currentJob !== '') {
+                foreach ($data['jobs'] as $job) {
+                    if (
+                        ($job['task_id'] ?? '') === $currentJob
+                        && ($job['worker'] ?? '') === $pcId
+                        && ($job['status'] ?? '') === 'running'
+                    ) {
+                        return ['data' => $data, 'result' => null];
+                    }
+                }
+            }
+
+            if ($onlyIfStale) {
+                $lastCheckIn = strtotime((string) ($worker['last_check_in'] ?? ''));
+                $staleAfterSeconds = max(1, $staleAfterSeconds);
+                if ($lastCheckIn !== false && (time() - $lastCheckIn) <= $staleAfterSeconds) {
+                    return ['data' => $data, 'result' => null];
+                }
+            }
+
+            unset($data['workers'][$pcId]);
+            return ['data' => $data, 'result' => $worker];
+        }, true);
+
+        if (is_array($result)) {
+            $this->recordSystemEvent('worker_removed', '', [
+                'worker' => $pcId,
+                'pc_id' => $pcId,
+                'last_check_in' => $result['last_check_in'] ?? null,
+            ]);
+            return true;
+        }
+
+        return false;
+    }
+
     public function updateSettings(array $settings): array
     {
         return $this->withLock(function (array $data) use ($settings): array {
