@@ -18,6 +18,21 @@ $storageServerIds = array_map(static function (array $server): string {
 $message = null;
 $error = null;
 
+// Get git commit hash
+$gitCommit = null;
+$gitHeadFile = __DIR__ . '/.git/HEAD';
+if (file_exists($gitHeadFile)) {
+    $headContent = trim(file_get_contents($gitHeadFile));
+    if (strpos($headContent, 'ref: ') === 0) {
+        $refPath = __DIR__ . '/.git/' . substr($headContent, 5);
+        if (file_exists($refPath)) {
+            $gitCommit = substr(trim(file_get_contents($refPath)), 0, 7);
+        }
+    } else {
+        $gitCommit = substr($headContent, 0, 7);
+    }
+}
+
 function reflection_storage_server_label(array $server): string
 {
     $root = trim((string) ($server['root'] ?? ''));
@@ -275,6 +290,7 @@ function reflection_auto_wake_notice(FarmStore $store, int $staleAfterSeconds, s
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $formAction = (string) ($_POST['form_action'] ?? 'single');
+    $isAjax = (strtolower((string) ($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '')) === 'xmlhttprequest');
     $module = trim((string) ($_POST['module'] ?? ''));
     $delivery = trim((string) ($_POST[$formAction === 'bulk' ? 'bulk_delivery' : 'single_delivery'] ?? ''));
     $overwriteAllowed = isset($_POST['overwrite_allowed']);
@@ -308,6 +324,16 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             }
         } catch (Throwable $exception) {
             $error = $exception->getMessage();
+        }
+
+        if ($isAjax) {
+            header('Content-Type: application/json');
+            echo json_encode([
+                'success' => $error === null,
+                'message' => $message,
+                'error' => $error,
+            ]);
+            exit;
         }
     } elseif ($formAction === 'worker_action') {
         $workerAction = (string) ($_POST['worker_action'] ?? '');
@@ -503,6 +529,193 @@ $activeJobsShownLimit = count($activeJobsAll);
 $completedInStore = (int) ($statusCounts['success'] ?? 0) + (int) ($statusCounts['failed'] ?? 0) + (int) ($statusCounts['stale'] ?? 0) + (int) ($statusCounts['blocked'] ?? 0) + (int) ($statusCounts['ignored'] ?? 0);
 $activeCount = (int) ($statusCounts['queued'] ?? 0) + (int) ($statusCounts['running'] ?? 0);
 $maintenanceChanged = array_sum($automaticMaintenance) > 0;
+
+// Handle AJAX dashboard refresh
+if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) ($_POST['ajax'] ?? '')) === '1')) {
+    header('Content-Type: application/json');
+    
+    // Render overview metrics section
+    ob_start();
+    ?>
+    <article class="metric primary">
+        <span>Active jobs</span>
+        <strong><?= $activeCount ?></strong>
+        <small><?= (int) ($statusCounts['queued'] ?? 0) ?> queued · <?= (int) ($statusCounts['running'] ?? 0) ?> running</small>
+    </article>
+    <article class="metric <?= $essSocIgnored ? 'warning-metric' : '' ?>">
+        <span>ESS SOC</span>
+        <?php if ($essSocIgnored): ?>
+            <strong>ignored</strong>
+            <small><?= reflection_h(reflection_ess_status_label($settings)) ?> · last good <?= (int) ($settings['ess_soc_percent'] ?? 100) ?>%</small>
+        <?php else: ?>
+            <strong><?= (int) ($settings['ess_soc_percent'] ?? 100) ?>%</strong>
+            <small><?= reflection_h(reflection_ess_status_label($settings)) ?> · minimum <?= (int) ($settings['ess_min_soc_percent'] ?? 20) ?>%</small>
+        <?php endif; ?>
+    </article>
+    <article class="metric <?= $essSocIgnored ? 'warning-metric' : '' ?>">
+        <span>SOC worker limit</span>
+        <strong><?= reflection_h($workerLimitDisplay) ?></strong>
+        <small><?= reflection_h($workerLimitHelp) ?> · <?= (int) $wakeTargetCount ?>/<?= (int) $wakeEnabledMachineCount ?> eligible offline WOL</small>
+    </article>
+    <article class="metric">
+        <span>Completed kept</span>
+        <strong><?= $completedInStore ?></strong>
+        <small><?= (int) $archiveInfo['jobs'] ?> archived · <?= reflection_h(reflection_format_bytes((int) $archiveInfo['size_bytes'])) ?></small>
+    </article>
+    <article class="metric">
+        <span>Workers</span>
+        <strong><?= count($workerCards) ?></strong>
+        <small><?= (int) ($workerStateCounts['running'] ?? 0) ?> running · <?= (int) ($workerStateCounts['idle'] ?? 0) ?> idle</small>
+    </article>
+    <?php
+    $metricsHtml = ob_get_clean();
+    
+    // Render workers section
+    ob_start();
+    ?>
+    <div class="computer-grid">
+        <?php foreach ($workerCards as $card): ?>
+            <article class="computer-card <?= reflection_h($card['state'] ?? 'unknown') ?>">
+                <div class="computer-card-head">
+                    <strong><?= reflection_h($card['display_name'] ?? '—') ?></strong>
+                    <?php if ($card['state'] === 'idle'): ?>
+                        <span class="badge idle">Idle <?= reflection_h(reflection_relative_time($card['last_check_in'] ?? null)) ?></span>
+                    <?php elseif ($card['state'] === 'running'): ?>
+                        <span class="badge running">Running <?= reflection_h(reflection_relative_time($card['last_check_in'] ?? null)) ?></span>
+                    <?php else: ?>
+                        <span class="badge stale">Stale <?= reflection_h(reflection_relative_time($card['last_check_in'] ?? null)) ?></span>
+                    <?php endif; ?>
+                </div>
+                <dl class="detail-list">
+                    <div>
+                        <dt>OS</dt>
+                        <dd><?= reflection_h($card['os'] ?? '—') ?></dd>
+                    </div>
+                    <div>
+                        <dt>Task version</dt>
+                        <dd><?= reflection_h($card['version'] ?? '—') ?></dd>
+                    </div>
+                    <div>
+                        <dt>IPs</dt>
+                        <dd><code><?= reflection_h($card['ips'] ?? '—') ?></code></dd>
+                    </div>
+                    <?php if (!empty($card['network_bcast'])): ?>
+                        <div>
+                            <dt>Broadcast</dt>
+                            <dd><code><?= reflection_h($card['network_bcast']) ?></code></dd>
+                        </div>
+                    <?php endif; ?>
+                </dl>
+            </article>
+        <?php endforeach; ?>
+    </div>
+    <?php
+    $workersHtml = ob_get_clean();
+    
+    // Render jobs table
+    ob_start();
+    ?>
+    <tbody>
+    <?php if ($jobs === []): ?>
+        <tr><td colspan="8" class="empty">No jobs match this filter.</td></tr>
+    <?php endif; ?>
+    <?php foreach ($jobs as $job): ?>
+        <?php $jobStatusValue = (string) ($job['status'] ?? 'unknown'); ?>
+        <tr>
+            <td><code><?= reflection_h($job['task_id'] ?? '—') ?></code></td>
+            <td><?= reflection_h($job['module'] ?? '—') ?></td>
+            <td><span class="badge <?= reflection_h(reflection_status_class($jobStatusValue)) ?>"><?= reflection_h($jobStatusValue) ?></span></td>
+            <td><?= reflection_h($job['worker'] ?? '—') ?></td>
+            <td class="path-cell"><code title="<?= reflection_h($job['source'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['source'] ?? '—')) ?></code><br><code title="<?= reflection_h($job['delivery'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['delivery'] ?? '—')) ?></code></td>
+            <td>
+                <span title="<?= reflection_h($job['created_at'] ?? '') ?>">Created <?= reflection_h(reflection_relative_time($job['created_at'] ?? null)) ?></span><br>
+                <span title="<?= reflection_h($job['started_at'] ?? '') ?>">Started <?= reflection_h(reflection_relative_time($job['started_at'] ?? null)) ?></span><br>
+                <span title="<?= reflection_h($job['finished_at'] ?? '') ?>">Finished <?= reflection_h(reflection_relative_time($job['finished_at'] ?? null)) ?></span>
+            </td>
+            <td><?= reflection_h(reflection_short_value($job['error'] ?? '', 140)) ?></td>
+            <td>
+                <div class="button-row table-actions">
+                    <?php if ($jobStatusValue === 'queued'): ?>
+                        <form method="post" style="display: inline;">
+                            <input type="hidden" name="form_action" value="job_action">
+                            <input type="hidden" name="job_action" value="move_earlier">
+                            <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
+                            <button class="ghost-button small-button" type="submit">Sooner</button>
+                        </form>
+                        <form method="post" style="display: inline;">
+                            <input type="hidden" name="form_action" value="job_action">
+                            <input type="hidden" name="job_action" value="move_later">
+                            <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
+                            <button class="ghost-button small-button" type="submit">Later</button>
+                        </form>
+                    <?php endif; ?>
+                    <?php if ($jobStatusValue !== 'running'): ?>
+                        <form method="post" style="display: inline;" onsubmit="return confirm('Delete this job from the live store?');">
+                            <input type="hidden" name="form_action" value="job_action">
+                            <input type="hidden" name="job_action" value="delete">
+                            <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
+                            <button class="danger-button small-button" type="submit">Delete</button>
+                        </form>
+                    <?php else: ?>
+                        <span class="api-note">Running jobs cannot be changed.</span>
+                    <?php endif; ?>
+                </div>
+            </td>
+        </tr>
+    <?php endforeach; ?>
+    </tbody>
+    <?php
+    $jobsHtml = ob_get_clean();
+    
+    // Render events
+    ob_start();
+    ?>
+    <?php if ($events === []): ?>
+        <tr><td colspan="5" class="empty">No log entries yet.</td></tr>
+    <?php endif; ?>
+    <?php foreach ($events as $event): ?>
+        <tr>
+            <td title="<?= reflection_h($event['timestamp'] ?? '') ?>"><?= reflection_h(reflection_relative_time($event['timestamp'] ?? null)) ?></td>
+            <td><?= reflection_h($event['event'] ?? '—') ?></td>
+            <td><code><?= reflection_h($event['task_id'] ?? '—') ?></code></td>
+            <td><?= reflection_h($event['worker'] ?? '—') ?></td>
+            <td><?= reflection_h(reflection_short_value($event['error'] ?? '', 90)) ?></td>
+        </tr>
+    <?php endforeach; ?>
+    <?php
+    $eventsHtml = ob_get_clean();
+    
+    // Render file history
+    ob_start();
+    ?>
+    <?php if ($fileHistory === []): ?>
+        <tr><td colspan="3" class="empty">No file or URI history yet.</td></tr>
+    <?php endif; ?>
+    <?php foreach ($fileHistory as $path => $touches): ?>
+        <?php $recentTouches = array_slice(array_reverse($touches), 0, 3); ?>
+        <tr>
+            <td class="path-cell"><code title="<?= reflection_h($path) ?>"><?= reflection_h(reflection_short_value($path, 80)) ?></code></td>
+            <td title="<?= reflection_h($recentTouches[0]['timestamp'] ?? '') ?>"><?= reflection_h(reflection_relative_time($recentTouches[0]['timestamp'] ?? null)) ?></td>
+            <td>
+                <?php foreach ($recentTouches as $touch): ?>
+                    <div><strong><?= reflection_h($touch['action'] ?? '—') ?></strong> · <code><?= reflection_h($touch['task_id'] ?? '—') ?></code></div>
+                <?php endforeach; ?>
+            </td>
+        </tr>
+    <?php endforeach; ?>
+    <?php
+    $filesHtml = ob_get_clean();
+    
+    echo json_encode([
+        'metrics' => $metricsHtml,
+        'workers' => $workersHtml,
+        'jobs' => $jobsHtml,
+        'events' => $eventsHtml,
+        'files' => $filesHtml,
+        'timestamp' => time(),
+    ]);
+    exit;
+}
 ?>
 <!doctype html>
 <html lang="en">
@@ -594,7 +807,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
         <div class="alert muted">Automatic maintenance archived <?= (int) $automaticMaintenance['archived_jobs'] ?> old job(s), trimmed <?= (int) $automaticMaintenance['trimmed_events'] ?> event(s), compacted <?= (int) $automaticMaintenance['trimmed_file_history'] ?> file-history item(s), and trimmed <?= (int) $automaticMaintenance['trimmed_job_archive'] ?> archived job line(s).</div>
     <?php endif; ?>
 
-    <section class="overview-grid">
+    <section class="overview-grid" id="metrics-section">
         <article class="metric primary">
             <span>Active jobs</span>
             <strong><?= $activeCount ?></strong>
@@ -783,7 +996,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                 <?php endforeach; ?>
             </div>
         </div>
-        <div class="computer-grid">
+        <div class="computer-grid" id="workers-grid">
             <?php if ($workerCards === []): ?>
                 <p class="empty">No configured computers or worker check-ins yet.</p>
             <?php endif; ?>
@@ -872,7 +1085,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                         <th>Actions</th>
                     </tr>
                 </thead>
-                <tbody>
+                <tbody id="jobs-tbody">
                 <?php if ($jobs === []): ?>
                     <tr><td colspan="8" class="empty">No jobs match this filter.</td></tr>
                 <?php endif; ?>
@@ -950,7 +1163,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                             <th>Error</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody id="events-tbody">
                     <?php if ($events === []): ?>
                         <tr><td colspan="5" class="empty">No log entries yet.</td></tr>
                     <?php endif; ?>
@@ -985,7 +1198,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                             <th>Actions</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody id="files-tbody">
                     <?php if ($fileHistory === []): ?>
                         <tr><td colspan="3" class="empty">No file or URI history yet.</td></tr>
                     <?php endif; ?>
@@ -1010,6 +1223,9 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
 
     <footer>
         <p>Protect this dashboard with your web server, VPN, or reverse-proxy auth.</p>
+        <?php if ($gitCommit): ?>
+            <p style="margin: 0; font-size: 0.85rem; opacity: 0.6;"><code><?= reflection_h($gitCommit) ?></code></p>
+        <?php endif; ?>
     </footer>
 
     <script>
@@ -1069,6 +1285,134 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
             }
             more.addEventListener('toggle', syncActiveWorkExpansion);
             syncActiveWorkExpansion();
+        }());
+        (function () {
+            // Handle job action forms via AJAX
+            var jobsPanel = document.querySelector('.jobs-panel');
+            if (!jobsPanel) {
+                return;
+            }
+            jobsPanel.addEventListener('submit', function (event) {
+                var form = event.target;
+                var formAction = form.querySelector('input[name="form_action"]');
+                if (!formAction || formAction.value !== 'job_action') {
+                    return;
+                }
+                event.preventDefault();
+                var jobAction = form.querySelector('input[name="job_action"]');
+                var taskId = form.querySelector('input[name="task_id"]');
+                if (!jobAction || !taskId) {
+                    return;
+                }
+                var formData = new FormData();
+                formData.append('form_action', 'job_action');
+                formData.append('job_action', jobAction.value);
+                formData.append('task_id', taskId.value);
+                var button = form.querySelector('button[type="submit"]');
+                var originalText = button.textContent;
+                button.disabled = true;
+                button.textContent = 'Processing...';
+                fetch(window.location.href, {
+                    method: 'POST',
+                    body: formData,
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest'
+                    }
+                })
+                .then(function (response) {
+                    return response.json();
+                })
+                .then(function (data) {
+                    var messageContainer = document.querySelector('.jobs-panel');
+                    var alertDiv = document.createElement('div');
+                    if (data.success) {
+                        alertDiv.className = 'alert success';
+                        alertDiv.textContent = data.message || 'Action completed successfully.';
+                        form.closest('td').innerHTML = '';
+                    } else {
+                        alertDiv.className = 'alert error';
+                        alertDiv.textContent = data.error || 'An error occurred.';
+                    }
+                    messageContainer.insertBefore(alertDiv, messageContainer.firstChild);
+                    setTimeout(function () {
+                        alertDiv.remove();
+                    }, 5000);
+                })
+                .catch(function (error) {
+                    console.error('Error:', error);
+                    var alertDiv = document.createElement('div');
+                    alertDiv.className = 'alert error';
+                    alertDiv.textContent = 'Failed to process the request.';
+                    var messageContainer = document.querySelector('.jobs-panel');
+                    messageContainer.insertBefore(alertDiv, messageContainer.firstChild);
+                    setTimeout(function () {
+                        alertDiv.remove();
+                    }, 5000);
+                })
+                .finally(function () {
+                    button.disabled = false;
+                    button.textContent = originalText;
+                });
+            });
+        }());
+        (function () {
+            // Auto-refresh dashboard data every 10 seconds
+            var refreshInterval = 10000; // 10 seconds
+            var currentUrl = window.location.href;
+            var urlParams = new URL(currentUrl).searchParams;
+            
+            // Only set up auto-refresh on the main dashboard view
+            if (urlParams.get('job_status') === 'all' && !urlParams.has('job_page')) {
+                function refreshDashboard() {
+                    var refreshUrl = currentUrl + (currentUrl.indexOf('?') > -1 ? '&' : '?') + 'ajax=1&_cache=' + Date.now();
+                    
+                    fetch(refreshUrl, {
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest'
+                        }
+                    })
+                    .then(function (response) {
+                        return response.json();
+                    })
+                    .then(function (data) {
+                        // Update metrics
+                        var metricsSection = document.getElementById('metrics-section');
+                        if (metricsSection && data.metrics) {
+                            metricsSection.innerHTML = data.metrics;
+                        }
+                        
+                        // Update workers grid
+                        var workersGrid = document.getElementById('workers-grid');
+                        if (workersGrid && data.workers) {
+                            workersGrid.innerHTML = data.workers;
+                        }
+                        
+                        // Update jobs table
+                        var jobsTbody = document.getElementById('jobs-tbody');
+                        if (jobsTbody && data.jobs) {
+                            jobsTbody.innerHTML = data.jobs;
+                        }
+                        
+                        // Update events table
+                        var eventsTbody = document.getElementById('events-tbody');
+                        if (eventsTbody && data.events) {
+                            eventsTbody.innerHTML = data.events;
+                        }
+                        
+                        // Update files table
+                        var filesTbody = document.getElementById('files-tbody');
+                        if (filesTbody && data.files) {
+                            filesTbody.innerHTML = data.files;
+                        }
+                    })
+                    .catch(function (error) {
+                        console.error('Dashboard auto-refresh failed:', error);
+                    });
+                }
+                
+                // Start auto-refresh timer
+                setInterval(refreshDashboard, refreshInterval);
+            }
         }());
     </script>
 </body>
