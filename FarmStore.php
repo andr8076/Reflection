@@ -1198,20 +1198,23 @@ final class FarmStore
                     continue;
                 }
 
+                $rawMinSoc = $machine['min_soc_percent'] ?? ($machine['soc_margin_percent'] ?? null);
+                $minSoc = null;
+                if ($rawMinSoc !== null && trim((string) $rawMinSoc) !== '') {
+                    $minSoc = max(0, min(100, (int) $rawMinSoc));
+                }
+
                 $cleanMachine = [
                     'pc_id' => $pcId !== '' ? $pcId : $mac,
                     'mac' => $mac,
                     'wake_enabled' => !empty($machine['wake_enabled']),
                     'shutdown_layer' => max(0, (int) ($machine['shutdown_layer'] ?? 0)),
                 ];
-
-                $minimumSoc = $this->machineConfiguredMinimumSocPercent($machine);
-                if ($minimumSoc !== null) {
-                    $cleanMachine['min_soc_percent'] = $minimumSoc;
-                    // Kept as a compatibility alias for existing dashboards/tests/config files.
-                    $cleanMachine['soc_margin_percent'] = $minimumSoc;
+                if ($minSoc !== null) {
+                    $cleanMachine['min_soc_percent'] = $minSoc;
+                    // Compatibility for old dashboards/stores/tests. This value now means minimum ESS SOC.
+                    $cleanMachine['soc_margin_percent'] = $minSoc;
                 }
-
                 $cleanMachines[] = $cleanMachine;
             }
 
@@ -1288,13 +1291,9 @@ final class FarmStore
             return PHP_INT_MAX;
         }
 
-        if ($this->currentEssSocPercent($settings) < $this->globalMinimumSocPercent($settings)) {
-            return 0;
-        }
-
         $machines = $this->machines();
         if ($machines === []) {
-            return PHP_INT_MAX;
+            return $this->currentEssSocPercent($settings) >= $this->globalMinSocPercent($settings) ? PHP_INT_MAX : 0;
         }
 
         $configured = 0;
@@ -1317,6 +1316,23 @@ final class FarmStore
         }
 
         return $configured > 0 ? $allowed : PHP_INT_MAX;
+    }
+
+    public function workerFitsCurrentSoc(string $pcId): bool
+    {
+        $data = $this->read();
+        $settings = array_merge($this->defaultSettings(), $data['settings'] ?? []);
+        if (!$this->essSocCanLimitWorkers($settings)) {
+            return true;
+        }
+
+        $pcId = trim($pcId);
+        $machine = $this->machineForPcIdFromData($data, $pcId);
+        if ($machine === null) {
+            $machine = ['pc_id' => $pcId];
+        }
+
+        return $this->machineFitsCurrentSoc($machine, $settings);
     }
 
     public function runningWorkerCount(): int
@@ -2092,37 +2108,43 @@ final class FarmStore
         return max(0, min(100, (int) ($settings['ess_soc_percent'] ?? 100)));
     }
 
-    private function globalMinimumSocPercent(array $settings): int
+    private function globalMinSocPercent(array $settings): int
     {
         return max(0, min(100, (int) ($settings['ess_min_soc_percent'] ?? 20)));
     }
 
-    private function machineConfiguredMinimumSocPercent(array $machine): ?int
+    private function machineMinSocPercent(array $machine, array $settings): int
     {
-        foreach (['min_soc_percent', 'soc_margin_percent'] as $key) {
-            if (!array_key_exists($key, $machine)) {
-                continue;
-            }
-
-            $value = $machine[$key];
-            if ($value === null || trim((string) $value) === '') {
-                continue;
-            }
-
-            return max(0, min(100, (int) $value));
+        $raw = $machine['min_soc_percent'] ?? ($machine['soc_margin_percent'] ?? null);
+        if ($raw !== null && trim((string) $raw) !== '') {
+            return max(0, min(100, (int) $raw));
         }
 
-        return null;
-    }
-
-    private function machineMinimumSocPercent(array $machine, array $settings): int
-    {
-        return $this->machineConfiguredMinimumSocPercent($machine) ?? $this->globalMinimumSocPercent($settings);
+        return $this->globalMinSocPercent($settings);
     }
 
     private function machineFitsCurrentSoc(array $machine, array $settings): bool
     {
-        return $this->currentEssSocPercent($settings) >= $this->machineMinimumSocPercent($machine, $settings);
+        return $this->currentEssSocPercent($settings) >= $this->machineMinSocPercent($machine, $settings);
+    }
+
+    private function machineForPcIdFromData(array $data, string $pcId): ?array
+    {
+        $pcId = trim($pcId);
+        if ($pcId === '') {
+            return null;
+        }
+
+        foreach (($data['machines'] ?? []) as $machine) {
+            if (!is_array($machine)) {
+                continue;
+            }
+            if ((string) ($machine['pc_id'] ?? '') === $pcId) {
+                return $machine;
+            }
+        }
+
+        return null;
     }
 
     private function wakeTargetsFromData(array $data, array $settings, int $staleAfterSeconds, bool $excludeOnline, bool $ignoreCooldown): array
@@ -2137,13 +2159,13 @@ final class FarmStore
             if ($excludeOnline && $pcId !== '' && isset($onlineWorkers[$pcId])) {
                 continue;
             }
-            $machine['min_soc_percent'] = $this->machineMinimumSocPercent($machine, $settings);
-            $machine['soc_margin_percent'] = $machine['min_soc_percent'];
+            $machine['min_soc_percent'] = $this->machineMinSocPercent($machine, $settings);
+            $machine['soc_margin_percent'] = $machine['min_soc_percent']; // compatibility alias
             $machines[] = $machine;
         }
 
         usort($machines, static function (array $a, array $b): int {
-            return ((int) ($a['min_soc_percent'] ?? $a['soc_margin_percent'] ?? 20)) <=> ((int) ($b['min_soc_percent'] ?? $b['soc_margin_percent'] ?? 20));
+            return ((int) ($a['min_soc_percent'] ?? ($a['soc_margin_percent'] ?? 20))) <=> ((int) ($b['min_soc_percent'] ?? ($b['soc_margin_percent'] ?? 20)));
         });
 
         if (!$this->essSocCanLimitWorkers($settings)) {

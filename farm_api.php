@@ -81,13 +81,17 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
         && $masterCommit !== ''
         && !reflection_api_versions_match($version, $masterCommit);
 
+    if ($action === 'confirm_shutdown') {
+        return reflection_api_confirm_shutdown($payload, $store, $config, $pcId);
+    }
+
     if ($versionMismatch && $action === 'request_task') {
         return reflection_api_request_self_update_for_version_mismatch($store, $config, $pcId, $masterCommit);
     }
 
     if ($versionMismatch && !reflection_api_allows_mismatched_version_action($payload, $store)) {
         return reflection_api_with_version_metadata(
-            ['status' => 'version_mismatch'],
+            ['status' => 'version_mismatch', 'update_available' => true, 'update_allowed' => true],
             $config,
             $settings,
             'update_now',
@@ -104,8 +108,6 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
             return reflection_api_heartbeat_task($payload, $store, $pcId);
         case 'report_done':
             return reflection_api_report_done($payload, $store, $pcId);
-        case 'confirm_shutdown':
-            return reflection_api_confirm_shutdown($payload, $store, $pcId, $config);
         default:
             return reflection_api_with_version_metadata(
                 ['status' => 'error', 'error' => 'Unknown action.'],
@@ -233,10 +235,6 @@ function reflection_run_due_automation_on_worker_checkin(FarmStore $store, array
 function reflection_api_allows_mismatched_version_action(array $payload, FarmStore $store): bool
 {
     $action = (string) ($payload['action'] ?? '');
-    if ($action === 'confirm_shutdown') {
-        return true;
-    }
-
     if (!in_array($action, ['confirm_taken', 'heartbeat_task', 'report_done'], true)) {
         return false;
     }
@@ -247,6 +245,27 @@ function reflection_api_allows_mismatched_version_action(array $payload, FarmSto
     }
 
     return $store->jobModule($taskId) === 'update_worker';
+}
+
+function reflection_api_confirm_shutdown(array $payload, FarmStore $store, array $config, string $pcId): array
+{
+    $settings = $store->effectiveSettings();
+    $reason = trim((string) ($payload['reason'] ?? 'shutdown_confirmed'));
+    if ($reason === '') {
+        $reason = 'shutdown_confirmed';
+    }
+
+    $store->markWorkerExpectedOffline($pcId, $reason);
+
+    return reflection_api_with_version_metadata(
+        [
+            'status' => 'shutdown_confirmed',
+            'reason' => $reason,
+        ],
+        $config,
+        $settings,
+        'ok'
+    );
 }
 
 function reflection_api_shutdown_layer_payload(FarmStore $store, string $pcId, array $config): array
@@ -263,7 +282,7 @@ function reflection_api_shutdown_allowed(FarmStore $store, string $pcId, array $
 
 function reflection_api_task_payload(array $job, array $config, array $settings, int $allowedWorkers, ?FarmStore $store = null, string $pcId = ''): array
 {
-    $shutdownRequested = !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 0;
+    $shutdownRequested = false;
     $shutdownLayer = $store !== null && $pcId !== '' ? reflection_api_shutdown_layer_payload($store, $pcId, $config) : ['allowed' => true];
     $shutdownAfterTask = $shutdownRequested && !empty($shutdownLayer['allowed']);
 
@@ -303,22 +322,19 @@ function reflection_api_task_payload(array $job, array $config, array $settings,
 function reflection_api_request_self_update_for_version_mismatch(FarmStore $store, array $config, string $pcId, string $masterCommit): array
 {
     $settings = $store->effectiveSettings();
-    $staleAfterSeconds = (int) ($config['stale_after_seconds'] ?? 900);
-    $updateLayer = $store->versionUpdateLayerStatus($pcId, $masterCommit, $staleAfterSeconds);
-    $updateAllowed = !empty($updateLayer['allowed']);
     $store->resetWorkerNoJobCheckIns($pcId);
 
     return reflection_api_with_version_metadata(
         [
             'status' => 'version_mismatch',
-            'update_allowed' => $updateAllowed,
-            'update_layer' => $updateLayer,
+            'update_allowed' => true,
             'update_available' => true,
+            'target_version' => $masterCommit,
         ],
         $config,
         $settings,
-        $updateAllowed ? 'update_now' : 'wait_for_update_layer',
-        $updateAllowed ? 'worker_commit_mismatch' : 'waiting_for_higher_update_layer'
+        'update_now',
+        'worker_commit_mismatch'
     );
 }
 
@@ -337,6 +353,10 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
 
     $allowedWorkers = $store->allowedActiveWorkers();
     $settings = $store->effectiveSettings();
+    if (!$store->workerFitsCurrentSoc($pcId)) {
+        return reflection_api_no_jobs_response($store, $pcId, $settings, 'ess_soc_below_worker_minimum', !empty($settings['ess_shutdown_below_minimum']), $config);
+    }
+
     if ($allowedWorkers <= 0) {
         return reflection_api_no_jobs_response($store, $pcId, $settings, 'ess_soc_below_minimum', !empty($settings['ess_shutdown_below_minimum']), $config);
     }
@@ -368,42 +388,6 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
 }
 
 
-function reflection_api_confirm_shutdown(array $payload, FarmStore $store, string $pcId, array $config): array
-{
-    $settings = $store->effectiveSettings();
-    $shutdownLayer = reflection_api_shutdown_layer_payload($store, $pcId, $config);
-    if (empty($shutdownLayer['allowed'])) {
-        return reflection_api_with_version_metadata(
-            [
-                'status' => 'shutdown_blocked_by_layer',
-                'shutdown_confirmed' => false,
-                'shutdown_layer' => $shutdownLayer,
-            ],
-            $config,
-            $settings,
-            'ok'
-        );
-    }
-
-    $reason = trim((string) ($payload['reason'] ?? 'shutdown_confirmed'));
-    if ($reason === '') {
-        $reason = 'shutdown_confirmed';
-    }
-
-    $store->markWorkerExpectedOffline($pcId, $reason);
-
-    return reflection_api_with_version_metadata(
-        [
-            'status' => 'shutdown_confirmed',
-            'shutdown_confirmed' => true,
-            'shutdown_layer' => $shutdownLayer,
-        ],
-        $config,
-        $settings,
-        'ok'
-    );
-}
-
 function reflection_api_no_jobs_response(FarmStore $store, string $pcId, array $settings, string $reason, bool $forceShutdown = false, array $config = []): array
 {
     $shutdownLimit = max(0, (int) ($settings['idle_shutdown_after_no_job_checks'] ?? 0));
@@ -422,8 +406,6 @@ function reflection_api_no_jobs_response(FarmStore $store, string $pcId, array $
         [
             'status' => 'no_jobs',
             'shutdown_after_task' => $shutdownAfterTask,
-            'shutdown_confirmation_required' => $shutdownAfterTask,
-            'shutdown_confirm_reason' => $finalReason,
             'reason' => $finalReason,
             'idle_no_job_checkins' => $idleCheckIns,
             'idle_shutdown_after_no_job_checks' => $shutdownLimit,
@@ -488,16 +470,14 @@ function reflection_api_report_done(array $payload, FarmStore $store, string $pc
     }
 
     $settings = $store->effectiveSettings();
-    $allowedWorkers = $store->allowedActiveWorkers();
-    $shutdownRequested = !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 0;
+    $shutdownRequested = !empty($settings['ess_shutdown_below_minimum']) && !$store->workerFitsCurrentSoc($pcId);
     $shutdownLayer = reflection_api_shutdown_layer_payload($store, $pcId, $GLOBALS['config'] ?? []);
     $shutdownAfterTask = $shutdownRequested && !empty($shutdownLayer['allowed']);
+
     return reflection_api_with_version_metadata(
         [
             'status' => 'confirmed_by_server',
             'shutdown_after_task' => $shutdownAfterTask,
-            'shutdown_confirmation_required' => $shutdownAfterTask,
-            'shutdown_confirm_reason' => 'ess_soc_below_minimum_after_task',
             'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
             'shutdown_layer' => $shutdownLayer,
             'shutdown_blocked_by_layer' => $shutdownRequested && !$shutdownAfterTask,

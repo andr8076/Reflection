@@ -1799,22 +1799,19 @@ def _server_shutdown_debug_mode(response):
     return bool(response.get("shutdown_debug_mode") or response.get("debug_shutdown"))
 
 
-def _handle_server_shutdown_request(context, response, confirm_shutdown=None):
+def _handle_server_shutdown_request(context, response, agent=None):
     """Handle a master shutdown request. Return False to leave the worker loop."""
-    if callable(confirm_shutdown):
-        reason = "server_policy"
-        if isinstance(response, dict):
-            reason = str(
-                response.get("shutdown_confirm_reason")
-                or response.get("reason")
-                or "server_policy"
-            )
-        if not confirm_shutdown(reason):
-            logging.warning(
-                "%s. Master did not confirm shutdown after the layer check; continuing to poll.",
-                context,
-            )
-            return True
+    reason = "server_shutdown_request"
+    if isinstance(response, dict):
+        reason = str(response.get("reason") or response.get("version_reason") or reason)
+
+    if agent is not None and hasattr(agent, "confirm_shutdown"):
+        try:
+            confirmed = agent.confirm_shutdown(reason)
+            if not confirmed:
+                logging.warning("Master shutdown confirmation was not acknowledged. Continuing local shutdown anyway.")
+        except Exception:
+            logging.exception("Failed to confirm shutdown order with master. Continuing local shutdown anyway.")
 
     if _server_shutdown_debug_mode(response):
         logging.info("%s. Shutdown debug mode is enabled, so only the farm agent will stop.", context)
@@ -1893,22 +1890,11 @@ class FarmAgent:
             return None
 
         version_enforced = bool(response.get("version_enforced"))
-        policy = str(response.get("version_policy") or "").strip().lower()
-        if not version_enforced and policy not in {"update_now", "wait_for_update_layer"}:
+        if not version_enforced:
             return None
 
         if _git_versions_match(VERSION, master_commit):
             return None
-
-        if policy == "wait_for_update_layer":
-            logging.warning(
-                "Worker version %s does not match master commit %s, but update layers say to wait. Retrying in %ss.",
-                VERSION,
-                master_commit,
-                POLL_INTERVAL,
-            )
-            time.sleep(POLL_INTERVAL)
-            return True
 
         logging.warning(
             "Worker version %s does not match master commit %s. Updating before accepting work.",
@@ -1967,16 +1953,16 @@ class FarmAgent:
         }
         return self.post_to_server(payload)
 
-    def confirm_shutdown(self, reason="shutdown_requested"):
-        """Confirm receipt of a shutdown order so the master may release lower layers."""
+    def confirm_shutdown(self, reason="server_shutdown_request"):
+        """Tell the master this worker has accepted a shutdown order."""
         payload = {
             "action": "confirm_shutdown",
             "version": VERSION,
             "pc_id": PC_ID,
-            "reason": str(reason or "shutdown_requested"),
+            "reason": str(reason or "server_shutdown_request"),
         }
-        response = self.post_to_server(payload)
-        return bool(response and response.get("status") == "shutdown_confirmed")
+        res = self.post_to_server(payload)
+        return bool(res and res.get("status") == "shutdown_confirmed")
 
     def cleanup_files(self, source_path):
         """Step 7: Local cleanup of source files if explicitly allowed and safe."""
@@ -2070,7 +2056,7 @@ class FarmAgent:
                 return _handle_server_shutdown_request(
                     f"Server requested idle shutdown ({reason})",
                     response,
-                    getattr(self, "confirm_shutdown", None),
+                    self,
                 )
             logging.info("Server has no jobs. Sleeping for %ss...", POLL_INTERVAL)
             time.sleep(POLL_INTERVAL)
@@ -2169,19 +2155,17 @@ class FarmAgent:
                 os.execv(sys.executable, [sys.executable, *sys.argv])
 
             if task_outcome.stop_agent:
-                shutdown_response = dict(server_response or {})
-                shutdown_response.setdefault("shutdown_confirm_reason", f"explicit_shutdown_task:{task_id}")
                 return _handle_server_shutdown_request(
                     f"Shutdown task {task_id} confirmed by server",
-                    shutdown_response,
-                    getattr(self, "confirm_shutdown", None),
+                    server_response,
+                    self,
                 )
 
             if server_response.get("shutdown_after_task"):
                 return _handle_server_shutdown_request(
                     f"Server requested shutdown after task {task_id} due to SOC policy",
                     server_response,
-                    getattr(self, "confirm_shutdown", None),
+                    self,
                 )
 
             logging.info("Lifecycle finished for Task %s. Repeating loop...\n", task_id)

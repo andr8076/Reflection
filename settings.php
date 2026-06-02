@@ -185,7 +185,7 @@ $dataDirectory = dirname((string) $config['storage_path']);
                     <h3>ESS and Wake-on-LAN</h3>
                     <div class="settings-grid">
                         <label>
-                            Minimum SOC %
+                            Global fallback minimum ESS SOC %
                             <input type="number" name="ess_min_soc_percent" min="0" max="100" value="<?= (int) ($settings['ess_min_soc_percent'] ?? 20) ?>">
                         </label>
                         <label>
@@ -296,8 +296,8 @@ $dataDirectory = dirname((string) $config['storage_path']);
                     <h3>Farm computers and Wake-on-LAN</h3>
                     <label>
                         Machine list
-                        <textarea name="machines" rows="8" placeholder="render-01,AA:BB:CC:DD:EE:01,25,1,2&#10;render-02,AA:BB:CC:DD:EE:02,,1,1"><?= reflection_h(reflection_machine_list_text($machines)) ?></textarea>
-                        <small>One per line: <code>pc_id,mac,min_soc_percent,wake_enabled,shutdown_layer</code>. Higher shutdown layers power off first. Lower layers are not allowed to shut down until all higher online layers have confirmed their shutdown order. The per-computer minimum ESS SOC is an absolute threshold; leave it blank to use the global minimum ESS SOC.</small>
+                        <textarea name="machines" rows="8" placeholder="render-01,AA:BB:CC:DD:EE:01,5,1,2&#10;render-02,AA:BB:CC:DD:EE:02,8,1,1"><?= reflection_h(reflection_machine_list_text($machines)) ?></textarea>
+                        <small>One per line: <code>pc_id,mac,min_soc_percent,wake_enabled,shutdown_layer</code>. The third value is the ESS SOC percentage this computer may run down to. Leave it blank to use the global fallback above. Higher shutdown layers power off first; lower layers are not allowed to shut down until higher online layers have confirmed their shutdown order.</small>
                     </label>
                 </div>
 
