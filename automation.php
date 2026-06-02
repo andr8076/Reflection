@@ -493,10 +493,10 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                             Allow worker overwrite/replacement
                             <small>For same-as-source delivery, this means the result replaces the original path after the task succeeds.</small>
                         </label>
-                        <label class="check-row top-check option-card">
+                        <label class="check-row top-check option-card warning-check">
                             <input type="checkbox" name="requeue_unchanged" value="1" <?= !empty($editingRule['requeue_unchanged']) ? 'checked' : '' ?>>
                             Requeue even if already handled
-                            <small>Normally off. Leave off to avoid creating the same job again for a file with the same path, size, and modified time.</small>
+                            <small>Normally off. When enabled, every matching scan can create another job for the same file, even if an equivalent job is already queued, running, or crash-blocked.</small>
                         </label>
                     </div>
                 </details>
