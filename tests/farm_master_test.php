@@ -492,6 +492,23 @@ assertSameValue($orderJobA['task_id'], $orderStore->nextQueuedJob()['task_id'], 
 assertSameValue(true, $orderStore->markJobRunning($orderJobA['task_id'], 'node-order'), 'Order test job should lock before delete checks.');
 assertSameValue(false, $orderStore->deleteJob($orderJobA['task_id']), 'Running jobs should not be deleted from the dashboard.');
 assertSameValue(false, $orderStore->moveQueuedJob($orderJobA['task_id'], 'later'), 'Running jobs should not be reordered.');
+assertSameValue(true, $orderStore->holdJob($orderJobA['task_id']), 'Running jobs should be placed on hold.');
+assertSameValue(true, $orderStore->heldJobBelongsToWorker($orderJobA['task_id'], 'node-order'), 'Held running jobs should remember the assigned worker until relinquished.');
+$response = reflection_handle_farm_api([
+    'action' => 'heartbeat_task',
+    'version' => 'test-version',
+    'pc_id' => 'node-order',
+    'task_id' => $orderJobA['task_id'],
+], $orderStore, ['required_version' => 'test-version']);
+assertSameValue('task_held', $response['status'], 'Held running jobs should instruct their worker to relinquish local work.');
+assertSameValue('relinquish_task', $response['instruction'], 'Held heartbeat responses should explicitly request relinquishment.');
+assertSameValue($orderJobC['task_id'], $orderStore->nextQueuedJob()['task_id'], 'Held jobs should be skipped when workers request work.');
+assertSameValue(true, $orderStore->hasOpenJob('dummy_task', 'incoming/order-a.dat'), 'Held jobs should remain open for duplicate suppression.');
+assertSameValue(0, $orderStore->archiveOldCompletedJobs(0), 'Held jobs should not be archived as completed work.');
+$activeOrderJobs = $orderStore->jobPage(1, 50, 'active');
+assertSameValue(3, $activeOrderJobs['total'], 'Held jobs should remain visible in the active job filter.');
+assertSameValue(true, $orderStore->releaseHeldJob($orderJobA['task_id']), 'Held jobs should be releasable back to the queue.');
+assertSameValue($orderJobA['task_id'], $orderStore->nextQueuedJob()['task_id'], 'Released jobs should become available again.');
 assertSameValue(true, $orderStore->deleteJob($orderJobB['task_id']), 'Queued jobs should be deletable from the dashboard.');
 $orderData = $orderStore->read();
 assertSameValue(2, count($orderData['jobs']), 'Deleted jobs should be removed from the live store.');

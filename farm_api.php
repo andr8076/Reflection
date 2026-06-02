@@ -422,11 +422,15 @@ function reflection_api_heartbeat_task(array $payload, FarmStore $store, string 
         return ['status' => 'error', 'error' => 'Missing task_id.'];
     }
 
-    if (!$store->heartbeatJob($taskId, $pcId)) {
-        return ['status' => 'not_available'];
+    if ($store->heartbeatJob($taskId, $pcId)) {
+        return ['status' => 'heartbeat_acknowledged'];
     }
 
-    return ['status' => 'heartbeat_acknowledged'];
+    if ($store->heldJobBelongsToWorker($taskId, $pcId)) {
+        return ['status' => 'task_held', 'instruction' => 'relinquish_task'];
+    }
+
+    return ['status' => 'not_available', 'instruction' => 'relinquish_task'];
 }
 
 function reflection_api_report_done(array $payload, FarmStore $store, string $pcId): array

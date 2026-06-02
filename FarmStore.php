@@ -63,11 +63,11 @@ final class FarmStore
             }
 
             if ($statusFilter === 'active') {
-                return in_array($status, ['queued', 'running'], true);
+                return in_array($status, ['queued', 'running', 'held'], true);
             }
 
             if ($statusFilter === 'finished') {
-                return !in_array($status, ['queued', 'running'], true);
+                return !in_array($status, ['queued', 'running', 'held'], true);
             }
 
             return $status === $statusFilter;
@@ -98,7 +98,7 @@ final class FarmStore
             $completedIndexes = [];
             foreach ($data['jobs'] as $index => $job) {
                 $status = (string) ($job['status'] ?? 'unknown');
-                if (!in_array($status, ['queued', 'running'], true)) {
+                if (!in_array($status, ['queued', 'running', 'held'], true)) {
                     $completedIndexes[] = $index;
                 }
             }
@@ -263,7 +263,7 @@ final class FarmStore
                 if (
                     ($job['module'] ?? '') === $module
                     && ($job['source'] ?? null) === $source
-                    && in_array((string) ($job['status'] ?? ''), ['queued', 'running', 'blocked'], true)
+                    && in_array((string) ($job['status'] ?? ''), ['queued', 'running', 'held', 'blocked'], true)
                 ) {
                     return true;
                 }
@@ -530,6 +530,91 @@ final class FarmStore
         }, true);
 
         return is_array($result);
+    }
+
+    public function holdJob(string $taskId): bool
+    {
+        $result = $this->withLock(function (array $data) use ($taskId): array {
+            $heldJob = null;
+            foreach ($data['jobs'] as &$job) {
+                if (($job['task_id'] ?? '') !== $taskId || !in_array((string) ($job['status'] ?? ''), ['queued', 'running'], true)) {
+                    continue;
+                }
+
+                $previousStatus = (string) $job['status'];
+                $job['status'] = 'held';
+                $job['held_at'] = gmdate(DATE_ATOM);
+                $job['held_from_status'] = $previousStatus;
+                if ($previousStatus === 'running') {
+                    $job['held_worker'] = (string) ($job['worker'] ?? '');
+                    $workerId = (string) ($job['worker'] ?? '');
+                    if ($workerId !== '' && isset($data['workers'][$workerId])) {
+                        $data['workers'][$workerId]['current_job'] = null;
+                    }
+                }
+                $heldJob = $job;
+                break;
+            }
+            unset($job);
+
+            return ['data' => $data, 'result' => $heldJob];
+        }, true);
+
+        if (is_array($result)) {
+            $this->recordEvent('job_held', $result);
+            return true;
+        }
+
+        return false;
+    }
+
+    public function releaseHeldJob(string $taskId): bool
+    {
+        $result = $this->withLock(function (array $data) use ($taskId): array {
+            $releasedJob = null;
+            foreach ($data['jobs'] as &$job) {
+                if (($job['task_id'] ?? '') !== $taskId || ($job['status'] ?? '') !== 'held') {
+                    continue;
+                }
+
+                $job['status'] = 'queued';
+                $job['worker'] = null;
+                $job['started_at'] = null;
+                $job['heartbeat_at'] = null;
+                $job['finished_at'] = null;
+                $job['released_at'] = gmdate(DATE_ATOM);
+                unset($job['held_at'], $job['held_from_status'], $job['held_worker']);
+                $releasedJob = $job;
+                break;
+            }
+            unset($job);
+
+            return ['data' => $data, 'result' => $releasedJob];
+        }, true);
+
+        if (is_array($result)) {
+            $this->recordEvent('job_released', $result);
+            return true;
+        }
+
+        return false;
+    }
+
+    public function heldJobBelongsToWorker(string $taskId, string $pcId): bool
+    {
+        return $this->withLock(function (array $data) use ($taskId, $pcId): bool {
+            foreach ($data['jobs'] as $job) {
+                if (
+                    ($job['task_id'] ?? '') === $taskId
+                    && ($job['status'] ?? '') === 'held'
+                    && ($job['held_worker'] ?? '') === $pcId
+                ) {
+                    return true;
+                }
+            }
+
+            return false;
+        });
     }
 
     public function finishJob(string $taskId, string $pcId, string $status, string $error): bool

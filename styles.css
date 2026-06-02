@@ -516,7 +516,8 @@ dd {
     color: #1749a9;
 }
 
-.badge.running {
+.badge.running,
+.badge.held {
     background: var(--warning-soft);
     color: var(--warning);
 }
