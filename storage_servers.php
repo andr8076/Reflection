@@ -7,6 +7,8 @@ require_once __DIR__ . '/StorageStore.php';
 require_once __DIR__ . '/FarmStore.php';
 require_once __DIR__ . '/ui_helpers.php';
 
+reflection_send_security_headers();
+
 $config = reflection_master_config();
 $dataDirectory = dirname((string) $config['storage_path']);
 $storageStore = new StorageStore($dataDirectory, $config['transfer_server'] ?? null);
@@ -164,7 +166,7 @@ if ($editingServer === null) {
                     <p class="api-note">Do not put FTP usernames or passwords here. This page only stores the server endpoint that jobs should use.</p>
                 </div>
                 <?php if (($editingServer['id'] ?? '') !== '' && empty($editingServer['is_legacy'])): ?>
-                    <form method="post" onsubmit="return confirm('Delete this storage server? Existing queued jobs that reference it may fall back to the default server.');">
+                    <form method="post" data-confirm="Delete this storage server? Existing queued jobs that reference it may fall back to the default server.">
                         <input type="hidden" name="storage_action" value="delete_server">
                         <input type="hidden" name="server_id" value="<?= reflection_h($editingServer['id'] ?? '') ?>">
                         <button type="submit" class="danger-button">Delete</button>
@@ -261,5 +263,6 @@ if ($editingServer === null) {
         <p>Storage servers live in <code>data/storage_servers.json</code>. Passwords should stay in each worker’s local config.</p>
         <p><a href="index.php">Back to dashboard</a></p>
     </footer>
+    <script src="common.js"></script>
 </body>
 </html>

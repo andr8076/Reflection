@@ -6,6 +6,8 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
 require_once __DIR__ . '/ui_helpers.php';
 
+reflection_send_security_headers();
+
 $config = reflection_master_config();
 $store = reflection_farm_store($config);
 $message = null;
@@ -84,7 +86,7 @@ $blockedJobs = $store->blockedJobs(300);
                                 <form method="post"><input type="hidden" name="blocked_action" value="retry"><input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>"><button class="ghost-button small-button" type="submit">Retry once</button></form>
                                 <form method="post"><input type="hidden" name="blocked_action" value="unblock"><input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>"><button class="ghost-button small-button" type="submit">Unblock</button></form>
                                 <form method="post"><input type="hidden" name="blocked_action" value="ignore"><input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>"><button class="ghost-button small-button" type="submit">Ignore</button></form>
-                                <form method="post" onsubmit="return confirm('Delete this job from the live store?');"><input type="hidden" name="blocked_action" value="delete"><input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>"><button class="danger-button small-button" type="submit">Delete</button></form>
+                                <form method="post" data-confirm="Delete this job from the live store?"><input type="hidden" name="blocked_action" value="delete"><input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>"><button class="danger-button small-button" type="submit">Delete</button></form>
                             </div>
                         </td>
                     </tr>
@@ -95,5 +97,6 @@ $blockedJobs = $store->blockedJobs(300);
     </main>
 
     <footer><p><a href="index.php">Back to dashboard</a></p></footer>
+    <script src="common.js"></script>
 </body>
 </html>

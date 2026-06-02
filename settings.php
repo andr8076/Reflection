@@ -6,6 +6,8 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
 require_once __DIR__ . '/ui_helpers.php';
 
+reflection_send_security_headers();
+
 $config = reflection_master_config();
 $store = reflection_farm_store($config);
 $message = null;

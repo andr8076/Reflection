@@ -8,6 +8,8 @@ require_once __DIR__ . '/StorageStore.php';
 require_once __DIR__ . '/AutomationStore.php';
 require_once __DIR__ . '/ui_helpers.php';
 
+reflection_send_security_headers();
+
 $config = reflection_master_config();
 $store = reflection_farm_store($config);
 $dataDirectory = dirname((string) $config['storage_path']);

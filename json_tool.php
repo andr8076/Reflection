@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 define('REFLECTION_EMBEDDED_API', true);
 require_once __DIR__ . '/farm_api.php';
+require_once __DIR__ . '/ui_helpers.php';
+
+reflection_send_security_headers();
 
 $config = reflection_master_config();
 $scriptDirectory = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '')), '/');
@@ -193,12 +196,6 @@ $presets = [
         <?php endif; ?>
     </section>
 
-    <script>
-        document.querySelectorAll('[data-preset]').forEach(function (button) {
-            button.addEventListener('click', function () {
-                document.getElementById('request-json').value = button.getAttribute('data-preset');
-            });
-        });
-    </script>
+    <script src="json_tool.js"></script>
 </body>
 </html>
