@@ -203,6 +203,57 @@ function reflection_count_worker_states(array $workerCards): array
     return $counts;
 }
 
+function reflection_render_worker_summary(array $workerStateCounts): string
+{
+    ob_start();
+    foreach (['running', 'idle', 'stale', 'configured'] as $state):
+        ?>
+        <span><?= reflection_h($state) ?> <strong><?= (int) ($workerStateCounts[$state] ?? 0) ?></strong></span>
+        <?php
+    endforeach;
+    return (string) ob_get_clean();
+}
+
+function reflection_render_worker_cards_html(array $workerCards): string
+{
+    ob_start();
+    if ($workerCards === []):
+        ?>
+        <p class="empty">No configured computers or worker check-ins yet.</p>
+        <?php
+    endif;
+
+    foreach ($workerCards as $card):
+        ?>
+        <article class="computer-card <?= reflection_h(reflection_status_class($card['state'] ?? 'unknown')) ?>">
+            <div class="computer-card-head">
+                <strong><?= reflection_h($card['pc_id'] ?? 'unknown') ?></strong>
+                <span class="badge <?= reflection_h(reflection_status_class($card['state'] ?? 'unknown')) ?>"><?= reflection_h($card['state'] ?? 'unknown') ?></span>
+            </div>
+            <dl>
+                <div><dt>Current job</dt><dd><?= reflection_h($card['current_job'] ?? '—') ?></dd></div>
+                <div><dt>Last check-in</dt><dd title="<?= reflection_h($card['last_check_in'] ?? '') ?>"><?= reflection_h(reflection_relative_time($card['last_check_in'] ?? null)) ?></dd></div>
+                <div><dt>No-job polls</dt><dd><?= (int) ($card['idle_no_job_checkins'] ?? 0) ?></dd></div>
+                <div><dt>Version</dt><dd><code><?= reflection_h($card['version'] ?? '—') ?></code></dd></div>
+                <div><dt>Wake</dt><dd><?= !empty($card['wake_enabled']) ? 'enabled' : 'disabled' ?><?= !empty($card['mac']) ? ' · ' . reflection_h($card['mac']) : '' ?></dd></div>
+                <div><dt>SOC margin</dt><dd><?= (int) ($card['soc_margin_percent'] ?? 0) ?>%</dd></div>
+                <div><dt>Shutdown layer</dt><dd><?= (int) ($card['shutdown_layer'] ?? 0) ?></dd></div>
+            </dl>
+            <?php if (($card['state'] ?? '') === 'stale'): ?>
+                <form method="post" class="button-row computer-actions" data-confirm="Remove this stale worker check-in from the board?">
+                    <input type="hidden" name="form_action" value="worker_action">
+                    <input type="hidden" name="worker_action" value="remove_stale">
+                    <input type="hidden" name="pc_id" value="<?= reflection_h($card['pc_id'] ?? '') ?>">
+                    <button type="submit" class="danger-button small-button">Remove stale check-in</button>
+                </form>
+            <?php endif; ?>
+        </article>
+        <?php
+    endforeach;
+
+    return (string) ob_get_clean();
+}
+
 function reflection_url_with(array $overrides): string
 {
     $query = array_merge($_GET, $overrides);
@@ -581,46 +632,8 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
     $metricsHtml = ob_get_clean();
     
     // Render workers section
-    ob_start();
-    ?>
-    <div class="computer-grid">
-        <?php foreach ($workerCards as $card): ?>
-            <article class="computer-card <?= reflection_h($card['state'] ?? 'unknown') ?>">
-                <div class="computer-card-head">
-                    <strong><?= reflection_h($card['display_name'] ?? '—') ?></strong>
-                    <?php if ($card['state'] === 'idle'): ?>
-                        <span class="badge idle">Idle <?= reflection_h(reflection_relative_time($card['last_check_in'] ?? null)) ?></span>
-                    <?php elseif ($card['state'] === 'running'): ?>
-                        <span class="badge running">Running <?= reflection_h(reflection_relative_time($card['last_check_in'] ?? null)) ?></span>
-                    <?php else: ?>
-                        <span class="badge stale">Stale <?= reflection_h(reflection_relative_time($card['last_check_in'] ?? null)) ?></span>
-                    <?php endif; ?>
-                </div>
-                <dl class="detail-list">
-                    <div>
-                        <dt>OS</dt>
-                        <dd><?= reflection_h($card['os'] ?? '—') ?></dd>
-                    </div>
-                    <div>
-                        <dt>Task version</dt>
-                        <dd><?= reflection_h($card['version'] ?? '—') ?></dd>
-                    </div>
-                    <div>
-                        <dt>IPs</dt>
-                        <dd><code><?= reflection_h($card['ips'] ?? '—') ?></code></dd>
-                    </div>
-                    <?php if (!empty($card['network_bcast'])): ?>
-                        <div>
-                            <dt>Broadcast</dt>
-                            <dd><code><?= reflection_h($card['network_bcast']) ?></code></dd>
-                        </div>
-                    <?php endif; ?>
-                </dl>
-            </article>
-        <?php endforeach; ?>
-    </div>
-    <?php
-    $workersHtml = ob_get_clean();
+    $workerSummaryHtml = reflection_render_worker_summary($workerStateCounts);
+    $workersHtml = reflection_render_worker_cards_html($workerCards);
     
     // Render jobs table rows
     ob_start();
@@ -762,6 +775,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
     echo json_encode([
         'metrics' => $metricsHtml,
         'workers' => $workersHtml,
+        'worker_summary' => $workerSummaryHtml,
         'jobs' => $jobsHtml,
         'job_tabs' => $jobTabsHtml,
         'job_pagination' => $jobPaginationHtml,
@@ -1048,41 +1062,12 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                 <p class="eyebrow">Cluster</p>
                 <h2>Farm computers</h2>
             </div>
-            <div class="worker-summary">
-                <?php foreach (['running', 'idle', 'stale', 'configured'] as $state): ?>
-                    <span><?= reflection_h($state) ?> <strong><?= (int) ($workerStateCounts[$state] ?? 0) ?></strong></span>
-                <?php endforeach; ?>
+            <div class="worker-summary" id="worker-summary">
+                <?= reflection_render_worker_summary($workerStateCounts) ?>
             </div>
         </div>
         <div class="computer-grid" id="workers-grid">
-            <?php if ($workerCards === []): ?>
-                <p class="empty">No configured computers or worker check-ins yet.</p>
-            <?php endif; ?>
-            <?php foreach ($workerCards as $card): ?>
-                <article class="computer-card <?= reflection_h(reflection_status_class($card['state'] ?? 'unknown')) ?>">
-                    <div class="computer-card-head">
-                        <strong><?= reflection_h($card['pc_id'] ?? 'unknown') ?></strong>
-                        <span class="badge <?= reflection_h(reflection_status_class($card['state'] ?? 'unknown')) ?>"><?= reflection_h($card['state'] ?? 'unknown') ?></span>
-                    </div>
-                    <dl>
-                        <div><dt>Current job</dt><dd><?= reflection_h($card['current_job'] ?? '—') ?></dd></div>
-                        <div><dt>Last check-in</dt><dd title="<?= reflection_h($card['last_check_in'] ?? '') ?>"><?= reflection_h(reflection_relative_time($card['last_check_in'] ?? null)) ?></dd></div>
-                        <div><dt>No-job polls</dt><dd><?= (int) ($card['idle_no_job_checkins'] ?? 0) ?></dd></div>
-                        <div><dt>Version</dt><dd><code><?= reflection_h($card['version'] ?? '—') ?></code></dd></div>
-                        <div><dt>Wake</dt><dd><?= !empty($card['wake_enabled']) ? 'enabled' : 'disabled' ?><?= !empty($card['mac']) ? ' · ' . reflection_h($card['mac']) : '' ?></dd></div>
-                        <div><dt>SOC margin</dt><dd><?= (int) ($card['soc_margin_percent'] ?? 0) ?>%</dd></div>
-                        <div><dt>Shutdown layer</dt><dd><?= (int) ($card['shutdown_layer'] ?? 0) ?></dd></div>
-                    </dl>
-                    <?php if (($card['state'] ?? '') === 'stale'): ?>
-                        <form method="post" class="button-row computer-actions" data-confirm="Remove this stale worker check-in from the board?">
-                            <input type="hidden" name="form_action" value="worker_action">
-                            <input type="hidden" name="worker_action" value="remove_stale">
-                            <input type="hidden" name="pc_id" value="<?= reflection_h($card['pc_id'] ?? '') ?>">
-                            <button type="submit" class="danger-button small-button">Remove stale check-in</button>
-                        </form>
-                    <?php endif; ?>
-                </article>
-            <?php endforeach; ?>
+            <?= reflection_render_worker_cards_html($workerCards) ?>
         </div>
     </section>
 

@@ -67,8 +67,13 @@
             metricsSection.innerHTML = data.metrics;
         }
 
+        var workerSummary = document.getElementById('worker-summary');
+        if (workerSummary && typeof data.worker_summary === 'string') {
+            workerSummary.innerHTML = data.worker_summary;
+        }
+
         var workersGrid = document.getElementById('workers-grid');
-        if (workersGrid && data.workers) {
+        if (workersGrid && typeof data.workers === 'string') {
             workersGrid.innerHTML = data.workers;
         }
 
