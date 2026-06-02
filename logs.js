@@ -4,6 +4,7 @@
     var refreshInterval = 5000;
     var activeController = null;
     var requestId = 0;
+    var typingTimer = null;
 
     function panel() {
         return document.querySelector(panelSelector);
@@ -21,6 +22,12 @@
     function buildUrl(url) {
         var target = new URL(url, window.location.href);
         target.searchParams.set('_cache', String(Date.now()));
+        return target;
+    }
+
+    function cleanUrl(url) {
+        var target = new URL(url, window.location.href);
+        target.searchParams.delete('_cache');
         return target;
     }
 
@@ -65,9 +72,8 @@
                 return;
             }
             applyHtml(html);
-            target.searchParams.delete('_cache');
             if (pushHistory) {
-                window.history.pushState({}, '', target.toString());
+                window.history.pushState({}, '', cleanUrl(target).toString());
             }
         })
         .catch(function (error) {
@@ -76,6 +82,17 @@
             }
             console.error('Log refresh failed:', error);
         });
+    }
+
+    function urlFromFilterForm(form) {
+        var params = new URLSearchParams(new FormData(form));
+        var target = new URL(form.getAttribute('action') || window.location.pathname, window.location.href);
+        target.search = params.toString();
+        return target;
+    }
+
+    function loadFilterForm(form) {
+        loadUrl(urlFromFilterForm(form).toString(), true);
     }
 
     document.addEventListener('click', function (event) {
@@ -93,11 +110,32 @@
             return;
         }
         event.preventDefault();
+        loadFilterForm(form);
+    });
 
-        var params = new URLSearchParams(new FormData(form));
-        var target = new URL(form.getAttribute('action') || window.location.pathname, window.location.href);
-        target.search = params.toString();
-        loadUrl(target.toString(), true);
+    document.addEventListener('change', function (event) {
+        var field = event.target.closest && event.target.closest('#logs-viewer-panel .log-filter-form select');
+        if (!field) {
+            return;
+        }
+        var form = field.closest('.log-filter-form');
+        if (form) {
+            loadFilterForm(form);
+        }
+    });
+
+    document.addEventListener('input', function (event) {
+        var field = event.target.closest && event.target.closest('#logs-viewer-panel .log-filter-form input[name="q"]');
+        if (!field) {
+            return;
+        }
+        window.clearTimeout(typingTimer);
+        typingTimer = window.setTimeout(function () {
+            var form = field.closest('.log-filter-form');
+            if (form) {
+                loadFilterForm(form);
+            }
+        }, 400);
     });
 
     window.addEventListener('popstate', function () {

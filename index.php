@@ -622,10 +622,9 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
     <?php
     $workersHtml = ob_get_clean();
     
-    // Render jobs table
+    // Render jobs table rows
     ob_start();
     ?>
-    <tbody>
     <?php if ($jobs === []): ?>
         <tr><td colspan="8" class="empty">No jobs match this filter.</td></tr>
     <?php endif; ?>
@@ -688,9 +687,38 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
             </td>
         </tr>
     <?php endforeach; ?>
-    </tbody>
     <?php
     $jobsHtml = ob_get_clean();
+
+    // Render job status tabs
+    ob_start();
+    ?>
+    <?php foreach (['all', 'active', 'queued', 'running', 'held', 'success', 'failed', 'stale', 'blocked', 'ignored', 'finished'] as $filter): ?>
+        <?php
+            if ($filter === 'all') {
+                $tabCount = array_sum($statusCounts);
+            } elseif ($filter === 'active') {
+                $tabCount = $activeCount;
+            } elseif ($filter === 'finished') {
+                $tabCount = $completedInStore;
+            } else {
+                $tabCount = (int) ($statusCounts[$filter] ?? 0);
+            }
+        ?>
+        <button type="button" class="<?= $jobStatus === $filter ? 'active' : '' ?>" data-job-status-filter="<?= reflection_h($filter) ?>"><?= reflection_h($filter) ?> <span><?= $tabCount ?></span></button>
+    <?php endforeach; ?>
+    <?php
+    $jobTabsHtml = ob_get_clean();
+
+    // Render job pagination
+    ob_start();
+    ?>
+    <a class="<?= (int) $jobPageData['page'] <= 1 ? 'disabled' : '' ?>" href="<?= reflection_h(reflection_url_with(['job_page' => max(1, (int) $jobPageData['page'] - 1)])) ?>">Previous</a>
+    <span>Page <?= (int) $jobPageData['page'] ?> of <?= (int) $jobPageData['pages'] ?></span>
+    <a class="<?= (int) $jobPageData['page'] >= (int) $jobPageData['pages'] ? 'disabled' : '' ?>" href="<?= reflection_h(reflection_url_with(['job_page' => min((int) $jobPageData['pages'], (int) $jobPageData['page'] + 1)])) ?>">Next</a>
+    <?php
+    $jobPaginationHtml = ob_get_clean();
+    $jobSummaryText = 'Showing ' . count($jobs) . ' of ' . (int) $jobPageData['total'] . ' job(s). Choose a filter or press Apply filters; the table updates without a full page reload. Queued jobs can be moved earlier or later in the worker pick-up order.';
     
     // Render events
     ob_start();
@@ -735,6 +763,11 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
         'metrics' => $metricsHtml,
         'workers' => $workersHtml,
         'jobs' => $jobsHtml,
+        'job_tabs' => $jobTabsHtml,
+        'job_pagination' => $jobPaginationHtml,
+        'job_summary' => $jobSummaryText,
+        'job_status' => $jobStatus,
+        'job_per_page' => (int) $jobPageData['per_page'],
         'events' => $eventsHtml,
         'files' => $filesHtml,
         'timestamp' => time(),
@@ -1058,9 +1091,9 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
             <div>
                 <p class="eyebrow">Queue store</p>
                 <h2>Jobs</h2>
-                <p class="api-note">Showing <?= count($jobs) ?> of <?= (int) $jobPageData['total'] ?> job(s). Choose a filter and press Apply filters; the table will not reload while you are just switching filters. Queued jobs can be moved earlier or later in the worker pick-up order.</p>
+                <p class="api-note" id="jobs-summary">Showing <?= count($jobs) ?> of <?= (int) $jobPageData['total'] ?> job(s). Choose a filter or press Apply filters; the table updates without a full page reload. Queued jobs can be moved earlier or later in the worker pick-up order.</p>
             </div>
-            <form method="get" class="toolbar">
+            <form method="get" class="toolbar" id="job-filter-form">
                 <label>
                     Status
                     <select name="job_status" id="job-status-select">
@@ -1080,7 +1113,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                 <button type="submit" class="secondary-button">Apply filters</button>
             </form>
         </div>
-        <nav class="status-tabs" aria-label="Job status filters" data-job-status-tabs>
+        <nav class="status-tabs" aria-label="Job status filters" data-job-status-tabs id="job-status-tabs">
             <?php foreach (['all', 'active', 'queued', 'running', 'held', 'success', 'failed', 'stale', 'blocked', 'ignored', 'finished'] as $filter): ?>
                 <?php
                     if ($filter === 'all') {
@@ -1176,7 +1209,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                 </tbody>
             </table>
         </div>
-        <div class="pagination">
+        <div class="pagination" id="jobs-pagination">
             <a class="<?= (int) $jobPageData['page'] <= 1 ? 'disabled' : '' ?>" href="<?= reflection_h(reflection_url_with(['job_page' => max(1, (int) $jobPageData['page'] - 1)])) ?>">Previous</a>
             <span>Page <?= (int) $jobPageData['page'] ?> of <?= (int) $jobPageData['pages'] ?></span>
             <a class="<?= (int) $jobPageData['page'] >= (int) $jobPageData['pages'] ? 'disabled' : '' ?>" href="<?= reflection_h(reflection_url_with(['job_page' => min((int) $jobPageData['pages'], (int) $jobPageData['page'] + 1)])) ?>">Next</a>
