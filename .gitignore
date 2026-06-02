@@ -14,4 +14,3 @@ farm_settings.local.php
 __MACOSX/
 
 /cluster/output
-.reflection_managed_files

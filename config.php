@@ -7,42 +7,15 @@ function reflection_string_starts_with(string $value, string $prefix): bool
     return $prefix === '' || strncmp($value, $prefix, strlen($prefix)) === 0;
 }
 
-function reflection_git_commit_id(string $repoRoot): ?string
+function reflection_read_version_file(string $appRoot): ?string
 {
-    $headPath = $repoRoot . DIRECTORY_SEPARATOR . '.git' . DIRECTORY_SEPARATOR . 'HEAD';
-    if (!is_file($headPath)) {
+    $versionPath = $appRoot . DIRECTORY_SEPARATOR . 'VERSION';
+    if (!is_file($versionPath)) {
         return null;
     }
 
-    $head = trim((string) file_get_contents($headPath));
-    if (!reflection_string_starts_with($head, 'ref:')) {
-        return $head !== '' ? $head : null;
-    }
-
-    $refName = trim(substr($head, 4));
-    $refPath = $repoRoot . DIRECTORY_SEPARATOR . '.git' . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $refName);
-    if (is_file($refPath)) {
-        $commit = trim((string) file_get_contents($refPath));
-        return $commit !== '' ? $commit : null;
-    }
-
-    $packedRefsPath = $repoRoot . DIRECTORY_SEPARATOR . '.git' . DIRECTORY_SEPARATOR . 'packed-refs';
-    if (!is_file($packedRefsPath)) {
-        return null;
-    }
-
-    foreach (file($packedRefsPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
-        if (reflection_string_starts_with($line, '#') || reflection_string_starts_with($line, '^')) {
-            continue;
-        }
-
-        [$commit, $packedRefName] = array_pad(explode(' ', $line, 2), 2, '');
-        if ($packedRefName === $refName && $commit !== '') {
-            return $commit;
-        }
-    }
-
-    return null;
+    $version = trim((string) file_get_contents($versionPath));
+    return $version !== '' ? $version : null;
 }
 
 function reflection_directory_can_store(string $directory): bool
@@ -144,7 +117,7 @@ function reflection_default_allowed_tasks(): array
         'status' => 'Built-in worker health snapshot.',
         'reload_tasks' => 'Ask a worker to reload its local task registry.',
         'shutdown' => 'Ask a worker to stop after reporting success.',
-        'update_worker' => 'Ask a worker to download the latest code and restart itself.',
+        'update_worker' => 'Ask a worker to download the latest code, report success, and reboot the farm computer.',
         'wake_farm' => 'Ask a worker to send Wake-on-LAN packets to configured farm computers.',
         'storage_test' => 'Ask a worker to verify read/write/rename/delete access to a configured storage server.',
     ];
@@ -273,8 +246,9 @@ function reflection_master_config(?array $farmSettings = null): array
         . DIRECTORY_SEPARATOR
         . 'reflection-farm-'
         . substr(hash('sha256', __DIR__ . '|' . (string) ($settings['farm_id'] ?? 'default')), 0, 12);
+    $detectedVersion = reflection_read_version_file($repoRoot) ?? 'unknown';
     $requiredVersion = reflection_env_string('REFLECTION_REQUIRED_VERSION')
-        ?? ($settings['required_version'] ?: reflection_git_commit_id($repoRoot));
+        ?? ($settings['required_version'] ?: $detectedVersion);
     $configuredStorage = reflection_env_string('REFLECTION_MASTER_STORE');
     $defaultStorage = (string) (
         $settings['storage_path']
@@ -295,7 +269,7 @@ function reflection_master_config(?array $farmSettings = null): array
         'storage_warning' => $storeConfig['storage_warning'],
         'required_version' => $requiredVersion !== false && $requiredVersion !== ''
             ? $requiredVersion
-            : reflection_git_commit_id($repoRoot),
+            : $detectedVersion,
         'runtime_defaults' => is_array($settings['runtime_defaults'] ?? null) ? $settings['runtime_defaults'] : [],
         'allowed_tasks' => is_array($settings['allowed_tasks'] ?? null) ? $settings['allowed_tasks'] : [],
         'stale_after_seconds' => (int) ($settings['stale_after_seconds'] ?? (15 * 60)),

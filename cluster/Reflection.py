@@ -222,76 +222,23 @@ def _normalize_transfer_auth(value):
     }
 
 
-def _resolve_git_dir(start_path):
-    """Return the repository Git directory by reading Git metadata files."""
+def read_version_file(start_path=__file__):
+    """Return the Reflection application version from the nearest VERSION file."""
     current = Path(start_path).resolve()
+    if current.is_file():
+        current = current.parent
 
     for candidate in (current, *current.parents):
-        git_path = candidate / ".git"
-        if git_path.is_dir():
-            return git_path
+        version_path = candidate / "VERSION"
+        if version_path.is_file():
+            version = version_path.read_text(encoding="utf-8").strip()
+            if version:
+                return version
 
-        if git_path.is_file():
-            content = git_path.read_text(encoding="utf-8").strip()
-            prefix = "gitdir:"
-            if not content.lower().startswith(prefix):
-                continue
-
-            git_dir = Path(content[len(prefix) :].strip())
-            if not git_dir.is_absolute():
-                git_dir = candidate / git_dir
-            return git_dir.resolve()
-
-    return None
+    return "unknown"
 
 
-def _read_packed_ref(git_dir, ref_name):
-    """Read a commit hash for ref_name from Git's packed-refs file."""
-    packed_refs = git_dir / "packed-refs"
-    if not packed_refs.is_file():
-        return None
-
-    with packed_refs.open(encoding="utf-8") as refs_file:
-        for line in refs_file:
-            line = line.strip()
-            if not line or line.startswith("#") or line.startswith("^"):
-                continue
-
-            try:
-                commit_id, packed_ref_name = line.split(" ", 1)
-            except ValueError:
-                continue
-
-            if packed_ref_name == ref_name:
-                return commit_id
-
-    return None
-
-
-def get_git_commit_id(start_path=__file__):
-    """Return the current commit ID by reading the repository's Git files."""
-    git_dir = _resolve_git_dir(Path(start_path).parent)
-    if git_dir is None:
-        return "unknown"
-
-    head = git_dir / "HEAD"
-    if not head.is_file():
-        return "unknown"
-
-    head_value = head.read_text(encoding="utf-8").strip()
-    ref_prefix = "ref:"
-    if not head_value.startswith(ref_prefix):
-        return head_value
-
-    ref_name = head_value[len(ref_prefix) :].strip()
-    ref_path = git_dir / ref_name
-    if ref_path.is_file():
-        return ref_path.read_text(encoding="utf-8").strip()
-
-    return _read_packed_ref(git_dir, ref_name) or "unknown"
-
-
-VERSION = get_git_commit_id()
+VERSION = read_version_file()
 AGENT_CONFIG = load_agent_config()
 SERVER_URL = AGENT_CONFIG["server_url"]  # Target PHP endpoint
 POLL_INTERVAL = AGENT_CONFIG["poll_interval"]  # Seconds to wait before checking for new jobs if idle
@@ -374,6 +321,7 @@ class TaskOutcome:
     success: bool
     stop_agent: bool = False
     restart_agent: bool = False
+    reboot_system: bool = False
     reload_tasks: bool = False
     cleanup_source: bool = False
     message: str = ""
@@ -456,7 +404,7 @@ def _system_shutdown(source, delivery, overwrite_allowed):
 
 
 def _system_update_worker(source, delivery, overwrite_allowed):
-    """Download the latest worker code and restart this agent after acknowledgement."""
+    """Download the latest worker code and reboot this computer after acknowledgement."""
     if not UPDATE_SCRIPT_PATH.is_file():
         raise FileNotFoundError(f"Missing updater script: {UPDATE_SCRIPT_PATH}")
 
@@ -476,9 +424,9 @@ def _system_update_worker(source, delivery, overwrite_allowed):
 
     return {
         "success": True,
-        "restart_agent": True,
+        "reboot_system": True,
         "cleanup_source": False,
-        "message": output or "Worker updated successfully. Restart requested.",
+        "message": output or "Worker updated successfully. Reboot requested.",
     }
 
 
@@ -594,7 +542,7 @@ def built_in_tasks():
         "update_worker": TaskDefinition(
             name="update_worker",
             run=_system_update_worker,
-            description="Built-in control task that downloads updates and restarts this worker.",
+            description="Built-in control task that downloads updates and reboots this farm computer.",
         ),
         "wake_farm": TaskDefinition(
             name="wake_farm",
@@ -1551,6 +1499,39 @@ class TaskHeartbeat:
                 logging.warning("Heartbeat for task %s failed: %s", self.task_id, exc)
 
 # --- CORE FARM AGENT CLASS ---
+def _reboot_command_from_env():
+    """Return a configured reboot command from REFLECTION_REBOOT_COMMAND when present."""
+    raw_command = os.environ.get("REFLECTION_REBOOT_COMMAND", "").strip()
+    if not raw_command:
+        return None
+
+    import shlex
+    return shlex.split(raw_command)
+
+
+def _default_reboot_command():
+    """Return a platform-appropriate command that requests an immediate reboot."""
+    system_name = platform.system().lower()
+    if system_name == "windows":
+        return ["shutdown", "/r", "/t", "0"]
+
+    if shutil.which("systemctl"):
+        return ["systemctl", "reboot"]
+
+    return ["shutdown", "-r", "now"]
+
+
+def _request_system_reboot():
+    """Request a real machine reboot and return immediately."""
+    command = _reboot_command_from_env() or _default_reboot_command()
+    logging.info("Requesting system reboot with command: %s", " ".join(command))
+    try:
+        subprocess.Popen(command, start_new_session=True)
+    except Exception as exc:
+        logging.error("Failed to request system reboot: %s", exc)
+        raise
+
+
 class FarmAgent:
     def __init__(self):
         import requests
@@ -1722,8 +1703,14 @@ class FarmAgent:
             return True
 
         if response.get("status") == "version_mismatch":
-            logging.critical("Fatal: Script version does not match server version! Halting agent.")
-            return False
+            required = response.get("required_version", "unknown")
+            logging.warning(
+                "Worker version %s does not match required version %s. Waiting for an update_worker job.",
+                VERSION,
+                required,
+            )
+            time.sleep(POLL_INTERVAL)
+            return True
 
         if response.get("status") != "task_available":
             logging.warning("Unexpected server response. Sleeping before retry: %s", response)
@@ -1788,8 +1775,13 @@ class FarmAgent:
             if task_outcome.reload_tasks:
                 self.reload_task_registry()
 
+            if task_outcome.reboot_system:
+                logging.info("Update task %s confirmed by server. Rebooting farm computer.", task_id)
+                _request_system_reboot()
+                return False
+
             if task_outcome.restart_agent:
-                logging.info("Update task %s confirmed by server. Restarting agent.", task_id)
+                logging.info("Restart task %s confirmed by server. Restarting agent.", task_id)
                 os.execv(sys.executable, [sys.executable, *sys.argv])
 
             if task_outcome.stop_agent:

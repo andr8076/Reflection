@@ -195,8 +195,34 @@ $response = reflection_handle_farm_api([
     'version' => 'old-version',
     'pc_id' => 'node-01',
 ], $store, $config);
-assertSameValue('version_mismatch', $response['status'], 'Wrong worker versions must be rejected.');
+assertSameValue('version_mismatch', $response['status'], 'Wrong worker versions must be rejected when no updater job is queued.');
 assertSameValue('test-version', $response['required_version'], 'Version mismatch should publish the required version.');
+
+$updateJob = $store->createJob('update_worker', null, null, false);
+$response = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'old-version',
+    'pc_id' => 'node-updater',
+], $store, $config);
+assertSameValue('task_available', $response['status'], 'Outdated workers should still be allowed to receive update_worker jobs.');
+assertSameValue('update_worker', $response['task']['module'], 'Version-recovery task should be the updater task.');
+assertSameValue(true, $response['version_mismatch'], 'Updater recovery responses should mark that the worker is outdated.');
+$response = reflection_handle_farm_api([
+    'action' => 'confirm_taken',
+    'version' => 'old-version',
+    'pc_id' => 'node-updater',
+    'task_id' => $updateJob['task_id'],
+], $store, $config);
+assertSameValue('acknowledged', $response['status'], 'Outdated workers should be allowed to start update_worker jobs.');
+$response = reflection_handle_farm_api([
+    'action' => 'report_done',
+    'version' => 'old-version',
+    'pc_id' => 'node-updater',
+    'task_id' => $updateJob['task_id'],
+    'status' => 'success',
+    'error' => '',
+], $store, $config);
+assertSameValue('confirmed_by_server', $response['status'], 'Outdated workers should be allowed to report update_worker success before rebooting.');
 
 $response = reflection_handle_farm_api([
     'action' => 'request_task',
@@ -366,8 +392,9 @@ $retryJob = $store->createJob('dummy_task', 'incoming/retry.dat', 'outputs/retry
 assertSameValue(true, $store->markJobRunning($retryJob['task_id'], 'node-04'), 'Retry test job should lock.');
 assertSameValue(true, $store->finishJob($retryJob['task_id'], 'node-04', 'failed', 'simulated'), 'Retry test job should finish as failed.');
 $data = $store->read();
-assertSameValue('queued', $data['jobs'][2]['status'], 'Failed jobs should be retried to the end of the queue.');
-assertSameValue(1, $data['jobs'][2]['attempt'], 'Retried jobs should increment attempt count.');
+$retriedJobs = array_values(array_filter($data['jobs'], static fn (array $job): bool => ($job['parent_task_id'] ?? '') === $retryJob['task_id']));
+assertSameValue('queued', $retriedJobs[0]['status'], 'Failed jobs should be retried to the end of the queue.');
+assertSameValue(1, $retriedJobs[0]['attempt'], 'Retried jobs should increment attempt count.');
 
 $staleJob = $store->createJob('dummy_task', 'incoming/stale.dat', 'outputs/stale.txt', false);
 assertSameValue(true, $store->markJobRunning($staleJob['task_id'], 'node-stale'), 'Stale test job should lock.');
@@ -382,10 +409,12 @@ unset($jobForStaleTest);
 file_put_contents($storePath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
 assertSameValue(1, $store->requeueStaleJobs(60), 'Stale running jobs should be detected.');
 $data = $store->read();
-assertSameValue('stale', $data['jobs'][3]['status'], 'Stale jobs should be marked stale.');
+$staleJobs = array_values(array_filter($data['jobs'], static fn (array $job): bool => ($job['task_id'] ?? '') === $staleJob['task_id']));
+$requeuedStaleJobs = array_values(array_filter($data['jobs'], static fn (array $job): bool => ($job['requeued_from_stale_task_id'] ?? '') === $staleJob['task_id']));
+assertSameValue('stale', $staleJobs[0]['status'], 'Stale jobs should be marked stale.');
 assertSameValue(null, $data['workers']['node-stale']['current_job'], 'Stale jobs should clear the worker current_job field.');
-assertSameValue('queued', $data['jobs'][4]['status'], 'Stale jobs should be requeued to the end by default.');
-assertSameValue(1, $data['jobs'][4]['attempt'], 'Requeued stale jobs should increment attempt count.');
+assertSameValue('queued', $requeuedStaleJobs[0]['status'], 'Stale jobs should be requeued to the end by default.');
+assertSameValue(1, $requeuedStaleJobs[0]['attempt'], 'Requeued stale jobs should increment attempt count.');
 
 
 $interruptStorePath = sys_get_temp_dir() . '/reflection_interrupt_store_' . bin2hex(random_bytes(6)) . '.json';

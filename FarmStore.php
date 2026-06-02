@@ -333,6 +333,33 @@ final class FarmStore
         });
     }
 
+    public function nextQueuedUpdateJob(): ?array
+    {
+        return $this->withLock(function (array $data): ?array {
+            foreach ($data['jobs'] as $job) {
+                if (($job['status'] ?? '') === 'queued' && ($job['module'] ?? '') === 'update_worker') {
+                    return $job;
+                }
+            }
+
+            return null;
+        });
+    }
+
+    public function jobModule(string $taskId): ?string
+    {
+        return $this->withLock(function (array $data) use ($taskId): ?string {
+            foreach ($data['jobs'] as $job) {
+                if (($job['task_id'] ?? '') === $taskId) {
+                    $module = trim((string) ($job['module'] ?? ''));
+                    return $module !== '' ? $module : null;
+                }
+            }
+
+            return null;
+        });
+    }
+
     public function markJobRunning(string $taskId, string $pcId): bool
     {
         $result = $this->withLock(function (array $data) use ($taskId, $pcId): array {

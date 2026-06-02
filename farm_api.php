@@ -29,7 +29,16 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
 
     $settings = $store->effectiveSettings();
     $requiredVersion = $config['required_version'] ?? null;
-    if (!empty($settings['enforce_version']) && is_string($requiredVersion) && $requiredVersion !== '' && $version !== $requiredVersion) {
+    $versionMismatch = !empty($settings['enforce_version'])
+        && is_string($requiredVersion)
+        && $requiredVersion !== ''
+        && $version !== $requiredVersion;
+
+    if ($versionMismatch && $action === 'request_task') {
+        return reflection_api_request_update_for_version_mismatch($store, $config, $pcId, $requiredVersion);
+    }
+
+    if ($versionMismatch && !reflection_api_allows_mismatched_version_action($payload, $store)) {
         return ['status' => 'version_mismatch', 'required_version' => $requiredVersion];
     }
 
@@ -161,6 +170,70 @@ function reflection_run_due_automation_on_worker_checkin(FarmStore $store, array
     }
 }
 
+function reflection_api_allows_mismatched_version_action(array $payload, FarmStore $store): bool
+{
+    $action = (string) ($payload['action'] ?? '');
+    if (!in_array($action, ['confirm_taken', 'heartbeat_task', 'report_done'], true)) {
+        return false;
+    }
+
+    $taskId = trim((string) ($payload['task_id'] ?? ''));
+    if ($taskId === '') {
+        return false;
+    }
+
+    return $store->jobModule($taskId) === 'update_worker';
+}
+
+function reflection_api_task_payload(array $job, array $config, array $settings, int $allowedWorkers): array
+{
+    $task = [
+        'task_id' => $job['task_id'],
+        'module' => $job['module'],
+        'source' => $job['source'],
+        'delivery' => $job['delivery'],
+        'overwrite_allowed' => (bool) $job['overwrite_allowed'],
+        'shutdown_after_task' => !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 1,
+        'quarantine_keep_days' => max(1, (int) ($settings['quarantine_keep_days'] ?? 14)),
+        'worker_temp_max_age_hours' => max(1, (int) ($settings['worker_temp_max_age_hours'] ?? 24)),
+    ];
+
+    $transferServer = reflection_worker_transfer_server_for_job($job, $config);
+    if ($transferServer !== null && (!reflection_is_control_task((string) $job['module']) || (string) $job['module'] === 'storage_test')) {
+        $task['transfer_server'] = $transferServer;
+        $task['path_mode'] = reflection_is_control_task((string) $job['module']) ? 'control' : 'transfer';
+    }
+
+    if (!empty($config['send_transfer_credentials'])) {
+        $transferAuth = reflection_worker_transfer_auth($config);
+        if ($transferAuth !== null) {
+            $task['transfer_auth'] = $transferAuth;
+        }
+    }
+
+    return $task;
+}
+
+function reflection_api_request_update_for_version_mismatch(FarmStore $store, array $config, string $pcId, string $requiredVersion): array
+{
+    $job = $store->nextQueuedUpdateJob();
+    if ($job === null) {
+        return [
+            'status' => 'version_mismatch',
+            'required_version' => $requiredVersion,
+            'update_available' => false,
+        ];
+    }
+
+    $store->resetWorkerNoJobCheckIns($pcId);
+    return [
+        'status' => 'task_available',
+        'version_mismatch' => true,
+        'required_version' => $requiredVersion,
+        'task' => reflection_api_task_payload($job, $config, $store->effectiveSettings(), PHP_INT_MAX),
+    ];
+}
+
 function reflection_api_request_task(FarmStore $store, array $config, string $pcId): array
 {
     $staleAfterSeconds = (int) ($config['stale_after_seconds'] ?? 900);
@@ -195,33 +268,9 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
 
     $store->resetWorkerNoJobCheckIns($pcId);
 
-    $task = [
-        'task_id' => $job['task_id'],
-        'module' => $job['module'],
-        'source' => $job['source'],
-        'delivery' => $job['delivery'],
-        'overwrite_allowed' => (bool) $job['overwrite_allowed'],
-        'shutdown_after_task' => !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 1,
-        'quarantine_keep_days' => max(1, (int) ($settings['quarantine_keep_days'] ?? 14)),
-        'worker_temp_max_age_hours' => max(1, (int) ($settings['worker_temp_max_age_hours'] ?? 24)),
-    ];
-
-    $transferServer = reflection_worker_transfer_server_for_job($job, $config);
-    if ($transferServer !== null && (!reflection_is_control_task((string) $job['module']) || (string) $job['module'] === 'storage_test')) {
-        $task['transfer_server'] = $transferServer;
-        $task['path_mode'] = reflection_is_control_task((string) $job['module']) ? 'control' : 'transfer';
-    }
-
-    if (!empty($config['send_transfer_credentials'])) {
-        $transferAuth = reflection_worker_transfer_auth($config);
-        if ($transferAuth !== null) {
-            $task['transfer_auth'] = $transferAuth;
-        }
-    }
-
     return [
         'status' => 'task_available',
-        'task' => $task,
+        'task' => reflection_api_task_payload($job, $config, $settings, $allowedWorkers),
     ];
 }
 

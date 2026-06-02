@@ -331,7 +331,7 @@ class WakeFarmTest(unittest.TestCase):
 
 
 class WorkerUpdateTest(unittest.TestCase):
-    def test_update_worker_runs_updater_and_requests_restart(self):
+    def test_update_worker_runs_updater_and_requests_reboot(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             update_script = Path(temp_dir) / "update.sh"
             update_script.write_text("#!/usr/bin/env bash\necho fixture update complete\n", encoding="utf-8")
@@ -344,7 +344,8 @@ class WorkerUpdateTest(unittest.TestCase):
                 Reflection.UPDATE_SCRIPT_PATH = original_update_script
 
             self.assertTrue(outcome.success)
-            self.assertTrue(outcome.restart_agent)
+            self.assertTrue(outcome.reboot_system)
+            self.assertFalse(outcome.restart_agent)
             self.assertFalse(outcome.stop_agent)
             self.assertIn("fixture update complete", outcome.message)
 
@@ -364,8 +365,8 @@ class WorkerUpdateTest(unittest.TestCase):
     def test_update_worker_is_always_available_as_a_builtin(self):
         self.assertIn("update_worker", Reflection.built_in_tasks())
 
-    def test_confirmed_update_replaces_the_current_agent_process(self):
-        class RestartRequested(Exception):
+    def test_confirmed_update_requests_system_reboot(self):
+        class RebootRequested(Exception):
             pass
 
         class FakeAgent:
@@ -388,31 +389,30 @@ class WorkerUpdateTest(unittest.TestCase):
                 raise AssertionError("update task should not clean source files")
 
             def reload_task_registry(self):
-                raise AssertionError("update task should restart rather than reload in-process")
+                raise AssertionError("update task should reboot rather than reload in-process")
 
         original_runner = Reflection._run_task_with_transfer_handling
-        original_execv = Reflection.os.execv
+        original_reboot = Reflection._request_system_reboot
         seen = []
         try:
             Reflection._run_task_with_transfer_handling = lambda *args, **kwargs: Reflection.TaskOutcome(
                 success=True,
-                restart_agent=True,
+                reboot_system=True,
                 message="updated",
             )
 
-            def record_execv(executable, arguments):
-                seen.append((executable, arguments))
-                raise RestartRequested()
+            def record_reboot():
+                seen.append("reboot")
+                raise RebootRequested()
 
-            Reflection.os.execv = record_execv
-            with self.assertRaises(RestartRequested):
+            Reflection._request_system_reboot = record_reboot
+            with self.assertRaises(RebootRequested):
                 Reflection.FarmAgent._run_lifecycle_cycle(FakeAgent())
         finally:
             Reflection._run_task_with_transfer_handling = original_runner
-            Reflection.os.execv = original_execv
+            Reflection._request_system_reboot = original_reboot
 
-        self.assertEqual(seen[0][0], Reflection.sys.executable)
-        self.assertEqual(seen[0][1][0], Reflection.sys.executable)
+        self.assertEqual(seen, ["reboot"])
 
 
 class TransferHandlingTest(unittest.TestCase):
