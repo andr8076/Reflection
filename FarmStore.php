@@ -276,11 +276,27 @@ final class FarmStore
     public function recordWorkerCheckIn(string $pcId, string $version, array $capabilities = []): void
     {
         $this->withLock(function (array $data) use ($pcId, $version, $capabilities): array {
-            $worker = array_merge($data['workers'][$pcId] ?? [], [
+            $existingWorker = is_array($data['workers'][$pcId] ?? null) ? $data['workers'][$pcId] : [];
+            $wasExpectedOffline = !empty($existingWorker['expected_offline']);
+
+            $worker = array_merge($existingWorker, [
                 'pc_id' => $pcId,
                 'version' => $version,
                 'last_check_in' => gmdate(DATE_ATOM),
             ]);
+
+            if ($wasExpectedOffline) {
+                $worker['current_job'] = null;
+                $worker['idle_no_job_checkins'] = 0;
+                unset(
+                    $worker['idle_no_job_policy_limit'],
+                    $worker['idle_no_job_started_at'],
+                    $worker['idle_no_job_last_at'],
+                    $worker['expected_offline'],
+                    $worker['expected_offline_reason'],
+                    $worker['expected_offline_at']
+                );
+            }
 
             if ($capabilities !== []) {
                 $worker['capabilities'] = $this->cleanWorkerCapabilities($capabilities);
@@ -291,11 +307,28 @@ final class FarmStore
         }, true);
     }
 
-    public function recordWorkerNoJobCheckIn(string $pcId): int
+    public function recordWorkerNoJobCheckIn(string $pcId, int $shutdownLimit = 0): int
     {
-        return $this->withLock(function (array $data) use ($pcId): array {
+        $shutdownLimit = max(0, $shutdownLimit);
+
+        return $this->withLock(function (array $data) use ($pcId, $shutdownLimit): array {
             $worker = $data['workers'][$pcId] ?? ['pc_id' => $pcId];
+            $previousLimit = array_key_exists('idle_no_job_policy_limit', $worker)
+                ? max(0, (int) ($worker['idle_no_job_policy_limit'] ?? 0))
+                : null;
+
+            if ($previousLimit !== null && $previousLimit !== $shutdownLimit) {
+                $worker['idle_no_job_checkins'] = 0;
+                unset($worker['idle_no_job_started_at'], $worker['idle_no_job_last_at']);
+            }
+
+            if (max(0, (int) ($worker['idle_no_job_checkins'] ?? 0)) === 0) {
+                $worker['idle_no_job_started_at'] = gmdate(DATE_ATOM);
+            }
+
+            $worker['idle_no_job_policy_limit'] = $shutdownLimit;
             $worker['idle_no_job_checkins'] = max(0, (int) ($worker['idle_no_job_checkins'] ?? 0)) + 1;
+            $worker['idle_no_job_last_at'] = gmdate(DATE_ATOM);
             $worker['current_job'] = null;
             $data['workers'][$pcId] = $worker;
 
@@ -308,6 +341,11 @@ final class FarmStore
         $this->withLock(function (array $data) use ($pcId): array {
             if (isset($data['workers'][$pcId])) {
                 $data['workers'][$pcId]['idle_no_job_checkins'] = 0;
+                unset(
+                    $data['workers'][$pcId]['idle_no_job_policy_limit'],
+                    $data['workers'][$pcId]['idle_no_job_started_at'],
+                    $data['workers'][$pcId]['idle_no_job_last_at']
+                );
             }
 
             return ['data' => $data, 'result' => null];
@@ -996,6 +1034,7 @@ final class FarmStore
     public function updateSettings(array $settings): array
     {
         return $this->withLock(function (array $data) use ($settings): array {
+            $previousIdleShutdownLimit = max(0, (int) (($data['settings'] ?? [])['idle_shutdown_after_no_job_checks'] ?? 0));
             $data['settings'] = array_merge($this->defaultSettings(), $data['settings'] ?? [], $settings);
             $data['settings']['max_retries'] = max(0, (int) ($data['settings']['max_retries'] ?? 0));
             $strategy = (string) ($data['settings']['stale_job_strategy'] ?? 'requeue_to_end');
@@ -1013,6 +1052,19 @@ final class FarmStore
             $data['settings']['ess_soc_error'] = $this->limitString((string) ($data['settings']['ess_soc_error'] ?? ''), 500);
             $data['settings']['ess_soc_raw_sample'] = $this->limitString((string) ($data['settings']['ess_soc_raw_sample'] ?? ''), 500);
             $data['settings']['idle_shutdown_after_no_job_checks'] = max(0, (int) ($data['settings']['idle_shutdown_after_no_job_checks'] ?? 0));
+            if ($data['settings']['idle_shutdown_after_no_job_checks'] !== $previousIdleShutdownLimit) {
+                foreach (($data['workers'] ?? []) as $workerId => $worker) {
+                    if (!is_array($worker)) {
+                        continue;
+                    }
+                    $data['workers'][$workerId]['idle_no_job_checkins'] = 0;
+                    unset(
+                        $data['workers'][$workerId]['idle_no_job_policy_limit'],
+                        $data['workers'][$workerId]['idle_no_job_started_at'],
+                        $data['workers'][$workerId]['idle_no_job_last_at']
+                    );
+                }
+            }
             $data['settings']['shutdown_debug_mode'] = !empty($data['settings']['shutdown_debug_mode']);
             $data['settings']['auto_wake_for_queued_jobs'] = !empty($data['settings']['auto_wake_for_queued_jobs']);
             $data['settings']['automation_run_due_on_worker_checkin'] = !empty($data['settings']['automation_run_due_on_worker_checkin']);

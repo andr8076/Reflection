@@ -148,7 +148,7 @@ $dataDirectory = dirname((string) $config['storage_path']);
                         <label>
                             Idle no-job polls before shutdown
                             <input type="number" name="idle_shutdown_after_no_job_checks" min="0" value="<?= (int) ($settings['idle_shutdown_after_no_job_checks'] ?? 0) ?>">
-                            <small>When this limit is reached, the master asks the worker to power off unless shutdown debug mode is enabled.</small>
+                            <small>Counts consecutive no-job polls. Changing this value restarts the idle counter so old polls cannot trigger an instant shutdown.</small>
                         </label>
                         <label class="check-row">
                             <input type="checkbox" name="shutdown_debug_mode" value="1" <?= !empty($settings['shutdown_debug_mode']) ? 'checked' : '' ?>>

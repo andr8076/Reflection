@@ -430,6 +430,20 @@ assertSameValue('idle_no_job_check_limit', $response['reason'], 'No-job limit sh
 assertSameValue(2, $response['idle_shutdown_after_no_job_checks'], 'No-job limit responses should publish the configured limit.');
 assertSameValue(false, $response['shutdown_debug_mode'], 'No-job limit responses should publish disabled shutdown debug mode.');
 
+$store->updateSettings([
+    'idle_shutdown_after_no_job_checks' => 10,
+]);
+$response = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'test-version',
+    'pc_id' => 'node-idle',
+], $store, $config);
+assertSameValue('no_jobs', $response['status'], 'Idle workers should still receive no_jobs after changing the no-job limit.');
+assertSameValue(false, $response['shutdown_after_task'], 'Changing the no-job limit should restart the no-job counter instead of shutting down immediately from an old count.');
+assertSameValue(1, $response['idle_no_job_checkins'], 'Changed no-job limits should restart each worker counter at the next poll.');
+$data = $store->read();
+assertSameValue(false, !empty($data['workers']['node-idle']['expected_offline']), 'A worker that checks in again after expected shutdown should be treated as online again.');
+
 $retryJob = $store->createJob('dummy_task', 'incoming/retry.dat', 'outputs/retry.txt', false);
 assertSameValue(true, $store->markJobRunning($retryJob['task_id'], 'node-04'), 'Retry test job should lock.');
 assertSameValue(true, $store->finishJob($retryJob['task_id'], 'node-04', 'failed', 'simulated'), 'Retry test job should finish as failed.');

@@ -306,8 +306,8 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
 
 function reflection_api_no_jobs_response(FarmStore $store, string $pcId, array $settings, string $reason, bool $forceShutdown = false, array $config = []): array
 {
-    $idleCheckIns = $store->recordWorkerNoJobCheckIn($pcId);
     $shutdownLimit = max(0, (int) ($settings['idle_shutdown_after_no_job_checks'] ?? 0));
+    $idleCheckIns = $store->recordWorkerNoJobCheckIn($pcId, $shutdownLimit);
     $limitReached = $shutdownLimit > 0 && $idleCheckIns >= $shutdownLimit;
 
     $requestedShutdown = $forceShutdown || $limitReached;
