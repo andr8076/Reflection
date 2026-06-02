@@ -140,7 +140,18 @@ function reflection_uploaded_import_text(string $field): string
     return (string) file_get_contents($tmpName);
 }
 
-function reflection_worker_cards(array $workers, array $machines, int $staleAfterSeconds = 900): array
+function reflection_machine_min_soc_display(array $machine, array $settings): array
+{
+    foreach (['min_soc_percent', 'soc_margin_percent'] as $key) {
+        if (array_key_exists($key, $machine) && trim((string) $machine[$key]) !== '') {
+            return [max(0, min(100, (int) $machine[$key])), 'machine'];
+        }
+    }
+
+    return [max(0, min(100, (int) ($settings['ess_min_soc_percent'] ?? 20))), 'global'];
+}
+
+function reflection_worker_cards(array $workers, array $machines, int $staleAfterSeconds = 900, array $settings = []): array
 {
     $cards = [];
     $staleAfterSeconds = max(1, $staleAfterSeconds);
@@ -150,10 +161,13 @@ function reflection_worker_cards(array $workers, array $machines, int $staleAfte
             continue;
         }
 
+        [$minSoc, $minSocSource] = reflection_machine_min_soc_display($machine, $settings);
         $cards[$pcId] = [
             'pc_id' => $pcId,
             'mac' => $machine['mac'] ?? '',
-            'soc_margin_percent' => $machine['soc_margin_percent'] ?? 5,
+            'min_soc_percent' => $minSoc,
+            'min_soc_source' => $minSocSource,
+            'soc_margin_percent' => $minSoc,
             'wake_enabled' => !empty($machine['wake_enabled']),
             'shutdown_layer' => max(0, (int) ($machine['shutdown_layer'] ?? 0)),
             'version' => '—',
@@ -176,9 +190,11 @@ function reflection_worker_cards(array $workers, array $machines, int $staleAfte
         $cards[$pcId] = array_merge($cards[$pcId] ?? [
             'pc_id' => $pcId,
             'mac' => '',
-            'soc_margin_percent' => 5,
+            'min_soc_percent' => max(0, min(100, (int) ($settings['ess_min_soc_percent'] ?? 20))),
+            'min_soc_source' => 'global',
+            'soc_margin_percent' => max(0, min(100, (int) ($settings['ess_min_soc_percent'] ?? 20))),
             'wake_enabled' => false,
-                'shutdown_layer' => 0,
+            'shutdown_layer' => 0,
         ], [
             'version' => $worker['version'] ?? '—',
             'current_job' => $worker['current_job'] ?? null,
@@ -236,7 +252,7 @@ function reflection_render_worker_cards_html(array $workerCards): string
                 <div><dt>No-job polls</dt><dd><?= (int) ($card['idle_no_job_checkins'] ?? 0) ?></dd></div>
                 <div><dt>Version</dt><dd><code><?= reflection_h($card['version'] ?? '—') ?></code></dd></div>
                 <div><dt>Wake</dt><dd><?= !empty($card['wake_enabled']) ? 'enabled' : 'disabled' ?><?= !empty($card['mac']) ? ' · ' . reflection_h($card['mac']) : '' ?></dd></div>
-                <div><dt>SOC margin</dt><dd><?= (int) ($card['soc_margin_percent'] ?? 0) ?>%</dd></div>
+                <div><dt>Min ESS SOC</dt><dd><?= (int) ($card['min_soc_percent'] ?? $card['soc_margin_percent'] ?? 0) ?>%<?= ($card['min_soc_source'] ?? '') === 'global' ? ' · global' : '' ?></dd></div>
                 <div><dt>Shutdown layer</dt><dd><?= (int) ($card['shutdown_layer'] ?? 0) ?></dd></div>
             </dl>
             <?php if (($card['state'] ?? '') === 'stale'): ?>
@@ -284,7 +300,7 @@ function reflection_manual_wake_result(FarmStore $store, int $staleAfterSeconds)
     if ($targets === []) {
         return [
             'message' => null,
-            'error' => 'No Wake-on-LAN targets are currently eligible. Check configured machines, MAC addresses, SOC margins, and current online workers.',
+            'error' => 'No Wake-on-LAN targets are currently eligible. Check configured machines, MAC addresses, minimum ESS SOC values, and current online workers.',
         ];
     }
 
@@ -564,9 +580,9 @@ $workerLimitDisplay = $essSocIgnored
     : ($allowedActiveWorkers === PHP_INT_MAX ? 'off' : (string) (int) $allowedActiveWorkers);
 $workerLimitHelp = $essSocIgnored
     ? 'ESS unavailable'
-    : ($allowedActiveWorkers === PHP_INT_MAX ? 'no SOC cap' : 'workers whose SOC margin fits');
+    : ($allowedActiveWorkers === PHP_INT_MAX ? 'no SOC cap' : 'workers above their minimum ESS SOC');
 $workerStaleAfterSeconds = max(1, (int) ($config['stale_after_seconds'] ?? 900));
-$workerCards = reflection_worker_cards($workers, $machines, $workerStaleAfterSeconds);
+$workerCards = reflection_worker_cards($workers, $machines, $workerStaleAfterSeconds, $settings);
 $workerStateCounts = reflection_count_worker_states($workerCards);
 $archiveInfo = $store->archiveInfo();
 $validJobFilters = ['all', 'active', 'queued', 'running', 'held', 'success', 'failed', 'stale', 'blocked', 'ignored', 'finished'];
@@ -1019,11 +1035,11 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                 <?php elseif ($essSocIgnored): ?>
                     <p class="api-note panel-warning-note">ESS SOC is <?= reflection_h(reflection_ess_status_label($settings)) ?>. SOC limiting is paused, so every configured wake target is eligible until valid SOC data returns.</p>
                 <?php elseif ($wakeTargetCount === 0): ?>
-                    <p class="api-note panel-warning-note">No offline wake-enabled machine fits the current SOC margin. Wake control is disabled until SOC rises, the margins are changed, or an eligible machine goes offline.</p>
+                    <p class="api-note panel-warning-note">No offline wake-enabled machine is above its minimum ESS SOC. Wake control is disabled until SOC rises, the minimums are changed, or an eligible machine goes offline.</p>
                 <?php elseif ($allowedActiveWorkers === PHP_INT_MAX): ?>
                     <p class="api-note">SOC is not currently capping workers. All configured wake targets are eligible.</p>
                 <?php else: ?>
-                    <p class="api-note">Current SOC allows <?= (int) $allowedActiveWorkers ?> configured worker<?= $allowedActiveWorkers === 1 ? '' : 's' ?> by margin. <?= (int) $wakeTargetCount ?> of <?= (int) $wakeEnabledMachineCount ?> wake-enabled target<?= $wakeEnabledMachineCount === 1 ? '' : 's' ?> are eligible and offline.</p>
+                    <p class="api-note">Current SOC allows <?= (int) $allowedActiveWorkers ?> configured worker<?= $allowedActiveWorkers === 1 ? '' : 's' ?> by minimum ESS SOC. <?= (int) $wakeTargetCount ?> of <?= (int) $wakeEnabledMachineCount ?> wake-enabled target<?= $wakeEnabledMachineCount === 1 ? '' : 's' ?> are eligible and offline.</p>
                 <?php endif; ?>
                 <?php if (empty($demandWakePlan['enabled'])): ?>
                     <p class="api-note">Automatic demand wake is disabled. Jobs can still be queued normally, but machines will only wake when you press the button.</p>

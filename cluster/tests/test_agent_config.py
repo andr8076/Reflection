@@ -605,6 +605,33 @@ class ShutdownRequestTest(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(seen, ["shutdown"])
 
+    def test_shutdown_waits_when_master_does_not_confirm_layer(self):
+        class FakeAgent:
+            def check_for_task(self):
+                return {
+                    "status": "no_jobs",
+                    "shutdown_after_task": True,
+                    "shutdown_debug_mode": False,
+                    "reason": "idle_no_job_check_limit",
+                }
+
+            def confirm_shutdown(self, reason):
+                self.confirmed_reason = reason
+                return False
+
+        original_shutdown = Reflection._request_system_shutdown
+        agent = FakeAgent()
+        try:
+            Reflection._request_system_shutdown = lambda: (_ for _ in ()).throw(
+                AssertionError("layer-denied shutdown must not issue an OS shutdown command")
+            )
+            result = Reflection.FarmAgent._run_lifecycle_cycle(agent)
+        finally:
+            Reflection._request_system_shutdown = original_shutdown
+
+        self.assertTrue(result)
+        self.assertEqual(agent.confirmed_reason, "idle_no_job_check_limit")
+
     def test_explicit_shutdown_task_uses_master_debug_mode(self):
         class FakeAgent:
             def check_for_task(self):

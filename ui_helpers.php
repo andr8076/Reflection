@@ -27,13 +27,20 @@ function reflection_parse_machine_list(string $raw): array
         }
 
         $parts = array_map('trim', explode(',', $line));
-        $machines[] = [
+        $machine = [
             'pc_id' => $parts[0] ?? '',
             'mac' => $parts[1] ?? '',
-            'soc_margin_percent' => (int) ($parts[2] ?? 5),
             'wake_enabled' => !isset($parts[3]) || !in_array(strtolower($parts[3]), ['0', 'false', 'no', 'off'], true),
             'shutdown_layer' => max(0, (int) ($parts[4] ?? 0)),
         ];
+
+        if (isset($parts[2]) && $parts[2] !== '') {
+            $machine['min_soc_percent'] = max(0, min(100, (int) $parts[2]));
+            // Compatibility alias for stores created before the field was renamed.
+            $machine['soc_margin_percent'] = $machine['min_soc_percent'];
+        }
+
+        $machines[] = $machine;
     }
 
     return $machines;
@@ -43,10 +50,17 @@ function reflection_machine_list_text(array $machines): string
 {
     $lines = [];
     foreach ($machines as $machine) {
+        $minimumSoc = '';
+        if (array_key_exists('min_soc_percent', $machine) && trim((string) $machine['min_soc_percent']) !== '') {
+            $minimumSoc = (string) max(0, min(100, (int) $machine['min_soc_percent']));
+        } elseif (array_key_exists('soc_margin_percent', $machine) && trim((string) $machine['soc_margin_percent']) !== '') {
+            $minimumSoc = (string) max(0, min(100, (int) $machine['soc_margin_percent']));
+        }
+
         $lines[] = implode(',', [
             $machine['pc_id'] ?? '',
             $machine['mac'] ?? '',
-            $machine['soc_margin_percent'] ?? 5,
+            $minimumSoc,
             !empty($machine['wake_enabled']) ? '1' : '0',
             max(0, (int) ($machine['shutdown_layer'] ?? 0)),
         ]);

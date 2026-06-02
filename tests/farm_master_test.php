@@ -148,9 +148,9 @@ $wakeStore->updateSettings([
     'auto_wake_max_targets_per_run' => 10,
 ]);
 $wakeStore->updateMachines([
-    ['pc_id' => 'node-wake-1', 'mac' => 'AA:BB:CC:DD:EE:01', 'soc_margin_percent' => 40, 'wake_enabled' => true],
-    ['pc_id' => 'node-wake-2', 'mac' => 'AA:BB:CC:DD:EE:02', 'soc_margin_percent' => 40, 'wake_enabled' => true],
-    ['pc_id' => 'node-wake-3', 'mac' => 'AA:BB:CC:DD:EE:03', 'soc_margin_percent' => 40, 'wake_enabled' => true],
+    ['pc_id' => 'node-wake-1', 'mac' => 'AA:BB:CC:DD:EE:01', 'min_soc_percent' => 40, 'wake_enabled' => true],
+    ['pc_id' => 'node-wake-2', 'mac' => 'AA:BB:CC:DD:EE:02', 'min_soc_percent' => 40, 'wake_enabled' => true],
+    ['pc_id' => 'node-wake-3', 'mac' => 'AA:BB:CC:DD:EE:03', 'min_soc_percent' => 40, 'wake_enabled' => true],
 ]);
 $wakeStore->recordWorkerCheckIn('node-wake-1', 'test-version');
 $wakeStore->createJob('dummy_task', 'incoming/wake-1.dat', null, false);
@@ -160,9 +160,9 @@ $wakePlan = $wakeStore->demandWakePlan(900);
 assertSameValue(3, $wakePlan['queued_work'], 'Demand wake should count queued non-control jobs.');
 assertSameValue(1, $wakePlan['idle_online_workers'], 'Demand wake should treat idle online workers as existing capacity.');
 assertSameValue(2, $wakePlan['needed'], 'Demand wake should only request workers for queued jobs not covered by idle online workers.');
-assertSameValue(2, count($wakePlan['targets']), 'Demand wake should wake offline machines whose individual SOC margins fit the current headroom.');
-assertSameValue('node-wake-2', $wakePlan['targets'][0]['pc_id'], 'Demand wake should choose the cheapest eligible offline machine first.');
-assertSameValue('node-wake-3', $wakePlan['targets'][1]['pc_id'], 'Demand wake should not spend the SOC headroom cumulatively across eligible machines.');
+assertSameValue(2, count($wakePlan['targets']), 'Demand wake should wake offline machines whose individual minimum ESS SOC is satisfied.');
+assertSameValue('node-wake-2', $wakePlan['targets'][0]['pc_id'], 'Demand wake should choose the lowest minimum-SOC eligible offline machine first.');
+assertSameValue('node-wake-3', $wakePlan['targets'][1]['pc_id'], 'Demand wake should not consume SOC capacity cumulatively across eligible machines.');
 $relayResult = $wakeStore->dispatchWakeTargets($wakePlan['targets'], 'manual');
 assertSameValue('worker_relay', $relayResult['method'], 'Manual wake should queue a worker relay job by default.');
 assertSameValue(2, $relayResult['queued'], 'Manual wake should queue each eligible offline target for the relay worker.');
@@ -190,21 +190,27 @@ $marginStorePath = sys_get_temp_dir() . '/reflection_margin_store_' . bin2hex(ra
 $marginStore = new FarmStore($marginStorePath);
 $marginStore->updateSettings([
     'ess_soc_url' => '',
-    'ess_soc_percent' => 51,
+    'ess_soc_percent' => 43,
     'ess_min_soc_percent' => 20,
 ]);
 $marginStore->updateMachines([
-    ['pc_id' => 'farm1', 'mac' => '6e:0b:5a:40:7b:74', 'soc_margin_percent' => 25, 'wake_enabled' => false],
-    ['pc_id' => 'farm2', 'mac' => '20:87:56:ba:0c:f1', 'soc_margin_percent' => 25, 'wake_enabled' => true],
-    ['pc_id' => 'farm3', 'mac' => '20:87:56:ba:05:01', 'soc_margin_percent' => 25, 'wake_enabled' => true],
-    ['pc_id' => 'farm4', 'mac' => '20:87:56:ba:06:47', 'soc_margin_percent' => 25, 'wake_enabled' => true],
+    ['pc_id' => 'farm1', 'mac' => '6e:0b:5a:40:7b:74', 'min_soc_percent' => 25, 'wake_enabled' => false],
+    ['pc_id' => 'farm2', 'mac' => '20:87:56:ba:0c:f1', 'min_soc_percent' => 25, 'wake_enabled' => true],
+    ['pc_id' => 'farm3', 'mac' => '20:87:56:ba:05:01', 'min_soc_percent' => 25, 'wake_enabled' => true],
+    ['pc_id' => 'farm4', 'mac' => '20:87:56:ba:06:47', 'min_soc_percent' => 25, 'wake_enabled' => true],
 ]);
 $marginStore->recordWorkerCheckIn('farm3', 'test-version');
-assertSameValue(4, $marginStore->allowedActiveWorkers(), 'SOC worker limit should count all configured workers whose margin fits, including workers without Wake-on-LAN.');
+assertSameValue(4, $marginStore->allowedActiveWorkers(), 'SOC worker limit should count all configured workers whose minimum ESS SOC is satisfied, including workers without Wake-on-LAN.');
 $marginTargets = $marginStore->wakeTargetsForCurrentSoc(true, 900);
-assertSameValue(2, count($marginTargets), 'Manual wake target lookup should exclude online workers and keep offline workers whose margins fit.');
+assertSameValue(2, count($marginTargets), 'Manual wake target lookup should exclude online workers and keep offline workers whose minimum ESS SOC is satisfied.');
 assertSameValue('farm2', $marginTargets[0]['pc_id'], 'First eligible wake target should be farm2.');
 assertSameValue('farm4', $marginTargets[1]['pc_id'], 'Second eligible wake target should be farm4.');
+$marginStore->updateSettings(['ess_soc_percent' => 24, 'ess_min_soc_percent' => 20]);
+assertSameValue(0, $marginStore->allowedActiveWorkers(), 'Configured workers with a 25% minimum must stop when ESS SOC is 24%.');
+$marginStore->updateMachines([
+    ['pc_id' => 'fallback-farm', 'mac' => '', 'wake_enabled' => false],
+]);
+assertSameValue(1, $marginStore->allowedActiveWorkers(), 'A worker without a per-machine SOC setting should use the global minimum ESS SOC.');
 @unlink($marginStorePath);
 @unlink($marginStorePath . '.lock');
 
@@ -562,8 +568,8 @@ $updateLayerStorePath = sys_get_temp_dir() . '/reflection_update_layer_store_' .
 $updateLayerStore = new FarmStore($updateLayerStorePath);
 $updateLayerStore->updateSettings(['ess_soc_url' => '']);
 $updateLayerStore->updateMachines([
-    ['pc_id' => 'core-update-node', 'mac' => '', 'soc_margin_percent' => 5, 'wake_enabled' => false, 'shutdown_layer' => 0],
-    ['pc_id' => 'endpoint-update-node', 'mac' => '', 'soc_margin_percent' => 5, 'wake_enabled' => false, 'shutdown_layer' => 2],
+    ['pc_id' => 'core-update-node', 'mac' => '', 'min_soc_percent' => 5, 'wake_enabled' => false, 'shutdown_layer' => 0],
+    ['pc_id' => 'endpoint-update-node', 'mac' => '', 'min_soc_percent' => 5, 'wake_enabled' => false, 'shutdown_layer' => 2],
 ]);
 $updateLayerStore->recordWorkerCheckIn('endpoint-update-node', 'old-version');
 $coreUpdateResponse = reflection_handle_farm_api([
@@ -599,8 +605,8 @@ $layerStore->updateSettings([
     'shutdown_debug_mode' => true,
 ]);
 $layerStore->updateMachines([
-    ['pc_id' => 'core-switch-node', 'mac' => '', 'soc_margin_percent' => 5, 'wake_enabled' => false, 'shutdown_layer' => 0],
-    ['pc_id' => 'endpoint-node', 'mac' => '', 'soc_margin_percent' => 5, 'wake_enabled' => false, 'shutdown_layer' => 2],
+    ['pc_id' => 'core-switch-node', 'mac' => '', 'min_soc_percent' => 5, 'wake_enabled' => false, 'shutdown_layer' => 0],
+    ['pc_id' => 'endpoint-node', 'mac' => '', 'min_soc_percent' => 5, 'wake_enabled' => false, 'shutdown_layer' => 2],
 ]);
 $layerStore->recordWorkerCheckIn('core-switch-node', 'test-version');
 $layerStore->recordWorkerCheckIn('endpoint-node', 'test-version');
@@ -618,13 +624,28 @@ $endpointResponse = reflection_handle_farm_api([
 ], $layerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
 assertSameValue(true, $endpointResponse['shutdown_after_task'], 'Highest online shutdown layer should be allowed to power off first.');
 $layerData = $layerStore->read();
-assertSameValue(true, !empty($layerData['workers']['endpoint-node']['expected_offline']), 'Shutdown approval should mark a debug worker expected-offline immediately.');
+assertSameValue(false, !empty($layerData['workers']['endpoint-node']['expected_offline']), 'A shutdown order must not release lower layers until the worker confirms it received the order.');
+$coreResponseBeforeConfirm = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'test-version',
+    'pc_id' => 'core-switch-node',
+], $layerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
+assertSameValue(false, $coreResponseBeforeConfirm['shutdown_after_task'], 'Lower layers must still wait until higher layers confirm the shutdown order.');
+$endpointConfirm = reflection_handle_farm_api([
+    'action' => 'confirm_shutdown',
+    'version' => 'test-version',
+    'pc_id' => 'endpoint-node',
+    'reason' => 'test_shutdown_layer',
+], $layerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
+assertSameValue('shutdown_confirmed', $endpointConfirm['status'], 'Higher layers should explicitly confirm a shutdown order before lower layers are released.');
+$layerData = $layerStore->read();
+assertSameValue(true, !empty($layerData['workers']['endpoint-node']['expected_offline']), 'Confirmed shutdown should mark the higher layer expected-offline.');
 $coreResponseAfterEndpoint = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'test-version',
     'pc_id' => 'core-switch-node',
 ], $layerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
-assertSameValue(true, $coreResponseAfterEndpoint['shutdown_after_task'], 'Lower layers should power off after higher online layers are offline.');
+assertSameValue(true, $coreResponseAfterEndpoint['shutdown_after_task'], 'Lower layers should power off after higher online layers confirm shutdown.');
 @unlink($layerStorePath);
 @unlink($layerStorePath . '.lock');
 

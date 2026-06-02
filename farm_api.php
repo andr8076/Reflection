@@ -104,6 +104,8 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
             return reflection_api_heartbeat_task($payload, $store, $pcId);
         case 'report_done':
             return reflection_api_report_done($payload, $store, $pcId);
+        case 'confirm_shutdown':
+            return reflection_api_confirm_shutdown($payload, $store, $pcId, $config);
         default:
             return reflection_api_with_version_metadata(
                 ['status' => 'error', 'error' => 'Unknown action.'],
@@ -231,6 +233,10 @@ function reflection_run_due_automation_on_worker_checkin(FarmStore $store, array
 function reflection_api_allows_mismatched_version_action(array $payload, FarmStore $store): bool
 {
     $action = (string) ($payload['action'] ?? '');
+    if ($action === 'confirm_shutdown') {
+        return true;
+    }
+
     if (!in_array($action, ['confirm_taken', 'heartbeat_task', 'report_done'], true)) {
         return false;
     }
@@ -255,16 +261,9 @@ function reflection_api_shutdown_allowed(FarmStore $store, string $pcId, array $
     return !empty($layer['allowed']);
 }
 
-function reflection_api_mark_expected_offline_if_shutdown(FarmStore $store, string $pcId, bool $shutdown, string $reason): void
-{
-    if ($shutdown) {
-        $store->markWorkerExpectedOffline($pcId, $reason);
-    }
-}
-
 function reflection_api_task_payload(array $job, array $config, array $settings, int $allowedWorkers, ?FarmStore $store = null, string $pcId = ''): array
 {
-    $shutdownRequested = !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 1;
+    $shutdownRequested = !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 0;
     $shutdownLayer = $store !== null && $pcId !== '' ? reflection_api_shutdown_layer_payload($store, $pcId, $config) : ['allowed' => true];
     $shutdownAfterTask = $shutdownRequested && !empty($shutdownLayer['allowed']);
 
@@ -369,6 +368,42 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
 }
 
 
+function reflection_api_confirm_shutdown(array $payload, FarmStore $store, string $pcId, array $config): array
+{
+    $settings = $store->effectiveSettings();
+    $shutdownLayer = reflection_api_shutdown_layer_payload($store, $pcId, $config);
+    if (empty($shutdownLayer['allowed'])) {
+        return reflection_api_with_version_metadata(
+            [
+                'status' => 'shutdown_blocked_by_layer',
+                'shutdown_confirmed' => false,
+                'shutdown_layer' => $shutdownLayer,
+            ],
+            $config,
+            $settings,
+            'ok'
+        );
+    }
+
+    $reason = trim((string) ($payload['reason'] ?? 'shutdown_confirmed'));
+    if ($reason === '') {
+        $reason = 'shutdown_confirmed';
+    }
+
+    $store->markWorkerExpectedOffline($pcId, $reason);
+
+    return reflection_api_with_version_metadata(
+        [
+            'status' => 'shutdown_confirmed',
+            'shutdown_confirmed' => true,
+            'shutdown_layer' => $shutdownLayer,
+        ],
+        $config,
+        $settings,
+        'ok'
+    );
+}
+
 function reflection_api_no_jobs_response(FarmStore $store, string $pcId, array $settings, string $reason, bool $forceShutdown = false, array $config = []): array
 {
     $shutdownLimit = max(0, (int) ($settings['idle_shutdown_after_no_job_checks'] ?? 0));
@@ -382,12 +417,13 @@ function reflection_api_no_jobs_response(FarmStore $store, string $pcId, array $
     if ($requestedShutdown && !$shutdownAfterTask) {
         $finalReason = 'shutdown_layer_waiting';
     }
-    reflection_api_mark_expected_offline_if_shutdown($store, $pcId, $shutdownAfterTask, $finalReason);
 
     return reflection_api_with_version_metadata(
         [
             'status' => 'no_jobs',
             'shutdown_after_task' => $shutdownAfterTask,
+            'shutdown_confirmation_required' => $shutdownAfterTask,
+            'shutdown_confirm_reason' => $finalReason,
             'reason' => $finalReason,
             'idle_no_job_checkins' => $idleCheckIns,
             'idle_shutdown_after_no_job_checks' => $shutdownLimit,
@@ -456,12 +492,12 @@ function reflection_api_report_done(array $payload, FarmStore $store, string $pc
     $shutdownRequested = !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 0;
     $shutdownLayer = reflection_api_shutdown_layer_payload($store, $pcId, $GLOBALS['config'] ?? []);
     $shutdownAfterTask = $shutdownRequested && !empty($shutdownLayer['allowed']);
-    reflection_api_mark_expected_offline_if_shutdown($store, $pcId, $shutdownAfterTask, 'ess_soc_below_minimum_after_task');
-
     return reflection_api_with_version_metadata(
         [
             'status' => 'confirmed_by_server',
             'shutdown_after_task' => $shutdownAfterTask,
+            'shutdown_confirmation_required' => $shutdownAfterTask,
+            'shutdown_confirm_reason' => 'ess_soc_below_minimum_after_task',
             'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
             'shutdown_layer' => $shutdownLayer,
             'shutdown_blocked_by_layer' => $shutdownRequested && !$shutdownAfterTask,

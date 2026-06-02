@@ -1799,8 +1799,23 @@ def _server_shutdown_debug_mode(response):
     return bool(response.get("shutdown_debug_mode") or response.get("debug_shutdown"))
 
 
-def _handle_server_shutdown_request(context, response):
+def _handle_server_shutdown_request(context, response, confirm_shutdown=None):
     """Handle a master shutdown request. Return False to leave the worker loop."""
+    if callable(confirm_shutdown):
+        reason = "server_policy"
+        if isinstance(response, dict):
+            reason = str(
+                response.get("shutdown_confirm_reason")
+                or response.get("reason")
+                or "server_policy"
+            )
+        if not confirm_shutdown(reason):
+            logging.warning(
+                "%s. Master did not confirm shutdown after the layer check; continuing to poll.",
+                context,
+            )
+            return True
+
     if _server_shutdown_debug_mode(response):
         logging.info("%s. Shutdown debug mode is enabled, so only the farm agent will stop.", context)
         return False
@@ -1952,6 +1967,17 @@ class FarmAgent:
         }
         return self.post_to_server(payload)
 
+    def confirm_shutdown(self, reason="shutdown_requested"):
+        """Confirm receipt of a shutdown order so the master may release lower layers."""
+        payload = {
+            "action": "confirm_shutdown",
+            "version": VERSION,
+            "pc_id": PC_ID,
+            "reason": str(reason or "shutdown_requested"),
+        }
+        response = self.post_to_server(payload)
+        return bool(response and response.get("status") == "shutdown_confirmed")
+
     def cleanup_files(self, source_path):
         """Step 7: Local cleanup of source files if explicitly allowed and safe."""
         path = Path(source_path).expanduser()
@@ -2044,6 +2070,7 @@ class FarmAgent:
                 return _handle_server_shutdown_request(
                     f"Server requested idle shutdown ({reason})",
                     response,
+                    getattr(self, "confirm_shutdown", None),
                 )
             logging.info("Server has no jobs. Sleeping for %ss...", POLL_INTERVAL)
             time.sleep(POLL_INTERVAL)
@@ -2142,15 +2169,19 @@ class FarmAgent:
                 os.execv(sys.executable, [sys.executable, *sys.argv])
 
             if task_outcome.stop_agent:
+                shutdown_response = dict(server_response or {})
+                shutdown_response.setdefault("shutdown_confirm_reason", f"explicit_shutdown_task:{task_id}")
                 return _handle_server_shutdown_request(
                     f"Shutdown task {task_id} confirmed by server",
-                    server_response,
+                    shutdown_response,
+                    getattr(self, "confirm_shutdown", None),
                 )
 
             if server_response.get("shutdown_after_task"):
                 return _handle_server_shutdown_request(
                     f"Server requested shutdown after task {task_id} due to SOC policy",
                     server_response,
+                    getattr(self, "confirm_shutdown", None),
                 )
 
             logging.info("Lifecycle finished for Task %s. Repeating loop...\n", task_id)
