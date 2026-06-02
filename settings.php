@@ -282,11 +282,11 @@ $dataDirectory = dirname((string) $config['storage_path']);
                 </div>
 
                 <div class="settings-section-box">
-                    <h3>Farm computers available for Wake-on-LAN</h3>
+                    <h3>Farm computers and Wake-on-LAN</h3>
                     <label>
                         Machine list
                         <textarea name="machines" rows="8" placeholder="render-01,AA:BB:CC:DD:EE:01,5,1&#10;render-02,AA:BB:CC:DD:EE:02,8,1"><?= reflection_h(reflection_machine_list_text($machines)) ?></textarea>
-                        <small>One per line: <code>pc_id,mac,soc_margin_percent,wake_enabled</code>.</small>
+                        <small>One per line: <code>pc_id,mac,soc_margin_percent,wake_enabled</code>. SOC margin is checked per computer against current ESS headroom: SOC minus minimum SOC.</small>
                     </label>
                 </div>
 

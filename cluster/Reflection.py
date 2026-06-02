@@ -222,23 +222,96 @@ def _normalize_transfer_auth(value):
     }
 
 
-def read_version_file(start_path=__file__):
-    """Return the Reflection application version from the nearest VERSION file."""
+def find_git_root(start_path=__file__):
+    """Return the nearest parent directory that contains a .git checkout."""
     current = Path(start_path).resolve()
     if current.is_file():
         current = current.parent
 
     for candidate in (current, *current.parents):
-        version_path = candidate / "VERSION"
-        if version_path.is_file():
-            version = version_path.read_text(encoding="utf-8").strip()
-            if version:
-                return version
+        if (candidate / ".git").exists():
+            return candidate
 
-    return "unknown"
+    return None
 
 
-VERSION = read_version_file()
+def _resolve_git_directory(repo_root):
+    git_path = repo_root / ".git"
+    if git_path.is_dir():
+        return git_path
+    if not git_path.is_file():
+        return None
+
+    content = git_path.read_text(encoding="utf-8", errors="replace").strip()
+    prefix = "gitdir:"
+    if not content.startswith(prefix):
+        return None
+
+    git_dir = Path(content[len(prefix):].strip())
+    if not git_dir.is_absolute():
+        git_dir = repo_root / git_dir
+    return git_dir if git_dir.is_dir() else None
+
+
+def _read_git_head_fallback(repo_root):
+    git_dir = _resolve_git_directory(repo_root)
+    if git_dir is None:
+        return None
+
+    head_path = git_dir / "HEAD"
+    if not head_path.is_file():
+        return None
+
+    head = head_path.read_text(encoding="utf-8", errors="replace").strip()
+    if not head:
+        return None
+
+    if not head.startswith("ref: "):
+        return head[:12]
+
+    ref = head[5:].strip()
+    ref_path = git_dir / Path(*ref.split("/"))
+    if ref_path.is_file():
+        commit = ref_path.read_text(encoding="utf-8", errors="replace").strip()
+        return commit[:12] if commit else None
+
+    packed_refs = git_dir / "packed-refs"
+    if packed_refs.is_file():
+        for line in packed_refs.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("^"):
+                continue
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == ref:
+                return parts[0][:12]
+
+    return None
+
+
+def read_git_version(start_path=__file__):
+    """Return the Reflection version from the current Git checkout."""
+    repo_root = find_git_root(start_path)
+    if repo_root is None:
+        return "unknown"
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--short=12", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        version = result.stdout.strip()
+        if version:
+            return version
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    return _read_git_head_fallback(repo_root) or "unknown"
+
+
+VERSION = read_git_version()
 AGENT_CONFIG = load_agent_config()
 SERVER_URL = AGENT_CONFIG["server_url"]  # Target PHP endpoint
 POLL_INTERVAL = AGENT_CONFIG["poll_interval"]  # Seconds to wait before checking for new jobs if idle

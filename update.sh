@@ -4,18 +4,18 @@ set -Eeuo pipefail
 # Reflection's upstream is intentionally fixed so an update is one command:
 #   ./update.sh
 GITHUB_REPOSITORY="andr8076/Reflection"
-ARCHIVE_URL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/heads/main.tar.gz"
+GITHUB_BRANCH="main"
+GIT_URL="https://github.com/${GITHUB_REPOSITORY}.git"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reflection-update.XXXXXX")"
-ARCHIVE_PATH="$TEMP_DIR/reflection.tar.gz"
-EXTRACT_DIR="$TEMP_DIR/extracted"
+SOURCE_DIR="$TEMP_DIR/source"
 
 cleanup() {
     rm -rf -- "$TEMP_DIR"
 }
 trap cleanup EXIT
 
-for command in curl tar python3; do
+for command in git python3; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "Missing required command: $command" >&2
         exit 1
@@ -27,31 +27,16 @@ if [[ ! -f "$SCRIPT_DIR/config.php" || ! -f "$SCRIPT_DIR/cluster/Reflection.py" 
     exit 1
 fi
 
-curl_args=(
-    --fail
-    --location
-    --silent
-    --show-error
-    --output "$ARCHIVE_PATH"
-)
-echo "Downloading the latest ${GITHUB_REPOSITORY} main branch..."
-if ! curl "${curl_args[@]}" "$ARCHIVE_URL"; then
+echo "Cloning the latest ${GITHUB_REPOSITORY} ${GITHUB_BRANCH} branch..."
+if ! git clone --depth 1 --branch "$GITHUB_BRANCH" "$GIT_URL" "$SOURCE_DIR"; then
     echo >&2
-    echo "Unable to download the Reflection update from GitHub." >&2
+    echo "Unable to clone the Reflection update from GitHub." >&2
     echo "Check your network connection and try ./update.sh again." >&2
     exit 1
 fi
 
-mkdir -p "$EXTRACT_DIR"
-tar -xzf "$ARCHIVE_PATH" -C "$EXTRACT_DIR"
-SOURCE_DIR="$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
-if [[ -z "$SOURCE_DIR" || ! -f "$SOURCE_DIR/config.php" || ! -f "$SOURCE_DIR/cluster/Reflection.py" ]]; then
-    echo "Downloaded archive does not look like a Reflection checkout." >&2
-    exit 1
-fi
-
-if [[ ! -f "$SOURCE_DIR/VERSION" ]]; then
-    echo "Downloaded archive is missing VERSION." >&2
+if [[ ! -d "$SOURCE_DIR/.git" || ! -f "$SOURCE_DIR/config.php" || ! -f "$SOURCE_DIR/cluster/Reflection.py" ]]; then
+    echo "Downloaded checkout does not look like a Reflection Git checkout." >&2
     exit 1
 fi
 
@@ -65,9 +50,8 @@ python3 -m py_compile \
 
 # The Reflection application folder is disposable. Runtime/local files are not.
 # Preserve those files outside the wipe, replace the whole app folder with the
-# downloaded version, then restore the preserved paths.
+# freshly cloned Git checkout, then restore the preserved paths.
 python3 - "$SOURCE_DIR" "$SCRIPT_DIR" "$TEMP_DIR/preserved" <<'PY'
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -144,7 +128,7 @@ python3 -m py_compile \
     "$SCRIPT_DIR/cluster/run_setup.py" \
     "$SCRIPT_DIR/cluster/toggle_start_on_boot.py"
 
-new_version="$(tr -d '\r\n' < "$SCRIPT_DIR/VERSION")"
-echo "Reflection updated successfully to ${new_version}."
-echo "Protected local paths kept: data/, farm_settings.local.php, cluster/reflection_config.json, .env"
+new_version="$(git -C "$SCRIPT_DIR" rev-parse --short=12 HEAD)"
+echo "Reflection updated successfully to Git version ${new_version}."
+echo "Protected local paths kept: data/, farm_settings.local.php, cluster/reflection_config.json, cluster/reflection_config.local.json, .env"
 echo "Farm workers started by update_worker will reboot after the master confirms the update result."

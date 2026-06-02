@@ -1079,36 +1079,36 @@ final class FarmStore
             return PHP_INT_MAX;
         }
 
-        $soc = (int) ($settings['ess_soc_percent'] ?? 100);
-        $minimum = (int) ($settings['ess_min_soc_percent'] ?? 20);
-        if ($soc <= $minimum) {
+        $budget = $this->currentSocHeadroomPercent($settings);
+        if ($budget <= 0) {
             return 0;
         }
 
-        $budget = $soc - $minimum;
-        $margins = [];
-        foreach ($this->machines() as $machine) {
-            if (!empty($machine['wake_enabled'])) {
-                $margins[] = max(1, (int) ($machine['soc_margin_percent'] ?? 5));
-            }
-        }
-
-        if ($margins === []) {
+        $machines = $this->machines();
+        if ($machines === []) {
             return PHP_INT_MAX;
         }
 
-        sort($margins, SORT_NUMERIC);
+        $configured = 0;
         $allowed = 0;
-        foreach ($margins as $margin) {
-            if ($budget < $margin) {
-                break;
+        foreach ($machines as $machine) {
+            if (!is_array($machine)) {
+                continue;
             }
 
-            $budget -= $margin;
-            $allowed++;
+            $pcId = trim((string) ($machine['pc_id'] ?? ''));
+            $mac = trim((string) ($machine['mac'] ?? ''));
+            if ($pcId === '' && $mac === '') {
+                continue;
+            }
+
+            $configured++;
+            if ($this->machineFitsCurrentSoc($machine, $budget)) {
+                $allowed++;
+            }
         }
 
-        return $allowed;
+        return $configured > 0 ? $allowed : PHP_INT_MAX;
     }
 
     public function runningWorkerCount(): int
@@ -1379,7 +1379,7 @@ final class FarmStore
     {
         $data = $this->read();
         $settings = array_merge($this->defaultSettings(), $data['settings'] ?? []);
-        return $this->wakeTargetsFromData($data, $settings, $staleAfterSeconds, false, $excludeOnline);
+        return $this->wakeTargetsFromData($data, $settings, $staleAfterSeconds, $excludeOnline, false);
     }
 
     public function sendWakePackets(array $targets, string $reason = 'manual'): array
@@ -1784,6 +1784,21 @@ final class FarmStore
         return $online;
     }
 
+    private function currentSocHeadroomPercent(array $settings): int
+    {
+        return (int) ($settings['ess_soc_percent'] ?? 100) - (int) ($settings['ess_min_soc_percent'] ?? 20);
+    }
+
+    private function machineSocMarginPercent(array $machine): int
+    {
+        return max(0, (int) ($machine['soc_margin_percent'] ?? 5));
+    }
+
+    private function machineFitsCurrentSoc(array $machine, int $budget): bool
+    {
+        return $budget >= $this->machineSocMarginPercent($machine);
+    }
+
     private function wakeTargetsFromData(array $data, array $settings, int $staleAfterSeconds, bool $excludeOnline, bool $ignoreCooldown): array
     {
         $onlineWorkers = $this->onlineWorkersFromData($data, $staleAfterSeconds);
@@ -1796,7 +1811,7 @@ final class FarmStore
             if ($excludeOnline && $pcId !== '' && isset($onlineWorkers[$pcId])) {
                 continue;
             }
-            $machine['soc_margin_percent'] = max(1, (int) ($machine['soc_margin_percent'] ?? 5));
+            $machine['soc_margin_percent'] = $this->machineSocMarginPercent($machine);
             $machines[] = $machine;
         }
 
@@ -1808,26 +1823,16 @@ final class FarmStore
             return $machines;
         }
 
-        $budget = max(0, (int) ($settings['ess_soc_percent'] ?? 100) - (int) ($settings['ess_min_soc_percent'] ?? 20));
-        foreach (($data['machines'] ?? []) as $machine) {
-            if (!is_array($machine) || empty($machine['wake_enabled'])) {
-                continue;
-            }
-            $pcId = trim((string) ($machine['pc_id'] ?? ''));
-            if ($pcId !== '' && isset($onlineWorkers[$pcId])) {
-                $budget -= max(1, (int) ($machine['soc_margin_percent'] ?? 5));
-            }
+        $budget = $this->currentSocHeadroomPercent($settings);
+        if ($budget <= 0) {
+            return [];
         }
-        $budget = max(0, $budget);
 
         $targets = [];
         foreach ($machines as $machine) {
-            $margin = max(1, (int) ($machine['soc_margin_percent'] ?? 5));
-            if ($budget < $margin) {
-                break;
+            if ($this->machineFitsCurrentSoc($machine, $budget)) {
+                $targets[] = $machine;
             }
-            $budget -= $margin;
-            $targets[] = $machine;
         }
 
         return $targets;

@@ -7,15 +7,91 @@ function reflection_string_starts_with(string $value, string $prefix): bool
     return $prefix === '' || strncmp($value, $prefix, strlen($prefix)) === 0;
 }
 
-function reflection_read_version_file(string $appRoot): ?string
+function reflection_read_git_version(string $appRoot): ?string
 {
-    $versionPath = $appRoot . DIRECTORY_SEPARATOR . 'VERSION';
-    if (!is_file($versionPath)) {
+    $gitPath = $appRoot . DIRECTORY_SEPARATOR . '.git';
+    if (!is_dir($gitPath) && !is_file($gitPath)) {
         return null;
     }
 
-    $version = trim((string) file_get_contents($versionPath));
-    return $version !== '' ? $version : null;
+    $output = [];
+    $status = 1;
+    @exec('git -C ' . escapeshellarg($appRoot) . ' rev-parse --short=12 HEAD 2>/dev/null', $output, $status);
+    if ($status === 0 && isset($output[0])) {
+        $version = trim((string) $output[0]);
+        if ($version !== '') {
+            return $version;
+        }
+    }
+
+    $gitDirectory = reflection_resolve_git_directory($appRoot);
+    if ($gitDirectory === null) {
+        return null;
+    }
+
+    $headPath = $gitDirectory . DIRECTORY_SEPARATOR . 'HEAD';
+    if (!is_file($headPath)) {
+        return null;
+    }
+
+    $head = trim((string) file_get_contents($headPath));
+    if ($head === '') {
+        return null;
+    }
+
+    if (!reflection_string_starts_with($head, 'ref: ')) {
+        return substr($head, 0, 12);
+    }
+
+    $ref = trim(substr($head, 5));
+    $refPath = $gitDirectory . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $ref);
+    if (is_file($refPath)) {
+        $commit = trim((string) file_get_contents($refPath));
+        return $commit !== '' ? substr($commit, 0, 12) : null;
+    }
+
+    $packedRefsPath = $gitDirectory . DIRECTORY_SEPARATOR . 'packed-refs';
+    if (is_file($packedRefsPath)) {
+        foreach (file($packedRefsPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+            if ($line[0] === '#' || $line[0] === '^') {
+                continue;
+            }
+            $parts = preg_split('/\s+/', trim($line));
+            if (count($parts) >= 2 && $parts[1] === $ref) {
+                return substr($parts[0], 0, 12);
+            }
+        }
+    }
+
+    return null;
+}
+
+function reflection_resolve_git_directory(string $appRoot): ?string
+{
+    $gitPath = $appRoot . DIRECTORY_SEPARATOR . '.git';
+    if (is_dir($gitPath)) {
+        return $gitPath;
+    }
+
+    if (!is_file($gitPath)) {
+        return null;
+    }
+
+    $content = trim((string) file_get_contents($gitPath));
+    if (!reflection_string_starts_with($content, 'gitdir:')) {
+        return null;
+    }
+
+    $gitDirectory = trim(substr($content, strlen('gitdir:')));
+    if ($gitDirectory === '') {
+        return null;
+    }
+
+    if (!reflection_string_starts_with($gitDirectory, DIRECTORY_SEPARATOR)) {
+        $gitDirectory = $appRoot . DIRECTORY_SEPARATOR . $gitDirectory;
+    }
+
+    return is_dir($gitDirectory) ? realpath($gitDirectory) ?: $gitDirectory : null;
 }
 
 function reflection_directory_can_store(string $directory): bool
@@ -246,7 +322,7 @@ function reflection_master_config(?array $farmSettings = null): array
         . DIRECTORY_SEPARATOR
         . 'reflection-farm-'
         . substr(hash('sha256', __DIR__ . '|' . (string) ($settings['farm_id'] ?? 'default')), 0, 12);
-    $detectedVersion = reflection_read_version_file($repoRoot) ?? 'unknown';
+    $detectedVersion = reflection_read_git_version($repoRoot) ?? 'unknown';
     $requiredVersion = reflection_env_string('REFLECTION_REQUIRED_VERSION')
         ?? ($settings['required_version'] ?: $detectedVersion);
     $configuredStorage = reflection_env_string('REFLECTION_MASTER_STORE');

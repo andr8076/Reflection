@@ -474,7 +474,7 @@ $workerLimitDisplay = $essSocIgnored
     : ($allowedActiveWorkers === PHP_INT_MAX ? 'off' : (string) (int) $allowedActiveWorkers);
 $workerLimitHelp = $essSocIgnored
     ? 'ESS unavailable'
-    : ($allowedActiveWorkers === PHP_INT_MAX ? 'no SOC cap' : 'allowed active workers');
+    : ($allowedActiveWorkers === PHP_INT_MAX ? 'no SOC cap' : 'workers whose SOC margin fits');
 $workerStaleAfterSeconds = max(1, (int) ($config['stale_after_seconds'] ?? 900));
 $workerCards = reflection_worker_cards($workers, $machines, $workerStaleAfterSeconds);
 $workerStateCounts = reflection_count_worker_states($workerCards);
@@ -610,7 +610,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
         <article class="metric <?= $essSocIgnored ? 'warning-metric' : '' ?>">
             <span>SOC worker limit</span>
             <strong><?= reflection_h($workerLimitDisplay) ?></strong>
-            <small><?= reflection_h($workerLimitHelp) ?> · <?= (int) $wakeTargetCount ?>/<?= (int) $wakeEnabledMachineCount ?> wake target(s)</small>
+            <small><?= reflection_h($workerLimitHelp) ?> · <?= (int) $wakeTargetCount ?>/<?= (int) $wakeEnabledMachineCount ?> eligible offline WOL</small>
         </article>
         <article class="metric">
             <span>Completed kept</span>
@@ -712,7 +712,7 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                     <div class="power-summary-item">
                         <span>Wake targets</span>
                         <strong><?= (int) $wakeTargetCount ?> / <?= (int) $wakeEnabledMachineCount ?></strong>
-                        <small>eligible / configured</small>
+                        <small>eligible offline / configured WOL</small>
                     </div>
                     <div class="power-summary-item">
                         <span>SOC worker limit</span>
@@ -731,11 +731,11 @@ $maintenanceChanged = array_sum($automaticMaintenance) > 0;
                 <?php elseif ($essSocIgnored): ?>
                     <p class="api-note panel-warning-note">ESS SOC is <?= reflection_h(reflection_ess_status_label($settings)) ?>. SOC limiting is paused, so every configured wake target is eligible until valid SOC data returns.</p>
                 <?php elseif ($wakeTargetCount === 0): ?>
-                    <p class="api-note panel-warning-note">No configured machine fits the current SOC margin. Wake control is disabled until SOC rises or the margins are changed.</p>
+                    <p class="api-note panel-warning-note">No offline wake-enabled machine fits the current SOC margin. Wake control is disabled until SOC rises, the margins are changed, or an eligible machine goes offline.</p>
                 <?php elseif ($allowedActiveWorkers === PHP_INT_MAX): ?>
                     <p class="api-note">SOC is not currently capping workers. All configured wake targets are eligible.</p>
                 <?php else: ?>
-                    <p class="api-note">Current SOC allows <?= (int) $allowedActiveWorkers ?> active worker<?= $allowedActiveWorkers === 1 ? '' : 's' ?>. <?= (int) $wakeTargetCount ?> of <?= (int) $wakeEnabledMachineCount ?> configured wake target<?= $wakeEnabledMachineCount === 1 ? '' : 's' ?> are eligible.</p>
+                    <p class="api-note">Current SOC allows <?= (int) $allowedActiveWorkers ?> configured worker<?= $allowedActiveWorkers === 1 ? '' : 's' ?> by margin. <?= (int) $wakeTargetCount ?> of <?= (int) $wakeEnabledMachineCount ?> wake-enabled target<?= $wakeEnabledMachineCount === 1 ? '' : 's' ?> are eligible and offline.</p>
                 <?php endif; ?>
                 <?php if (empty($demandWakePlan['enabled'])): ?>
                     <p class="api-note">Automatic demand wake is disabled. Jobs can still be queued normally, but machines will only wake when you press the button.</p>

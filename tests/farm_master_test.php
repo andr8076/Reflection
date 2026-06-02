@@ -159,17 +159,40 @@ $wakePlan = $wakeStore->demandWakePlan(900);
 assertSameValue(3, $wakePlan['queued_work'], 'Demand wake should count queued non-control jobs.');
 assertSameValue(1, $wakePlan['idle_online_workers'], 'Demand wake should treat idle online workers as existing capacity.');
 assertSameValue(2, $wakePlan['needed'], 'Demand wake should only request workers for queued jobs not covered by idle online workers.');
-assertSameValue(1, count($wakePlan['targets']), 'Demand wake should still respect SOC margins after existing online workers consume budget.');
+assertSameValue(2, count($wakePlan['targets']), 'Demand wake should wake offline machines whose individual SOC margins fit the current headroom.');
 assertSameValue('node-wake-2', $wakePlan['targets'][0]['pc_id'], 'Demand wake should choose the cheapest eligible offline machine first.');
+assertSameValue('node-wake-3', $wakePlan['targets'][1]['pc_id'], 'Demand wake should not spend the SOC headroom cumulatively across eligible machines.');
 $relayResult = $wakeStore->dispatchWakeTargets($wakePlan['targets'], 'manual');
 assertSameValue('worker_relay', $relayResult['method'], 'Manual wake should queue a worker relay job by default.');
-assertSameValue(1, $relayResult['queued'], 'Manual wake should queue one target for the relay worker.');
+assertSameValue(2, $relayResult['queued'], 'Manual wake should queue each eligible offline target for the relay worker.');
 $relayPayload = json_decode((string) ($relayResult['relay_job']['source'] ?? ''), true);
 assertSameValue('AA:BB:CC:DD:EE:02', $relayPayload['targets'][0]['mac'] ?? null, 'Wake relay jobs should include the target MAC address in their source payload.');
 assertSameValue('255.255.255.255', $relayPayload['broadcast'] ?? null, 'Wake relay jobs should include the configured broadcast address.');
 assertSameValue(9, $relayPayload['port'] ?? null, 'Wake relay jobs should include the configured UDP port.');
 @unlink($wakeStorePath);
 @unlink($wakeStorePath . '.lock');
+
+$marginStorePath = sys_get_temp_dir() . '/reflection_margin_store_' . bin2hex(random_bytes(6)) . '.json';
+$marginStore = new FarmStore($marginStorePath);
+$marginStore->updateSettings([
+    'ess_soc_url' => '',
+    'ess_soc_percent' => 51,
+    'ess_min_soc_percent' => 20,
+]);
+$marginStore->updateMachines([
+    ['pc_id' => 'farm1', 'mac' => '6e:0b:5a:40:7b:74', 'soc_margin_percent' => 25, 'wake_enabled' => false],
+    ['pc_id' => 'farm2', 'mac' => '20:87:56:ba:0c:f1', 'soc_margin_percent' => 25, 'wake_enabled' => true],
+    ['pc_id' => 'farm3', 'mac' => '20:87:56:ba:05:01', 'soc_margin_percent' => 25, 'wake_enabled' => true],
+    ['pc_id' => 'farm4', 'mac' => '20:87:56:ba:06:47', 'soc_margin_percent' => 25, 'wake_enabled' => true],
+]);
+$marginStore->recordWorkerCheckIn('farm3', 'test-version');
+assertSameValue(4, $marginStore->allowedActiveWorkers(), 'SOC worker limit should count all configured workers whose margin fits, including workers without Wake-on-LAN.');
+$marginTargets = $marginStore->wakeTargetsForCurrentSoc(true, 900);
+assertSameValue(2, count($marginTargets), 'Manual wake target lookup should exclude online workers and keep offline workers whose margins fit.');
+assertSameValue('farm2', $marginTargets[0]['pc_id'], 'First eligible wake target should be farm2.');
+assertSameValue('farm4', $marginTargets[1]['pc_id'], 'Second eligible wake target should be farm4.');
+@unlink($marginStorePath);
+@unlink($marginStorePath . '.lock');
 
 function assertSameValue($expected, $actual, string $message): void
 {
