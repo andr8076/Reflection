@@ -111,6 +111,7 @@ python3 -m py_compile \
     "$SOURCE_DIR/cluster/Reflection.py" \
     "$SOURCE_DIR/cluster/task_registry.py" \
     "$SOURCE_DIR/cluster/task_runner.py" \
+    "$SOURCE_DIR/cluster/task_log_viewer.py" \
     "$SOURCE_DIR/cluster/run_setup.py" \
     "$SOURCE_DIR/cluster/toggle_start_on_boot.py"
 
@@ -191,6 +192,7 @@ python3 -m py_compile \
     "$SCRIPT_DIR/cluster/Reflection.py" \
     "$SCRIPT_DIR/cluster/task_registry.py" \
     "$SCRIPT_DIR/cluster/task_runner.py" \
+    "$SCRIPT_DIR/cluster/task_log_viewer.py" \
     "$SCRIPT_DIR/cluster/run_setup.py" \
     "$SCRIPT_DIR/cluster/toggle_start_on_boot.py"
 

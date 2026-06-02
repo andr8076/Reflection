@@ -39,6 +39,7 @@ class AgentConfigTest(unittest.TestCase):
                     "task_timeouts": {},
                     "task_log_tail_bytes": Reflection.DEFAULT_TASK_LOG_TAIL_BYTES,
                     "task_isolation": Reflection.DEFAULT_TASK_ISOLATION,
+                    "show_task_terminal": Reflection.DEFAULT_SHOW_TASK_TERMINAL,
                     "min_free_space_gb": Reflection.DEFAULT_MIN_FREE_SPACE_GB,
                     "min_free_space_multiplier": Reflection.DEFAULT_MIN_FREE_SPACE_MULTIPLIER,
                     "local_temp_max_age_hours": Reflection.DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS,
@@ -70,12 +71,23 @@ class AgentConfigTest(unittest.TestCase):
                     "task_timeouts": {},
                     "task_log_tail_bytes": Reflection.DEFAULT_TASK_LOG_TAIL_BYTES,
                     "task_isolation": Reflection.DEFAULT_TASK_ISOLATION,
+                    "show_task_terminal": Reflection.DEFAULT_SHOW_TASK_TERMINAL,
                     "min_free_space_gb": Reflection.DEFAULT_MIN_FREE_SPACE_GB,
                     "min_free_space_multiplier": Reflection.DEFAULT_MIN_FREE_SPACE_MULTIPLIER,
                     "local_temp_max_age_hours": Reflection.DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS,
                     "quarantine_keep_days": Reflection.DEFAULT_QUARANTINE_KEEP_DAYS,
                 },
             )
+
+    def test_load_agent_config_can_disable_visible_task_terminal(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "agent.json"
+            config_path.write_text(
+                json.dumps({"show_task_terminal": False}),
+                encoding="utf-8",
+            )
+
+            self.assertFalse(Reflection.load_agent_config(config_path)["show_task_terminal"])
 
     def test_load_agent_config_accepts_cleanup_roots(self):
         with tempfile.TemporaryDirectory() as temp_dir:

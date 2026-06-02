@@ -21,6 +21,7 @@ from Reflection import (
     DEFAULT_SERVER_URL,
     DEFAULT_TASK_ISOLATION,
     DEFAULT_TASK_LOG_TAIL_BYTES,
+    DEFAULT_SHOW_TASK_TERMINAL,
     DEFAULT_TASK_TIMEOUT_SECONDS,
     DEFAULT_TRANSFER_AUTH,
     TaskDefinition,
@@ -240,6 +241,7 @@ def collect_agent_config(
             "task_timeouts": {},
             "task_log_tail_bytes": DEFAULT_TASK_LOG_TAIL_BYTES,
             "task_isolation": DEFAULT_TASK_ISOLATION,
+            "show_task_terminal": DEFAULT_SHOW_TASK_TERMINAL,
             "min_free_space_gb": 5,
             "min_free_space_multiplier": 2.0,
             "local_temp_max_age_hours": 24,
@@ -293,6 +295,13 @@ def collect_agent_config(
             interactive=should_prompt,
         )
     )
+    show_task_terminal = _validate_bool(
+        _prompt_value(
+            "Open a visible terminal window for each isolated task? (yes/no)",
+            "yes" if bool(current_config.get("show_task_terminal", DEFAULT_SHOW_TASK_TERMINAL)) else "no",
+            interactive=should_prompt,
+        )
+    )
     task_timeout_seconds = _validate_non_negative_seconds(
         _prompt_value(
             "Default max task runtime in seconds (0 disables timeout)",
@@ -315,6 +324,7 @@ def collect_agent_config(
         "pc_id": pc_id,
         "cleanup_roots": cleanup_roots,
         "task_isolation": task_isolation,
+        "show_task_terminal": show_task_terminal,
         "task_timeout_seconds": task_timeout_seconds,
         "task_timeouts": dict(current_config.get("task_timeouts") or {}),
         "task_log_tail_bytes": task_log_tail_bytes,
