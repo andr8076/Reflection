@@ -129,61 +129,64 @@
     });
 }());
 (function () {
-    // Auto-refresh dashboard data every 10 seconds
-    var refreshInterval = 10000; // 10 seconds
-    var currentUrl = window.location.href;
-    var urlParams = new URL(currentUrl).searchParams;
+    var refreshInterval = 5000;
+    var pageUrl = new URL(window.location.href);
+    var urlParams = pageUrl.searchParams;
 
-    // Only set up auto-refresh on the main dashboard view
-    if (urlParams.get('job_status') === 'all' && !urlParams.has('job_page')) {
-        function refreshDashboard() {
-            var refreshUrl = currentUrl + (currentUrl.indexOf('?') > -1 ? '&' : '?') + 'ajax=1&_cache=' + Date.now();
+    var isMainDashboard =
+        (!urlParams.has('job_status') || urlParams.get('job_status') === 'all') &&
+        !urlParams.has('job_page');
 
-            fetch(refreshUrl, {
-                headers: {
-                    'X-Requested-With': 'XMLHttpRequest'
-                }
-            })
-            .then(function (response) {
-                return response.json();
-            })
-            .then(function (data) {
-                // Update metrics
-                var metricsSection = document.getElementById('metrics-section');
-                if (metricsSection && data.metrics) {
-                    metricsSection.innerHTML = data.metrics;
-                }
-
-                // Update workers grid
-                var workersGrid = document.getElementById('workers-grid');
-                if (workersGrid && data.workers) {
-                    workersGrid.innerHTML = data.workers;
-                }
-
-                // Update jobs table
-                var jobsTbody = document.getElementById('jobs-tbody');
-                if (jobsTbody && data.jobs) {
-                    jobsTbody.innerHTML = data.jobs;
-                }
-
-                // Update events table
-                var eventsTbody = document.getElementById('events-tbody');
-                if (eventsTbody && data.events) {
-                    eventsTbody.innerHTML = data.events;
-                }
-
-                // Update files table
-                var filesTbody = document.getElementById('files-tbody');
-                if (filesTbody && data.files) {
-                    filesTbody.innerHTML = data.files;
-                }
-            })
-            .catch(function (error) {
-                console.error('Dashboard auto-refresh failed:', error);
-            });
-        }
-
-        // Start auto-refresh timer
-        setInterval(refreshDashboard, refreshInterval);
+    if (!isMainDashboard) {
+        return;
     }
+
+    function refreshDashboard() {
+        var refreshUrl = new URL(window.location.href);
+        refreshUrl.searchParams.set('ajax', '1');
+        refreshUrl.searchParams.set('_cache', String(Date.now()));
+
+        fetch(refreshUrl.toString(), {
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(function (response) {
+            if (!response.ok) {
+                throw new Error('HTTP ' + response.status);
+            }
+            return response.json();
+        })
+        .then(function (data) {
+            var metricsSection = document.getElementById('metrics-section');
+            if (metricsSection && data.metrics) {
+                metricsSection.innerHTML = data.metrics;
+            }
+
+            var workersGrid = document.getElementById('workers-grid');
+            if (workersGrid && data.workers) {
+                workersGrid.innerHTML = data.workers;
+            }
+
+            var jobsTbody = document.getElementById('jobs-tbody');
+            if (jobsTbody && data.jobs) {
+                jobsTbody.innerHTML = data.jobs;
+            }
+
+            var eventsTbody = document.getElementById('events-tbody');
+            if (eventsTbody && data.events) {
+                eventsTbody.innerHTML = data.events;
+            }
+
+            var filesTbody = document.getElementById('files-tbody');
+            if (filesTbody && data.files) {
+                filesTbody.innerHTML = data.files;
+            }
+        })
+        .catch(function (error) {
+            console.error('Dashboard auto-refresh failed:', error);
+        });
+    }
+
+    setInterval(refreshDashboard, refreshInterval);
 }());

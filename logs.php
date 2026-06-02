@@ -164,7 +164,7 @@ $currentMeta = $logMeta[$logType];
                 <a href="settings.php">Settings</a>
             </nav>
         </div>
-        <aside class="version-card">
+        <aside class="version-card" id="logs-version-card">
             <span><?= reflection_h($currentMeta['title']) ?></span>
             <strong><?= (int) $currentMeta['count'] ?> item<?= (int) $currentMeta['count'] === 1 ? '' : 's' ?></strong>
             <small><?= reflection_h($currentMeta['path']) ?></small>
@@ -172,7 +172,7 @@ $currentMeta = $logMeta[$logType];
     </header>
 
     <main class="logs-layout">
-        <section class="panel">
+        <section class="panel" id="logs-viewer-panel">
             <div class="panel-head">
                 <div>
                     <p class="eyebrow">Viewer</p>
@@ -293,5 +293,7 @@ $currentMeta = $logMeta[$logType];
         <p>Dashboard log panels show only the last 5 items. Use this page for detailed review.</p>
         <p><a href="index.php">Back to dashboard</a></p>
     </footer>
+    <script src="common.js"></script>
+    <script src="logs.js"></script>
 </body>
 </html>
