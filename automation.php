@@ -8,6 +8,8 @@ require_once __DIR__ . '/AutomationStore.php';
 require_once __DIR__ . '/StorageStore.php';
 require_once __DIR__ . '/ui_helpers.php';
 
+reflection_send_security_headers();
+
 $config = reflection_master_config();
 $farmStore = reflection_farm_store($config);
 $dataDirectory = dirname((string) $config['storage_path']);
@@ -331,7 +333,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                     <p class="api-note">A rule scans roots, filters files, applies source/delivery templates, and queues jobs for the selected worker task.</p>
                 </div>
                 <?php if (($editingRule['id'] ?? '') !== ''): ?>
-                    <form method="post" onsubmit="return confirm('Delete this automation rule and its tracked state?');">
+                    <form method="post" data-confirm="Delete this automation rule and its tracked state?">
                         <input type="hidden" name="automation_action" value="delete_rule">
                         <input type="hidden" name="rule_id" value="<?= reflection_h($editingRule['id'] ?? '') ?>">
                         <button type="submit" class="danger-button">Delete</button>
@@ -716,5 +718,6 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
         <p>Automation state lives in <code>data/automation_rules.json</code>, <code>data/automation_state.json</code>, and <code>data/automation_runs.jsonl</code>.</p>
         <p><a href="index.php">Back to dashboard</a></p>
     </footer>
+    <script src="common.js"></script>
 </body>
 </html>

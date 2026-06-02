@@ -2,6 +2,11 @@
 
 declare(strict_types=1);
 
+function reflection_send_security_headers(): void
+{
+    header("Content-Security-Policy: script-src 'self'; object-src 'none'; base-uri 'self'");
+}
+
 function reflection_h($value): string
 {
     return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
