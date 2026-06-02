@@ -970,7 +970,7 @@ final class FarmStore
             $data['settings']['wake_dispatch_mode'] = in_array($dispatchMode, ['direct', 'worker_relay', 'direct_then_worker_relay'], true) ? $dispatchMode : 'worker_relay';
             $data['settings']['auto_wake_cooldown_seconds'] = max(0, (int) ($data['settings']['auto_wake_cooldown_seconds'] ?? 300));
             $data['settings']['auto_wake_max_targets_per_run'] = max(0, (int) ($data['settings']['auto_wake_max_targets_per_run'] ?? 20));
-            $data['settings']['wake_broadcast_address'] = $this->limitString(trim((string) ($data['settings']['wake_broadcast_address'] ?? '255.255.255.255')), 100) ?: '255.255.255.255';
+            $data['settings']['wake_broadcast_address'] = $this->normalizeWakeBroadcastAddress((string) ($data['settings']['wake_broadcast_address'] ?? '255.255.255.255'));
             $data['settings']['wake_udp_port'] = max(1, min(65535, (int) ($data['settings']['wake_udp_port'] ?? 9)));
             $data['settings']['job_history_keep_completed'] = max(0, (int) ($data['settings']['job_history_keep_completed'] ?? 500));
             $data['settings']['event_log_keep_lines'] = max(0, (int) ($data['settings']['event_log_keep_lines'] ?? 1000));
@@ -1253,7 +1253,7 @@ final class FarmStore
     public function queueWakeRelayJob(array $targets, string $reason = 'manual', ?string $preferredWorkerId = null): array
     {
         $settings = $this->effectiveSettings();
-        $broadcast = trim((string) ($settings['wake_broadcast_address'] ?? '255.255.255.255')) ?: '255.255.255.255';
+        $broadcast = $this->normalizeWakeBroadcastAddress((string) ($settings['wake_broadcast_address'] ?? '255.255.255.255'));
         $port = max(1, min(65535, (int) ($settings['wake_udp_port'] ?? 9)));
         $cleanTargets = [];
         foreach ($targets as $target) {
@@ -1385,7 +1385,7 @@ final class FarmStore
     public function sendWakePackets(array $targets, string $reason = 'manual'): array
     {
         $settings = $this->effectiveSettings();
-        $broadcast = trim((string) ($settings['wake_broadcast_address'] ?? '255.255.255.255')) ?: '255.255.255.255';
+        $broadcast = $this->normalizeWakeBroadcastAddress((string) ($settings['wake_broadcast_address'] ?? '255.255.255.255'));
         $port = max(1, min(65535, (int) ($settings['wake_udp_port'] ?? 9)));
         $sent = [];
         $errors = [];
@@ -1866,6 +1866,50 @@ final class FarmStore
         }
 
         return 'mac:' . strtolower(preg_replace('/[^a-fA-F0-9]/', '', (string) ($target['mac'] ?? '')) ?? '');
+    }
+
+
+    private function normalizeWakeBroadcastAddress(string $broadcastAddress): string
+    {
+        $value = $this->limitString(trim($broadcastAddress), 100);
+        if ($value === '') {
+            return '255.255.255.255';
+        }
+
+        $lower = strtolower($value);
+        if (in_array($lower, ['default', 'limited', 'broadcast'], true)) {
+            return '255.255.255.255';
+        }
+
+        // 255.255.255.0 is a subnet mask, not a broadcast address. It is a
+        // common configuration mistake and UDP sendto() may still report success,
+        // even though no sleeping machine will receive a magic packet.
+        if ($value === '0.0.0.0' || $this->looksLikeIpv4SubnetMask($value)) {
+            return '255.255.255.255';
+        }
+
+        return $value;
+    }
+
+    private function looksLikeIpv4SubnetMask(string $value): bool
+    {
+        if (!filter_var($value, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return false;
+        }
+
+        if ($value === '255.255.255.255') {
+            return false;
+        }
+
+        $bits = '';
+        foreach (explode('.', $value) as $octet) {
+            $bits .= str_pad(decbin((int) $octet), 8, '0', STR_PAD_LEFT);
+        }
+
+        return $bits !== ''
+            && $bits[0] === '1'
+            && substr($bits, -1) === '0'
+            && strpos($bits, '01') === false;
     }
 
     private function sendWakePacket(string $macAddress, string $broadcastAddress, int $port): void

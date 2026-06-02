@@ -325,6 +325,18 @@ class WakeFarmTest(unittest.TestCase):
             ("AA:BB:CC:DD:EE:02", "192.0.2.255", 7),
         ], seen)
 
+    def test_wake_job_normalizes_subnet_mask_broadcast(self):
+        source = json.dumps({
+            "targets": [{"pc_id": "node-1", "mac": "AA:BB:CC:DD:EE:01"}],
+            "broadcast": "255.255.255.0",
+            "port": 9,
+        })
+        targets, broadcast, port = Reflection._normalize_wake_job(source)
+
+        self.assertEqual(["AA:BB:CC:DD:EE:01"], targets)
+        self.assertEqual("255.255.255.255", broadcast)
+        self.assertEqual(9, port)
+
     def test_wake_job_rejects_missing_target_payload(self):
         with self.assertRaisesRegex(ValueError, "did not include any target MAC addresses"):
             Reflection._system_wake_farm(None, "", False)

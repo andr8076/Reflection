@@ -172,6 +172,19 @@ assertSameValue(9, $relayPayload['port'] ?? null, 'Wake relay jobs should includ
 @unlink($wakeStorePath);
 @unlink($wakeStorePath . '.lock');
 
+$broadcastStorePath = sys_get_temp_dir() . '/reflection_broadcast_store_' . bin2hex(random_bytes(6)) . '.json';
+$broadcastStore = new FarmStore($broadcastStorePath);
+$broadcastStore->updateSettings([
+    'wake_broadcast_address' => '255.255.255.0',
+]);
+$broadcastRelay = $broadcastStore->dispatchWakeTargets([
+    ['pc_id' => 'node-mask', 'mac' => 'AA:BB:CC:DD:EE:04'],
+], 'manual');
+$broadcastPayload = json_decode((string) ($broadcastRelay['relay_job']['source'] ?? ''), true);
+assertSameValue('255.255.255.255', $broadcastPayload['broadcast'] ?? null, 'Subnet masks should be normalized before creating Wake-on-LAN relay jobs.');
+@unlink($broadcastStorePath);
+@unlink($broadcastStorePath . '.lock');
+
 $marginStorePath = sys_get_temp_dir() . '/reflection_margin_store_' . bin2hex(random_bytes(6)) . '.json';
 $marginStore = new FarmStore($marginStorePath);
 $marginStore->updateSettings([

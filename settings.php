@@ -193,7 +193,8 @@ $dataDirectory = dirname((string) $config['storage_path']);
                         </label>
                         <label>
                             WOL broadcast address
-                            <input name="wake_broadcast_address" value="<?= reflection_h($settings['wake_broadcast_address'] ?? '255.255.255.255') ?>">
+                            <input name="wake_broadcast_address" value="<?= reflection_h($settings['wake_broadcast_address'] ?? '255.255.255.255') ?>" placeholder="255.255.255.255">
+                            <small>Use 255.255.255.255 for same-LAN wake, or a directed broadcast like 192.168.1.255. Do not use a subnet mask like 255.255.255.0.</small>
                         </label>
                         <label>
                             WOL UDP port

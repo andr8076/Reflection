@@ -3,6 +3,7 @@ import contextlib
 import ftplib
 import hashlib
 import importlib.util
+import ipaddress
 import json
 import logging
 import os
@@ -503,6 +504,37 @@ def _system_update_worker(source, delivery, overwrite_allowed):
     }
 
 
+def _normalize_wake_broadcast(broadcast):
+    value = str(broadcast or "").strip()
+    if not value:
+        return "255.255.255.255"
+
+    lowered = value.lower()
+    if lowered in {"default", "limited", "broadcast"}:
+        return "255.255.255.255"
+
+    # 255.255.255.0 is a subnet mask, not a usable Wake-on-LAN broadcast
+    # address. UDP can still report success when sending to it, so normalize
+    # the common mistake to the limited broadcast address.
+    if value == "0.0.0.0" or _looks_like_ipv4_subnet_mask(value):
+        return "255.255.255.255"
+
+    return value
+
+
+def _looks_like_ipv4_subnet_mask(value):
+    try:
+        address = ipaddress.IPv4Address(value)
+    except ipaddress.AddressValueError:
+        return False
+
+    if str(address) == "255.255.255.255":
+        return False
+
+    bits = bin(int(address))[2:].zfill(32)
+    return bits.startswith("1") and bits.endswith("0") and "01" not in bits
+
+
 def _normalize_wake_job(source):
     """Parse legacy MAC lists and newer relay payloads from the master."""
     if not source:
@@ -516,7 +548,7 @@ def _normalize_wake_job(source):
         parsed = [part.strip() for part in str(source).replace(",", "\n").splitlines()]
 
     if isinstance(parsed, dict):
-        broadcast = str(parsed.get("broadcast") or broadcast).strip() or broadcast
+        broadcast = _normalize_wake_broadcast(parsed.get("broadcast") or broadcast)
         try:
             port = int(parsed.get("port") or port)
         except (TypeError, ValueError):
@@ -539,6 +571,7 @@ def _normalize_wake_job(source):
 
 
 def _send_wake_packet(mac_address, broadcast="255.255.255.255", port=9):
+    broadcast = _normalize_wake_broadcast(broadcast)
     clean_mac = mac_address.replace(":", "").replace("-", "").replace(".", "")
     if len(clean_mac) != 12:
         raise ValueError(f"Invalid MAC address: {mac_address}")
