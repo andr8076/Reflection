@@ -374,6 +374,88 @@ class WorkerUpdateTest(unittest.TestCase):
             finally:
                 Reflection.UPDATE_SCRIPT_PATH = original_update_script
 
+    def test_update_worker_can_pin_exact_commit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            update_script = Path(temp_dir) / "update.sh"
+            args_path = Path(temp_dir) / "args.txt"
+            update_script.write_text(
+                '#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > args.txt\necho pinned update complete\n',
+                encoding="utf-8",
+            )
+            update_script.chmod(0o755)
+            original_update_script = Reflection.UPDATE_SCRIPT_PATH
+            try:
+                Reflection.UPDATE_SCRIPT_PATH = update_script
+                outcome = Reflection._normalize_task_result(
+                    Reflection._system_update_worker("abcdef123456", "", False)
+                )
+            finally:
+                Reflection.UPDATE_SCRIPT_PATH = original_update_script
+
+            self.assertTrue(outcome.success)
+            self.assertEqual(args_path.read_text(encoding="utf-8").splitlines(), ["--commit", "abcdef123456"])
+
+    def test_version_follow_self_updates_before_accepting_task(self):
+        class RebootRequested(Exception):
+            pass
+
+        class FakeAgent:
+            def check_for_task(self):
+                return {
+                    "status": "task_available",
+                    "master_commit": "abcdef123456",
+                    "version_enforced": True,
+                    "version_policy": "update_now",
+                    "task": {"task_id": "job_normal", "module": "dummy_task"},
+                }
+
+            def confirm_task_taken(self, task_id):
+                raise AssertionError("mismatched worker must update before confirming a job")
+
+        original_version = Reflection.VERSION
+        original_update = Reflection._run_update_script
+        original_reboot = Reflection._request_system_reboot
+        seen = []
+        try:
+            Reflection.VERSION = "old000000000"
+            Reflection._run_update_script = lambda commit=None: seen.append(commit) or "updated"
+
+            def record_reboot():
+                seen.append("reboot")
+                raise RebootRequested()
+
+            Reflection._request_system_reboot = record_reboot
+            result = Reflection.FarmAgent._run_lifecycle_cycle(FakeAgent())
+        finally:
+            Reflection.VERSION = original_version
+            Reflection._run_update_script = original_update
+            Reflection._request_system_reboot = original_reboot
+
+        self.assertFalse(result)
+        self.assertEqual(seen, ["abcdef123456", "reboot"])
+
+    def test_missing_master_commit_ignores_version_follow_check(self):
+        class FakeAgent:
+            def __init__(self):
+                self.confirmed = []
+
+            def check_for_task(self):
+                return {
+                    "status": "task_available",
+                    "version_enforced": True,
+                    "version_policy": "update_now",
+                    "task": {"task_id": "job_normal", "module": "dummy_task"},
+                }
+
+            def confirm_task_taken(self, task_id):
+                self.confirmed.append(task_id)
+                return False
+
+        fake = FakeAgent()
+        result = Reflection.FarmAgent._run_lifecycle_cycle(fake)
+        self.assertTrue(result)
+        self.assertEqual(fake.confirmed, ["job_normal"])
+
     def test_update_worker_is_always_available_as_a_builtin(self):
         self.assertIn("update_worker", Reflection.built_in_tasks())
 

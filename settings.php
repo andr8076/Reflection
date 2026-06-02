@@ -122,6 +122,7 @@ $dataDirectory = dirname((string) $config['storage_path']);
                             <input type="checkbox" name="enforce_version" value="1" <?= !empty($settings['enforce_version']) ? 'checked' : '' ?>>
                             Enforce worker version
                         </label>
+                        <p class="api-note">When enabled, the master advertises its Git commit. Workers that see a different commit self-update to that exact commit before accepting work. If the master cannot advertise a commit, workers ignore the version check.</p>
                         <label>
                             Failed task behavior
                             <select name="failure_strategy">

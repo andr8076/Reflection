@@ -390,6 +390,18 @@ final class FarmStore
         return !empty($status['allowed']);
     }
 
+    public function versionUpdateLayerStatus(string $pcId, string $targetVersion, int $staleAfterSeconds): array
+    {
+        $data = $this->read();
+        return $this->versionUpdateLayerStatusFromData($data, $pcId, $targetVersion, $staleAfterSeconds);
+    }
+
+    public function workerMayUpdateByLayer(string $pcId, string $targetVersion, int $staleAfterSeconds): bool
+    {
+        $status = $this->versionUpdateLayerStatus($pcId, $targetVersion, $staleAfterSeconds);
+        return !empty($status['allowed']);
+    }
+
     public function nextQueuedJob(): ?array
     {
         return $this->nextQueuedJobForWorker('', 900);
@@ -1902,6 +1914,59 @@ final class FarmStore
             'highest_online_layer' => $highestOnlineLayer,
             'higher_online_workers' => $higherOnline,
         ];
+    }
+
+    private function versionUpdateLayerStatusFromData(array $data, string $pcId, string $targetVersion, int $staleAfterSeconds): array
+    {
+        $pcId = trim($pcId);
+        $targetVersion = trim($targetVersion);
+        $ownLayer = $this->machineShutdownLayerByPcId($data, $pcId);
+        $onlineWorkers = $this->onlineWorkersFromData($data, $staleAfterSeconds);
+        $highestMismatchedLayer = $ownLayer;
+        $higherMismatched = [];
+
+        foreach ($onlineWorkers as $workerId => $worker) {
+            $workerId = (string) $workerId;
+            if ($workerId === $pcId) {
+                continue;
+            }
+
+            $workerLayer = $this->machineShutdownLayerByPcId($data, $workerId);
+            $workerVersion = trim((string) ($worker['version'] ?? ''));
+            $matchesTarget = $targetVersion !== '' && $this->versionsMatch($workerVersion, $targetVersion);
+            if ($workerLayer > $ownLayer && !$matchesTarget) {
+                $highestMismatchedLayer = max($highestMismatchedLayer, $workerLayer);
+                $higherMismatched[] = [
+                    'pc_id' => $workerId,
+                    'shutdown_layer' => $workerLayer,
+                    'version' => $workerVersion,
+                ];
+            }
+        }
+
+        return [
+            'allowed' => $targetVersion !== '' && $higherMismatched === [],
+            'pc_id' => $pcId,
+            'shutdown_layer' => $ownLayer,
+            'target_version' => $targetVersion,
+            'highest_mismatched_layer' => $highestMismatchedLayer,
+            'higher_mismatched_workers' => $higherMismatched,
+        ];
+    }
+
+    private function versionsMatch(string $workerVersion, string $targetVersion): bool
+    {
+        $workerVersion = trim($workerVersion);
+        $targetVersion = trim($targetVersion);
+        if ($workerVersion === '' || $targetVersion === '') {
+            return false;
+        }
+        if ($workerVersion === $targetVersion) {
+            return true;
+        }
+
+        $shortest = min(strlen($workerVersion), strlen($targetVersion));
+        return $shortest >= 7 && substr($workerVersion, 0, $shortest) === substr($targetVersion, 0, $shortest);
     }
 
     private function isControlModule(string $module): bool

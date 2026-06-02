@@ -13,6 +13,54 @@ function reflection_json_response(array $payload, int $statusCode = 200): void
     header('Content-Type: application/json');
     echo json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL;
 }
+function reflection_api_master_commit(array $config): string
+{
+    $commit = trim((string) ($config['required_version'] ?? ''));
+    if ($commit === '' || strtolower($commit) === 'unknown') {
+        return '';
+    }
+
+    return $commit;
+}
+
+function reflection_api_versions_match(string $workerVersion, string $masterCommit): bool
+{
+    $workerVersion = trim($workerVersion);
+    $masterCommit = trim($masterCommit);
+    if ($workerVersion === '' || $masterCommit === '') {
+        return false;
+    }
+
+    if ($workerVersion === $masterCommit) {
+        return true;
+    }
+
+    $shortest = min(strlen($workerVersion), strlen($masterCommit));
+    if ($shortest >= 7) {
+        return substr($workerVersion, 0, $shortest) === substr($masterCommit, 0, $shortest);
+    }
+
+    return false;
+}
+
+function reflection_api_with_version_metadata(array $response, array $config, array $settings, string $policy = 'ignore', string $reason = ''): array
+{
+    $masterCommit = reflection_api_master_commit($config);
+    if ($masterCommit !== '') {
+        $response['master_commit'] = $masterCommit;
+        // required_version is kept for older dashboard/tests/worker code.
+        $response['required_version'] = $masterCommit;
+    }
+
+    $response['version_enforced'] = !empty($settings['enforce_version']) && $masterCommit !== '';
+    $response['version_policy'] = $policy;
+    if ($reason !== '') {
+        $response['version_reason'] = $reason;
+    }
+
+    return $response;
+}
+
 function reflection_handle_farm_api(array $payload, FarmStore $store, array $config): array
 {
     $action = (string) ($payload['action'] ?? '');
@@ -28,18 +76,23 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
     $store->refreshEssSocFromConfiguredEndpoint();
 
     $settings = $store->effectiveSettings();
-    $requiredVersion = $config['required_version'] ?? null;
+    $masterCommit = reflection_api_master_commit($config);
     $versionMismatch = !empty($settings['enforce_version'])
-        && is_string($requiredVersion)
-        && $requiredVersion !== ''
-        && $version !== $requiredVersion;
+        && $masterCommit !== ''
+        && !reflection_api_versions_match($version, $masterCommit);
 
     if ($versionMismatch && $action === 'request_task') {
-        return reflection_api_request_update_for_version_mismatch($store, $config, $pcId, $requiredVersion);
+        return reflection_api_request_self_update_for_version_mismatch($store, $config, $pcId, $masterCommit);
     }
 
     if ($versionMismatch && !reflection_api_allows_mismatched_version_action($payload, $store)) {
-        return ['status' => 'version_mismatch', 'required_version' => $requiredVersion];
+        return reflection_api_with_version_metadata(
+            ['status' => 'version_mismatch'],
+            $config,
+            $settings,
+            'update_now',
+            'worker_commit_mismatch'
+        );
     }
 
     switch ($action) {
@@ -52,7 +105,12 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
         case 'report_done':
             return reflection_api_report_done($payload, $store, $pcId);
         default:
-            return ['status' => 'error', 'error' => 'Unknown action.'];
+            return reflection_api_with_version_metadata(
+                ['status' => 'error', 'error' => 'Unknown action.'],
+                $config,
+                $settings,
+                'ignore'
+            );
     }
 }
 
@@ -243,24 +301,26 @@ function reflection_api_task_payload(array $job, array $config, array $settings,
     return $task;
 }
 
-function reflection_api_request_update_for_version_mismatch(FarmStore $store, array $config, string $pcId, string $requiredVersion): array
+function reflection_api_request_self_update_for_version_mismatch(FarmStore $store, array $config, string $pcId, string $masterCommit): array
 {
-    $job = $store->nextQueuedUpdateJob();
-    if ($job === null) {
-        return [
-            'status' => 'version_mismatch',
-            'required_version' => $requiredVersion,
-            'update_available' => false,
-        ];
-    }
-
+    $settings = $store->effectiveSettings();
+    $staleAfterSeconds = (int) ($config['stale_after_seconds'] ?? 900);
+    $updateLayer = $store->versionUpdateLayerStatus($pcId, $masterCommit, $staleAfterSeconds);
+    $updateAllowed = !empty($updateLayer['allowed']);
     $store->resetWorkerNoJobCheckIns($pcId);
-    return [
-        'status' => 'task_available',
-        'version_mismatch' => true,
-        'required_version' => $requiredVersion,
-        'task' => reflection_api_task_payload($job, $config, $store->effectiveSettings(), PHP_INT_MAX, $store, $pcId),
-    ];
+
+    return reflection_api_with_version_metadata(
+        [
+            'status' => 'version_mismatch',
+            'update_allowed' => $updateAllowed,
+            'update_layer' => $updateLayer,
+            'update_available' => true,
+        ],
+        $config,
+        $settings,
+        $updateAllowed ? 'update_now' : 'wait_for_update_layer',
+        $updateAllowed ? 'worker_commit_mismatch' : 'waiting_for_higher_update_layer'
+    );
 }
 
 function reflection_api_request_task(FarmStore $store, array $config, string $pcId): array
@@ -297,10 +357,15 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
 
     $store->resetWorkerNoJobCheckIns($pcId);
 
-    return [
-        'status' => 'task_available',
-        'task' => reflection_api_task_payload($job, $config, $settings, $allowedWorkers, $store, $pcId),
-    ];
+    return reflection_api_with_version_metadata(
+        [
+            'status' => 'task_available',
+            'task' => reflection_api_task_payload($job, $config, $settings, $allowedWorkers, $store, $pcId),
+        ],
+        $config,
+        $settings,
+        'ok'
+    );
 }
 
 
@@ -319,15 +384,20 @@ function reflection_api_no_jobs_response(FarmStore $store, string $pcId, array $
     }
     reflection_api_mark_expected_offline_if_shutdown($store, $pcId, $shutdownAfterTask, $finalReason);
 
-    return [
-        'status' => 'no_jobs',
-        'shutdown_after_task' => $shutdownAfterTask,
-        'reason' => $finalReason,
-        'idle_no_job_checkins' => $idleCheckIns,
-        'idle_shutdown_after_no_job_checks' => $shutdownLimit,
-        'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
-        'shutdown_layer' => $shutdownLayer,
-    ];
+    return reflection_api_with_version_metadata(
+        [
+            'status' => 'no_jobs',
+            'shutdown_after_task' => $shutdownAfterTask,
+            'reason' => $finalReason,
+            'idle_no_job_checkins' => $idleCheckIns,
+            'idle_shutdown_after_no_job_checks' => $shutdownLimit,
+            'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
+            'shutdown_layer' => $shutdownLayer,
+        ],
+        $config,
+        $settings,
+        'ok'
+    );
 }
 
 function reflection_api_confirm_taken(array $payload, FarmStore $store, string $pcId): array
@@ -384,13 +454,18 @@ function reflection_api_report_done(array $payload, FarmStore $store, string $pc
     $shutdownAfterTask = $shutdownRequested && !empty($shutdownLayer['allowed']);
     reflection_api_mark_expected_offline_if_shutdown($store, $pcId, $shutdownAfterTask, 'ess_soc_below_minimum_after_task');
 
-    return [
-        'status' => 'confirmed_by_server',
-        'shutdown_after_task' => $shutdownAfterTask,
-        'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
-        'shutdown_layer' => $shutdownLayer,
-        'shutdown_blocked_by_layer' => $shutdownRequested && !$shutdownAfterTask,
-    ];
+    return reflection_api_with_version_metadata(
+        [
+            'status' => 'confirmed_by_server',
+            'shutdown_after_task' => $shutdownAfterTask,
+            'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
+            'shutdown_layer' => $shutdownLayer,
+            'shutdown_blocked_by_layer' => $shutdownRequested && !$shutdownAfterTask,
+        ],
+        $GLOBALS['config'] ?? [],
+        $settings,
+        'ok'
+    );
 }
 
 if (!defined('REFLECTION_TESTING') && !defined('REFLECTION_EMBEDDED_API')) {

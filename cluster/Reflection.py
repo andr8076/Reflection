@@ -477,14 +477,40 @@ def _system_shutdown(source, delivery, overwrite_allowed):
     }
 
 
-def _system_update_worker(source, delivery, overwrite_allowed):
-    """Download the latest worker code and reboot this computer after acknowledgement."""
+def _normalize_master_commit(value):
+    """Return a usable master commit string, or an empty string when absent."""
+    commit = str(value or "").strip()
+    if not commit or commit.lower() in {"unknown", "none", "null"}:
+        return ""
+    return commit
+
+
+def _git_versions_match(local_version, target_version):
+    local = str(local_version or "").strip()
+    target = str(target_version or "").strip()
+    if not local or not target:
+        return False
+    if local == target:
+        return True
+    shortest = min(len(local), len(target))
+    return shortest >= 7 and local[:shortest] == target[:shortest]
+
+
+def _run_update_script(target_commit=None):
+    """Run update.sh, optionally pinned to the master's exact commit."""
     if not UPDATE_SCRIPT_PATH.is_file():
         raise FileNotFoundError(f"Missing updater script: {UPDATE_SCRIPT_PATH}")
 
-    logging.info("Updating worker from GitHub with %s.", UPDATE_SCRIPT_PATH)
+    command = ["bash", str(UPDATE_SCRIPT_PATH)]
+    target_commit = _normalize_master_commit(target_commit)
+    if target_commit:
+        command.extend(["--commit", target_commit])
+        logging.info("Updating worker to master commit %s with %s.", target_commit, UPDATE_SCRIPT_PATH)
+    else:
+        logging.info("Updating worker from GitHub latest branch with %s.", UPDATE_SCRIPT_PATH)
+
     result = subprocess.run(
-        ["bash", str(UPDATE_SCRIPT_PATH)],
+        command,
         cwd=str(UPDATE_SCRIPT_PATH.parent),
         capture_output=True,
         text=True,
@@ -495,6 +521,13 @@ def _system_update_worker(source, delivery, overwrite_allowed):
     output = output[-4000:]
     if result.returncode != 0:
         raise RuntimeError(f"Worker update failed with exit code {result.returncode}: {output or 'no output'}")
+    return output
+
+
+def _system_update_worker(source, delivery, overwrite_allowed):
+    """Download worker code and reboot this computer after acknowledgement."""
+    target_commit = _normalize_master_commit(source)
+    output = _run_update_script(target_commit or None)
 
     return {
         "success": True,
@@ -502,7 +535,6 @@ def _system_update_worker(source, delivery, overwrite_allowed):
         "cleanup_source": False,
         "message": output or "Worker updated successfully. Reboot requested.",
     }
-
 
 def _normalize_wake_broadcast(broadcast):
     value = str(broadcast or "").strip()
@@ -1740,6 +1772,63 @@ class FarmAgent:
         logging.info("Checking server for available tasks...")
         return self.post_to_server(payload)
 
+    def handle_master_version_policy(self, response):
+        """Self-update before accepting work when the master advertises a newer commit.
+
+        Return None when normal response handling should continue. Return True to
+        keep the agent polling, or False when the agent should exit after a
+        reboot/update action. Old masters that do not transmit master_commit are
+        ignored as a safe fallback.
+        """
+        if not isinstance(response, dict):
+            return None
+
+        master_commit = _normalize_master_commit(response.get("master_commit"))
+        if not master_commit:
+            return None
+
+        version_enforced = bool(response.get("version_enforced"))
+        policy = str(response.get("version_policy") or "").strip().lower()
+        if not version_enforced and policy not in {"update_now", "wait_for_update_layer"}:
+            return None
+
+        if _git_versions_match(VERSION, master_commit):
+            return None
+
+        if policy == "wait_for_update_layer":
+            logging.warning(
+                "Worker version %s does not match master commit %s, but update layers say to wait. Retrying in %ss.",
+                VERSION,
+                master_commit,
+                POLL_INTERVAL,
+            )
+            time.sleep(POLL_INTERVAL)
+            return True
+
+        logging.warning(
+            "Worker version %s does not match master commit %s. Updating before accepting work.",
+            VERSION,
+            master_commit,
+        )
+        try:
+            output = _run_update_script(master_commit)
+        except Exception as exc:
+            logging.exception("Version-follow update failed; no job will be accepted this cycle: %s", exc)
+            time.sleep(POLL_INTERVAL)
+            return True
+
+        if output:
+            logging.info("Version-follow update completed: %s", output[-1000:])
+        logging.info("Version-follow update complete. Rebooting farm computer.")
+        try:
+            _request_system_reboot()
+        except Exception:
+            # If the reboot command fails, stop polling anyway. The updated code
+            # has already replaced the live tree; continuing in the old process
+            # risks accepting work with a stale in-memory agent.
+            logging.exception("System reboot command failed after version-follow update; stopping agent anyway.")
+        return False
+
     def confirm_task_taken(self, task_id):
         """Step 3: Confirm to the server that we are starting the task."""
         payload = {
@@ -1855,6 +1944,10 @@ class FarmAgent:
             time.sleep(POLL_INTERVAL)
             return True
 
+        version_policy_result = FarmAgent.handle_master_version_policy(self, response)
+        if version_policy_result is not None:
+            return version_policy_result
+
         if response.get("status") == "no_jobs":
             if response.get("shutdown_after_task"):
                 reason = response.get("reason", "server_policy")
@@ -1869,9 +1962,10 @@ class FarmAgent:
         if response.get("status") == "version_mismatch":
             required = response.get("required_version", "unknown")
             logging.warning(
-                "Worker version %s does not match required version %s. Waiting for an update_worker job.",
+                "Worker version %s does not match required version %s, but no master_commit was supplied for self-update. Retrying in %ss.",
                 VERSION,
                 required,
+                POLL_INTERVAL,
             )
             time.sleep(POLL_INTERVAL)
             return True

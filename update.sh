@@ -3,17 +3,53 @@ set -Eeuo pipefail
 
 # Reflection's upstream is intentionally fixed so an update is one command:
 #   ./update.sh
+# Workers can also follow the exact master commit:
+#   ./update.sh --commit <git-commit>
 GITHUB_REPOSITORY="andr8076/Reflection"
 GITHUB_BRANCH="main"
 GIT_URL="https://github.com/${GITHUB_REPOSITORY}.git"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reflection-update.XXXXXX")"
 SOURCE_DIR="$TEMP_DIR/source"
+TARGET_COMMIT=""
 
 cleanup() {
     rm -rf -- "$TEMP_DIR"
 }
 trap cleanup EXIT
+
+usage() {
+    cat <<'EOF'
+Usage: ./update.sh [--commit <git-commit>]
+
+Without --commit, the updater installs the latest configured branch.
+With --commit, the updater installs that exact commit and fails safely if it
+cannot be fetched or checked out.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --commit)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "--commit requires a value." >&2
+                usage >&2
+                exit 2
+            fi
+            TARGET_COMMIT="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
 
 for command in git python3; do
     if ! command -v "$command" >/dev/null 2>&1; then
@@ -27,17 +63,47 @@ if [[ ! -f "$SCRIPT_DIR/config.php" || ! -f "$SCRIPT_DIR/cluster/Reflection.py" 
     exit 1
 fi
 
-echo "Cloning the latest ${GITHUB_REPOSITORY} ${GITHUB_BRANCH} branch..."
-if ! git clone --depth 1 --branch "$GITHUB_BRANCH" "$GIT_URL" "$SOURCE_DIR"; then
-    echo >&2
-    echo "Unable to clone the Reflection update from GitHub." >&2
-    echo "Check your network connection and try ./update.sh again." >&2
-    exit 1
+if [[ -n "$TARGET_COMMIT" ]]; then
+    echo "Fetching Reflection commit ${TARGET_COMMIT} from ${GITHUB_REPOSITORY}..."
+    git init "$SOURCE_DIR" >/dev/null
+    git -C "$SOURCE_DIR" remote add origin "$GIT_URL"
+
+    if ! git -C "$SOURCE_DIR" fetch --depth 1 origin "$TARGET_COMMIT"; then
+        echo "Direct commit fetch failed. Trying ${GITHUB_BRANCH} branch history..." >&2
+        rm -rf -- "$SOURCE_DIR"
+        if ! git clone --depth 100 --branch "$GITHUB_BRANCH" "$GIT_URL" "$SOURCE_DIR"; then
+            echo "Unable to fetch Reflection update from GitHub." >&2
+            exit 1
+        fi
+    fi
+
+    if ! git -C "$SOURCE_DIR" checkout --detach --force "$TARGET_COMMIT"; then
+        echo "Unable to check out requested Reflection commit: ${TARGET_COMMIT}" >&2
+        echo "Leaving the current installation unchanged." >&2
+        exit 1
+    fi
+else
+    echo "Cloning the latest ${GITHUB_REPOSITORY} ${GITHUB_BRANCH} branch..."
+    if ! git clone --depth 1 --branch "$GITHUB_BRANCH" "$GIT_URL" "$SOURCE_DIR"; then
+        echo >&2
+        echo "Unable to clone the Reflection update from GitHub." >&2
+        echo "Check your network connection and try ./update.sh again." >&2
+        exit 1
+    fi
 fi
 
 if [[ ! -d "$SOURCE_DIR/.git" || ! -f "$SOURCE_DIR/config.php" || ! -f "$SOURCE_DIR/cluster/Reflection.py" ]]; then
     echo "Downloaded checkout does not look like a Reflection Git checkout." >&2
     exit 1
+fi
+
+if [[ -n "$TARGET_COMMIT" ]]; then
+    actual_commit="$(git -C "$SOURCE_DIR" rev-parse HEAD)"
+    if [[ "$actual_commit" != "$TARGET_COMMIT"* && "${actual_commit:0:${#TARGET_COMMIT}}" != "$TARGET_COMMIT" ]]; then
+        echo "Fetched commit ${actual_commit} does not match requested commit ${TARGET_COMMIT}." >&2
+        echo "Leaving the current installation unchanged." >&2
+        exit 1
+    fi
 fi
 
 # Validate the downloaded worker entry points before replacing the live files.
@@ -131,4 +197,4 @@ python3 -m py_compile \
 new_version="$(git -C "$SCRIPT_DIR" rev-parse --short=12 HEAD)"
 echo "Reflection updated successfully to Git version ${new_version}."
 echo "Protected local paths kept: data/, farm_settings.local.php, cluster/reflection_config.json, cluster/reflection_config.local.json, .env"
-echo "Farm workers started by update_worker will reboot after the master confirms the update result."
+echo "Farm workers started by update_worker or version-follow self-update will reboot after the update completes."

@@ -232,34 +232,20 @@ $response = reflection_handle_farm_api([
     'version' => 'old-version',
     'pc_id' => 'node-01',
 ], $store, $config);
-assertSameValue('version_mismatch', $response['status'], 'Wrong worker versions must be rejected when no updater job is queued.');
-assertSameValue('test-version', $response['required_version'], 'Version mismatch should publish the required version.');
+assertSameValue('version_mismatch', $response['status'], 'Wrong worker versions must be rejected before normal work is offered.');
+assertSameValue('test-version', $response['required_version'], 'Version mismatch should publish the required version for old clients.');
+assertSameValue('test-version', $response['master_commit'], 'Version mismatch should publish the master commit for self-updating workers.');
+assertSameValue('update_now', $response['version_policy'], 'Mismatched workers should be told to self-update when their layer is allowed.');
+assertSameValue(true, $response['update_allowed'], 'A worker with no higher mismatched layer should be allowed to self-update.');
+assertSameValue(false, array_key_exists('task', $response), 'Mismatched workers should not be handed normal queue jobs.');
 
-$updateJob = $store->createJob('update_worker', null, null, false);
 $response = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'old-version',
-    'pc_id' => 'node-updater',
-], $store, $config);
-assertSameValue('task_available', $response['status'], 'Outdated workers should still be allowed to receive update_worker jobs.');
-assertSameValue('update_worker', $response['task']['module'], 'Version-recovery task should be the updater task.');
-assertSameValue(true, $response['version_mismatch'], 'Updater recovery responses should mark that the worker is outdated.');
-$response = reflection_handle_farm_api([
-    'action' => 'confirm_taken',
-    'version' => 'old-version',
-    'pc_id' => 'node-updater',
-    'task_id' => $updateJob['task_id'],
-], $store, $config);
-assertSameValue('acknowledged', $response['status'], 'Outdated workers should be allowed to start update_worker jobs.');
-$response = reflection_handle_farm_api([
-    'action' => 'report_done',
-    'version' => 'old-version',
-    'pc_id' => 'node-updater',
-    'task_id' => $updateJob['task_id'],
-    'status' => 'success',
-    'error' => '',
-], $store, $config);
-assertSameValue('confirmed_by_server', $response['status'], 'Outdated workers should be allowed to report update_worker success before rebooting.');
+    'pc_id' => 'node-no-master-commit',
+], $store, ['required_version' => '']);
+assertSameValue('task_available', $response['status'], 'If the master transmits no commit, version checking should be ignored.');
+assertSameValue(false, array_key_exists('master_commit', $response), 'No master commit should be advertised when the config has none.');
 
 $response = reflection_handle_farm_api([
     'action' => 'request_task',
@@ -553,6 +539,40 @@ assertSameValue(null, $crashLoopData['workers']['node-crash-b']['current_job'], 
 @unlink($crashLoopStorePath . '.lock');
 
 
+
+
+$updateLayerStorePath = sys_get_temp_dir() . '/reflection_update_layer_store_' . bin2hex(random_bytes(6)) . '.json';
+$updateLayerStore = new FarmStore($updateLayerStorePath);
+$updateLayerStore->updateSettings(['ess_soc_url' => '']);
+$updateLayerStore->updateMachines([
+    ['pc_id' => 'core-update-node', 'mac' => '', 'soc_margin_percent' => 5, 'wake_enabled' => false, 'shutdown_layer' => 0],
+    ['pc_id' => 'endpoint-update-node', 'mac' => '', 'soc_margin_percent' => 5, 'wake_enabled' => false, 'shutdown_layer' => 2],
+]);
+$updateLayerStore->recordWorkerCheckIn('endpoint-update-node', 'old-version');
+$coreUpdateResponse = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'old-version',
+    'pc_id' => 'core-update-node',
+], $updateLayerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
+assertSameValue('version_mismatch', $coreUpdateResponse['status'], 'Lower update layers should not accept work while they are outdated.');
+assertSameValue('wait_for_update_layer', $coreUpdateResponse['version_policy'], 'Lower update layers should wait for higher mismatched online layers.');
+assertSameValue(false, $coreUpdateResponse['update_allowed'], 'Lower update layers should be blocked while higher mismatched workers are online.');
+assertSameValue('endpoint-update-node', $coreUpdateResponse['update_layer']['higher_mismatched_workers'][0]['pc_id'], 'Layer block should name the higher mismatched worker.');
+$endpointUpdateResponse = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'old-version',
+    'pc_id' => 'endpoint-update-node',
+], $updateLayerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
+assertSameValue('update_now', $endpointUpdateResponse['version_policy'], 'Highest mismatched update layer should be updated first.');
+$updateLayerStore->recordWorkerCheckIn('endpoint-update-node', 'test-version');
+$coreUpdateAfterEndpoint = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'old-version',
+    'pc_id' => 'core-update-node',
+], $updateLayerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
+assertSameValue('update_now', $coreUpdateAfterEndpoint['version_policy'], 'Lower update layers may update after higher online layers match the master commit.');
+@unlink($updateLayerStorePath);
+@unlink($updateLayerStorePath . '.lock');
 
 $layerStorePath = sys_get_temp_dir() . '/reflection_shutdown_layer_store_' . bin2hex(random_bytes(6)) . '.json';
 $layerStore = new FarmStore($layerStorePath);
