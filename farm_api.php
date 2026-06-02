@@ -194,6 +194,7 @@ function reflection_api_task_payload(array $job, array $config, array $settings,
         'delivery' => $job['delivery'],
         'overwrite_allowed' => (bool) $job['overwrite_allowed'],
         'shutdown_after_task' => !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 1,
+        'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
         'quarantine_keep_days' => max(1, (int) ($settings['quarantine_keep_days'] ?? 14)),
         'worker_temp_max_age_hours' => max(1, (int) ($settings['worker_temp_max_age_hours'] ?? 24)),
     ];
@@ -280,13 +281,20 @@ function reflection_api_no_jobs_response(FarmStore $store, string $pcId, array $
     $idleCheckIns = $store->recordWorkerNoJobCheckIn($pcId);
     $shutdownLimit = max(0, (int) ($settings['idle_shutdown_after_no_job_checks'] ?? 0));
     $limitReached = $shutdownLimit > 0 && $idleCheckIns >= $shutdownLimit;
+    $responseReason = $limitReached ? 'idle_no_job_check_limit' : $reason;
+    $shutdownAfterTask = $forceShutdown || $limitReached;
+
+    if ($shutdownAfterTask) {
+        $store->markWorkerShutdownRequested($pcId, $responseReason);
+    }
 
     return [
         'status' => 'no_jobs',
-        'shutdown_after_task' => $forceShutdown || $limitReached,
-        'reason' => $limitReached ? 'idle_no_job_check_limit' : $reason,
+        'shutdown_after_task' => $shutdownAfterTask,
+        'reason' => $responseReason,
         'idle_no_job_checkins' => $idleCheckIns,
         'idle_shutdown_after_no_job_checks' => $shutdownLimit,
+        'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
     ];
 }
 
@@ -333,15 +341,29 @@ function reflection_api_report_done(array $payload, FarmStore $store, string $pc
         return ['status' => 'error', 'error' => 'Invalid completion status.'];
     }
 
+    $jobModule = '';
+    foreach (($store->read()['jobs'] ?? []) as $job) {
+        if (($job['task_id'] ?? '') === $taskId) {
+            $jobModule = (string) ($job['module'] ?? '');
+            break;
+        }
+    }
+
     if (!$store->finishJob($taskId, $pcId, $status, $error)) {
         return ['status' => 'not_available'];
     }
 
     $settings = $store->effectiveSettings();
     $allowedWorkers = $store->allowedActiveWorkers();
+    $shutdownAfterTask = !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 0;
+    if ($shutdownAfterTask || $jobModule === 'shutdown') {
+        $store->markWorkerShutdownRequested($pcId, $jobModule === 'shutdown' ? 'shutdown_task' : 'ess_soc_below_minimum');
+    }
+
     return [
         'status' => 'confirmed_by_server',
-        'shutdown_after_task' => !empty($settings['ess_shutdown_below_minimum']) && $allowedWorkers <= 0,
+        'shutdown_after_task' => $shutdownAfterTask,
+        'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
     ];
 }
 

@@ -34,6 +34,7 @@ assertSameValue(true, array_key_exists('wake_farm', $defaultConfig['allowed_task
 assertSameValue(true, array_key_exists('update_worker', $defaultConfig['allowed_tasks']), 'Remote worker update should be an allowed master task.');
 assertSameValue(true, array_key_exists('h265_encode', $defaultConfig['allowed_tasks']), 'H.265 encoder should be an allowed master task.');
 assertSameValue(true, $defaultConfig['runtime_defaults']['auto_wake_for_queued_jobs'], 'Demand-based Wake-on-LAN should default to enabled.');
+assertSameValue(false, $defaultConfig['runtime_defaults']['shutdown_debug_mode'], 'Shutdown debug mode should default to disabled so server shutdown requests power off workers.');
 
 assertSameValue('default', $defaultConfig['farm_id'], 'Default farm id should come from farm settings.');
 assertSameValue(
@@ -373,6 +374,7 @@ $response = reflection_handle_farm_api([
     'error' => '',
 ], $store, $config);
 assertSameValue('confirmed_by_server', $response['status'], 'Completed jobs should receive cleanup confirmation.');
+assertSameValue(false, $response['shutdown_debug_mode'], 'Task closeout should publish shutdown debug mode to the worker.');
 
 $response = reflection_handle_farm_api([
     'action' => 'request_task',
@@ -391,6 +393,7 @@ $store->updateSettings([
     'max_retries' => 1,
     'ess_soc_percent' => 12,
     'ess_min_soc_percent' => 20,
+    'shutdown_debug_mode' => true,
 ]);
 $response = reflection_handle_farm_api([
     'action' => 'request_task',
@@ -399,11 +402,13 @@ $response = reflection_handle_farm_api([
 ], $store, $config);
 assertSameValue('no_jobs', $response['status'], 'SOC below minimum should withhold new work.');
 assertSameValue(true, $response['shutdown_after_task'], 'SOC below minimum should ask idle workers to shut down.');
+assertSameValue(true, $response['shutdown_debug_mode'], 'No-job shutdown responses should tell workers when shutdown debug mode is active.');
 
 $store->updateSettings([
     'ess_soc_percent' => 100,
     'ess_min_soc_percent' => 20,
     'idle_shutdown_after_no_job_checks' => 2,
+    'shutdown_debug_mode' => false,
 ]);
 $response = reflection_handle_farm_api([
     'action' => 'request_task',
@@ -423,6 +428,31 @@ assertSameValue('no_jobs', $response['status'], 'Idle workers should still recei
 assertSameValue(true, $response['shutdown_after_task'], 'Idle workers should be told to stop at the configured no-job limit.');
 assertSameValue('idle_no_job_check_limit', $response['reason'], 'No-job limit shutdowns should explain the reason.');
 assertSameValue(2, $response['idle_shutdown_after_no_job_checks'], 'No-job limit responses should publish the configured limit.');
+assertSameValue(false, $response['shutdown_debug_mode'], 'No-job limit responses should publish disabled shutdown debug mode.');
+
+$shutdownStorePath = sys_get_temp_dir() . '/reflection_shutdown_store_' . bin2hex(random_bytes(6)) . '.json';
+$shutdownStore = new FarmStore($shutdownStorePath);
+$shutdownStore->updateSettings([
+    'ess_soc_url' => '',
+    'idle_shutdown_after_no_job_checks' => 1,
+    'shutdown_debug_mode' => true,
+]);
+$shutdownResponse = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'test-version',
+    'pc_id' => 'node-debug-shutdown',
+], $shutdownStore, ['required_version' => 'test-version']);
+assertSameValue('no_jobs', $shutdownResponse['status'], 'Debug shutdown worker should receive no_jobs when queue is empty.');
+assertSameValue(true, $shutdownResponse['shutdown_after_task'], 'Debug shutdown should still be requested by the master.');
+assertSameValue(true, $shutdownResponse['shutdown_debug_mode'], 'Debug shutdown mode should be sent to the worker.');
+assertSameValue(0, $shutdownStore->idleOnlineWorkerCount(900), 'Workers with a shutdown request should stop counting as online immediately.');
+$shutdownData = $shutdownStore->read();
+assertSameValue(true, !empty($shutdownData['workers']['node-debug-shutdown']['shutdown_requested_at']), 'Shutdown requests should mark the worker as expected offline.');
+$shutdownStore->recordWorkerCheckIn('node-debug-shutdown', 'test-version');
+$shutdownData = $shutdownStore->read();
+assertSameValue(false, array_key_exists('shutdown_requested_at', $shutdownData['workers']['node-debug-shutdown']), 'A later worker check-in should clear the expected-offline shutdown marker.');
+@unlink($shutdownStorePath);
+@unlink($shutdownStorePath . '.lock');
 
 $retryJob = $store->createJob('dummy_task', 'incoming/retry.dat', 'outputs/retry.txt', false);
 assertSameValue(true, $store->markJobRunning($retryJob['task_id'], 'node-04'), 'Retry test job should lock.');

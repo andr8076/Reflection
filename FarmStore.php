@@ -282,6 +282,8 @@ final class FarmStore
                 'last_check_in' => gmdate(DATE_ATOM),
             ]);
 
+            unset($worker['shutdown_requested_at'], $worker['shutdown_reason']);
+
             if ($capabilities !== []) {
                 $worker['capabilities'] = $this->cleanWorkerCapabilities($capabilities);
             }
@@ -312,6 +314,33 @@ final class FarmStore
 
             return ['data' => $data, 'result' => null];
         }, true);
+    }
+
+    public function markWorkerShutdownRequested(string $pcId, string $reason = 'server_shutdown'): void
+    {
+        $pcId = trim($pcId);
+        if ($pcId === '') {
+            return;
+        }
+
+        $nowText = gmdate(DATE_ATOM);
+        $reason = $this->limitString($reason, 120);
+        $this->withLock(function (array $data) use ($pcId, $reason, $nowText): array {
+            $worker = $data['workers'][$pcId] ?? ['pc_id' => $pcId];
+            $worker['pc_id'] = $pcId;
+            $worker['current_job'] = null;
+            $worker['shutdown_requested_at'] = $nowText;
+            $worker['shutdown_reason'] = $reason;
+            $data['workers'][$pcId] = $worker;
+
+            return ['data' => $data, 'result' => null];
+        }, true);
+
+        $this->recordSystemEvent('worker_shutdown_requested', '', [
+            'worker' => $pcId,
+            'pc_id' => $pcId,
+            'reason' => $reason,
+        ]);
     }
 
     public function nextQueuedJob(): ?array
@@ -963,6 +992,7 @@ final class FarmStore
             $data['settings']['ess_soc_error'] = $this->limitString((string) ($data['settings']['ess_soc_error'] ?? ''), 500);
             $data['settings']['ess_soc_raw_sample'] = $this->limitString((string) ($data['settings']['ess_soc_raw_sample'] ?? ''), 500);
             $data['settings']['idle_shutdown_after_no_job_checks'] = max(0, (int) ($data['settings']['idle_shutdown_after_no_job_checks'] ?? 0));
+            $data['settings']['shutdown_debug_mode'] = !empty($data['settings']['shutdown_debug_mode']);
             $data['settings']['auto_wake_for_queued_jobs'] = !empty($data['settings']['auto_wake_for_queued_jobs']);
             $data['settings']['automation_run_due_on_worker_checkin'] = !empty($data['settings']['automation_run_due_on_worker_checkin']);
             $data['settings']['automation_checkin_cooldown_seconds'] = max(0, min(3600, (int) ($data['settings']['automation_checkin_cooldown_seconds'] ?? 60)));
@@ -1772,6 +1802,10 @@ final class FarmStore
             if (!is_array($worker)) {
                 continue;
             }
+            if (trim((string) ($worker['shutdown_requested_at'] ?? '')) !== '') {
+                continue;
+            }
+
             $lastCheckIn = strtotime((string) ($worker['last_check_in'] ?? ''));
             if ($lastCheckIn !== false && $lastCheckIn >= $cutoff) {
                 $pcId = trim((string) ($worker['pc_id'] ?? ''));

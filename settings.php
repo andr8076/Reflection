@@ -35,6 +35,7 @@ try {
                 'ess_shutdown_below_minimum' => isset($_POST['ess_shutdown_below_minimum']),
                 'ess_ignore_when_unavailable' => isset($_POST['ess_ignore_when_unavailable']),
                 'idle_shutdown_after_no_job_checks' => (int) ($_POST['idle_shutdown_after_no_job_checks'] ?? 0),
+                'shutdown_debug_mode' => isset($_POST['shutdown_debug_mode']),
                 'auto_wake_for_queued_jobs' => isset($_POST['auto_wake_for_queued_jobs']),
                 'automation_run_due_on_worker_checkin' => isset($_POST['automation_run_due_on_worker_checkin']),
                 'automation_checkin_cooldown_seconds' => (int) ($_POST['automation_checkin_cooldown_seconds'] ?? 60),
@@ -147,6 +148,12 @@ $dataDirectory = dirname((string) $config['storage_path']);
                         <label>
                             Idle no-job polls before shutdown
                             <input type="number" name="idle_shutdown_after_no_job_checks" min="0" value="<?= (int) ($settings['idle_shutdown_after_no_job_checks'] ?? 0) ?>">
+                            <small>When this limit is reached, the master asks the worker to power off unless shutdown debug mode is enabled.</small>
+                        </label>
+                        <label class="check-row">
+                            <input type="checkbox" name="shutdown_debug_mode" value="1" <?= !empty($settings['shutdown_debug_mode']) ? 'checked' : '' ?>>
+                            Shutdown debug mode
+                            <small>When enabled, shutdown requests only stop the farm agent. The computer stays on, stops checking in, and becomes offline/stale from the master view.</small>
                         </label>
                     </div>
                 </div>
@@ -215,7 +222,7 @@ $dataDirectory = dirname((string) $config['storage_path']);
                         </label>
                         <label class="check-row">
                             <input type="checkbox" name="ess_shutdown_below_minimum" value="1" <?= !empty($settings['ess_shutdown_below_minimum']) ? 'checked' : '' ?>>
-                            Tell workers to shut down after current task when SOC is below minimum
+                            Tell workers to power off after current task when SOC is below minimum
                         </label>
                         <label class="check-row">
                             <input type="checkbox" name="auto_wake_for_queued_jobs" value="1" <?= !empty($settings['auto_wake_for_queued_jobs']) ? 'checked' : '' ?>>

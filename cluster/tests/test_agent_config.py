@@ -427,6 +427,95 @@ class WorkerUpdateTest(unittest.TestCase):
         self.assertEqual(seen, ["reboot"])
 
 
+class ShutdownRequestTest(unittest.TestCase):
+    def test_idle_shutdown_debug_mode_only_stops_agent(self):
+        class FakeAgent:
+            def check_for_task(self):
+                return {
+                    "status": "no_jobs",
+                    "shutdown_after_task": True,
+                    "shutdown_debug_mode": True,
+                    "reason": "idle_no_job_check_limit",
+                }
+
+        original_shutdown = Reflection._request_system_shutdown
+        try:
+            Reflection._request_system_shutdown = lambda: (_ for _ in ()).throw(
+                AssertionError("debug shutdown must not issue an OS shutdown command")
+            )
+            result = Reflection.FarmAgent._run_lifecycle_cycle(FakeAgent())
+        finally:
+            Reflection._request_system_shutdown = original_shutdown
+
+        self.assertFalse(result)
+
+    def test_idle_shutdown_without_debug_requests_system_shutdown(self):
+        class FakeAgent:
+            def check_for_task(self):
+                return {
+                    "status": "no_jobs",
+                    "shutdown_after_task": True,
+                    "shutdown_debug_mode": False,
+                    "reason": "idle_no_job_check_limit",
+                }
+
+        original_shutdown = Reflection._request_system_shutdown
+        seen = []
+        try:
+            Reflection._request_system_shutdown = lambda: seen.append("shutdown")
+            result = Reflection.FarmAgent._run_lifecycle_cycle(FakeAgent())
+        finally:
+            Reflection._request_system_shutdown = original_shutdown
+
+        self.assertFalse(result)
+        self.assertEqual(seen, ["shutdown"])
+
+    def test_explicit_shutdown_task_uses_master_debug_mode(self):
+        class FakeAgent:
+            def check_for_task(self):
+                return {
+                    "status": "task_available",
+                    "task": {"task_id": "job_shutdown", "module": "shutdown"},
+                }
+
+            def confirm_task_taken(self, task_id):
+                return task_id == "job_shutdown"
+
+            def heartbeat_task(self, task_id):
+                return {"status": "heartbeat_acknowledged"}
+
+            def report_task_done(self, task_id, success, error_message):
+                return {
+                    "status": "confirmed_by_server",
+                    "shutdown_after_task": False,
+                    "shutdown_debug_mode": True,
+                }
+
+            def cleanup_files(self, source):
+                raise AssertionError("shutdown task should not clean source files")
+
+            def reload_task_registry(self):
+                raise AssertionError("shutdown task should not reload task registry")
+
+        original_runner = Reflection._run_task_with_transfer_handling
+        original_shutdown = Reflection._request_system_shutdown
+        try:
+            Reflection._run_task_with_transfer_handling = lambda *args, **kwargs: Reflection.TaskOutcome(
+                success=True,
+                stop_agent=True,
+                message="shutdown requested",
+            )
+            Reflection._request_system_shutdown = lambda: (_ for _ in ()).throw(
+                AssertionError("debug shutdown task must not issue an OS shutdown command")
+            )
+            result = Reflection.FarmAgent._run_lifecycle_cycle(FakeAgent())
+        finally:
+            Reflection._run_task_with_transfer_handling = original_runner
+            Reflection._request_system_shutdown = original_shutdown
+
+        self.assertFalse(result)
+
+
 class TransferHandlingTest(unittest.TestCase):
     def test_ftp_delivery_directory_uploads_with_source_filename(self):
         class FakeAgent:

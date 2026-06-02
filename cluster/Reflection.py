@@ -1605,14 +1605,24 @@ class TaskHeartbeat:
                 logging.warning("Heartbeat for task %s failed: %s", self.task_id, exc)
 
 # --- CORE FARM AGENT CLASS ---
-def _reboot_command_from_env():
-    """Return a configured reboot command from REFLECTION_REBOOT_COMMAND when present."""
-    raw_command = os.environ.get("REFLECTION_REBOOT_COMMAND", "").strip()
+def _command_from_env(env_name):
+    """Return a shell-like command override from an environment variable."""
+    raw_command = os.environ.get(env_name, "").strip()
     if not raw_command:
         return None
 
     import shlex
     return shlex.split(raw_command)
+
+
+def _reboot_command_from_env():
+    """Return a configured reboot command from REFLECTION_REBOOT_COMMAND when present."""
+    return _command_from_env("REFLECTION_REBOOT_COMMAND")
+
+
+def _shutdown_command_from_env():
+    """Return a configured shutdown command from REFLECTION_SHUTDOWN_COMMAND when present."""
+    return _command_from_env("REFLECTION_SHUTDOWN_COMMAND")
 
 
 def _default_reboot_command():
@@ -1627,6 +1637,18 @@ def _default_reboot_command():
     return ["shutdown", "-r", "now"]
 
 
+def _default_shutdown_command():
+    """Return a platform-appropriate command that requests an immediate poweroff."""
+    system_name = platform.system().lower()
+    if system_name == "windows":
+        return ["shutdown", "/s", "/t", "0"]
+
+    if shutil.which("systemctl"):
+        return ["systemctl", "poweroff"]
+
+    return ["shutdown", "-h", "now"]
+
+
 def _request_system_reboot():
     """Request a real machine reboot and return immediately."""
     command = _reboot_command_from_env() or _default_reboot_command()
@@ -1636,6 +1658,40 @@ def _request_system_reboot():
     except Exception as exc:
         logging.error("Failed to request system reboot: %s", exc)
         raise
+
+
+def _request_system_shutdown():
+    """Request a real machine poweroff and return immediately."""
+    command = _shutdown_command_from_env() or _default_shutdown_command()
+    logging.info("Requesting system shutdown with command: %s", " ".join(command))
+    try:
+        subprocess.Popen(command, start_new_session=True)
+    except Exception as exc:
+        logging.error("Failed to request system shutdown: %s", exc)
+        raise
+
+
+def _server_shutdown_debug_mode(response):
+    """Return true when the master says shutdowns should only stop the agent."""
+    if not isinstance(response, dict):
+        return False
+    return bool(response.get("shutdown_debug_mode") or response.get("debug_shutdown"))
+
+
+def _handle_server_shutdown_request(context, response):
+    """Handle a master shutdown request. Return False to leave the worker loop."""
+    if _server_shutdown_debug_mode(response):
+        logging.info("%s. Shutdown debug mode is enabled, so only the farm agent will stop.", context)
+        return False
+
+    logging.info("%s. Requesting real farm computer shutdown.", context)
+    try:
+        _request_system_shutdown()
+    except Exception:
+        # Even if the platform command fails, stop polling so the master sees this
+        # worker go offline/stale instead of immediately taking more work.
+        logging.exception("System shutdown command failed; stopping agent anyway.")
+    return False
 
 
 class FarmAgent:
@@ -1802,8 +1858,10 @@ class FarmAgent:
         if response.get("status") == "no_jobs":
             if response.get("shutdown_after_task"):
                 reason = response.get("reason", "server_policy")
-                logging.info("Server requested idle shutdown (%s). Stopping agent.", reason)
-                return False
+                return _handle_server_shutdown_request(
+                    f"Server requested idle shutdown ({reason})",
+                    response,
+                )
             logging.info("Server has no jobs. Sleeping for %ss...", POLL_INTERVAL)
             time.sleep(POLL_INTERVAL)
             return True
@@ -1891,12 +1949,16 @@ class FarmAgent:
                 os.execv(sys.executable, [sys.executable, *sys.argv])
 
             if task_outcome.stop_agent:
-                logging.info("Shutdown task %s confirmed by server. Stopping agent.", task_id)
-                return False
+                return _handle_server_shutdown_request(
+                    f"Shutdown task {task_id} confirmed by server",
+                    server_response,
+                )
 
             if server_response.get("shutdown_after_task"):
-                logging.info("Server requested shutdown after task %s due to SOC policy. Stopping agent.", task_id)
-                return False
+                return _handle_server_shutdown_request(
+                    f"Server requested shutdown after task {task_id} due to SOC policy",
+                    server_response,
+                )
 
             logging.info("Lifecycle finished for Task %s. Repeating loop...\n", task_id)
         else:

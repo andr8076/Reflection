@@ -151,7 +151,9 @@ function reflection_worker_cards(array $workers, array $machines, int $staleAfte
         $lastCheckIn = (string) ($worker['last_check_in'] ?? '');
         $lastSeen = $lastCheckIn !== '' ? strtotime($lastCheckIn) : false;
         $state = !empty($worker['current_job']) ? 'running' : 'idle';
-        if ($lastSeen === false || (time() - $lastSeen) > $staleAfterSeconds) {
+        if (trim((string) ($worker['shutdown_requested_at'] ?? '')) !== '') {
+            $state = 'stale';
+        } elseif ($lastSeen === false || (time() - $lastSeen) > $staleAfterSeconds) {
             $state = 'stale';
         }
 
@@ -164,6 +166,8 @@ function reflection_worker_cards(array $workers, array $machines, int $staleAfte
             'version' => $worker['version'] ?? '—',
             'current_job' => $worker['current_job'] ?? null,
             'last_check_in' => $worker['last_check_in'] ?? null,
+            'shutdown_requested_at' => $worker['shutdown_requested_at'] ?? null,
+            'shutdown_reason' => $worker['shutdown_reason'] ?? null,
             'idle_no_job_checkins' => max(0, (int) ($worker['idle_no_job_checkins'] ?? 0)),
             'state' => $state,
         ]);
@@ -341,6 +345,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'ess_shutdown_below_minimum' => isset($_POST['ess_shutdown_below_minimum']),
             'ess_ignore_when_unavailable' => isset($_POST['ess_ignore_when_unavailable']),
             'idle_shutdown_after_no_job_checks' => (int) ($_POST['idle_shutdown_after_no_job_checks'] ?? 0),
+            'shutdown_debug_mode' => isset($_POST['shutdown_debug_mode']),
             'auto_wake_for_queued_jobs' => isset($_POST['auto_wake_for_queued_jobs']),
             'automation_run_due_on_worker_checkin' => isset($_POST['automation_run_due_on_worker_checkin']),
             'automation_checkin_cooldown_seconds' => (int) ($_POST['automation_checkin_cooldown_seconds'] ?? 60),
