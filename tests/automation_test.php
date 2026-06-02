@@ -133,6 +133,12 @@ assertSameValue(true, count($mappedInvalid) > 0, 'Invalid worker path mappings s
 $result = $automationStore->runRule($automationStore->rule($rule['id']), $farmStore, false);
 assertSameValue(0, $result['queued'], 'Unchanged files should not be queued twice.');
 
+$rule = $automationStore->saveRule(array_merge($rule, ['requeue_unchanged' => true]), ['dummy_task' => 'dummy']);
+$result = $automationStore->runRule($rule, $farmStore, false);
+assertSameValue(1, $result['queued'], 'Requeue override should queue an unchanged file even while an equivalent job is already open.');
+$data = $farmStore->read();
+assertSameValue(2, count($data['jobs']), 'Requeue override should allow concurrent duplicate jobs.');
+
 $due = $automationStore->runDueRules($farmStore, true);
 assertSameValue(0, count($due), 'Recently scanned rule should not be due yet.');
 

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import platform
+import shlex
 import shutil
 import socket
 import subprocess
@@ -28,6 +29,7 @@ DEFAULT_HEARTBEAT_INTERVAL = 30
 DEFAULT_TASK_TIMEOUT_SECONDS = 12 * 60 * 60
 DEFAULT_TASK_LOG_TAIL_BYTES = 12000
 DEFAULT_TASK_ISOLATION = True
+DEFAULT_SHOW_TASK_TERMINAL = True
 DEFAULT_PC_ID = socket.gethostname()
 DEFAULT_MIN_FREE_SPACE_GB = 5
 DEFAULT_MIN_FREE_SPACE_MULTIPLIER = 2.0
@@ -65,6 +67,7 @@ def load_agent_config(config_path=None):
         "task_timeouts": {},
         "task_log_tail_bytes": DEFAULT_TASK_LOG_TAIL_BYTES,
         "task_isolation": DEFAULT_TASK_ISOLATION,
+        "show_task_terminal": DEFAULT_SHOW_TASK_TERMINAL,
         "min_free_space_gb": DEFAULT_MIN_FREE_SPACE_GB,
         "min_free_space_multiplier": DEFAULT_MIN_FREE_SPACE_MULTIPLIER,
         "local_temp_max_age_hours": DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS,
@@ -126,6 +129,9 @@ def load_agent_config(config_path=None):
 
     if "task_isolation" in loaded:
         config["task_isolation"] = bool(loaded["task_isolation"])
+
+    if "show_task_terminal" in loaded:
+        config["show_task_terminal"] = bool(loaded["show_task_terminal"])
 
 
     if "min_free_space_gb" in loaded:
@@ -325,7 +331,9 @@ TASK_TIMEOUT_SECONDS = int(AGENT_CONFIG.get("task_timeout_seconds", DEFAULT_TASK
 TASK_TIMEOUTS = dict(AGENT_CONFIG.get("task_timeouts", {}))
 TASK_LOG_TAIL_BYTES = int(AGENT_CONFIG.get("task_log_tail_bytes", DEFAULT_TASK_LOG_TAIL_BYTES))
 TASK_ISOLATION = bool(AGENT_CONFIG.get("task_isolation", DEFAULT_TASK_ISOLATION))
+SHOW_TASK_TERMINAL = bool(AGENT_CONFIG.get("show_task_terminal", DEFAULT_SHOW_TASK_TERMINAL))
 TASK_RUNNER_PATH = Path(__file__).with_name("task_runner.py")
+TASK_LOG_VIEWER_PATH = Path(__file__).with_name("task_log_viewer.py")
 UPDATE_SCRIPT_PATH = Path(__file__).resolve().parent.parent / "update.sh"
 MIN_FREE_SPACE_BYTES = int(float(AGENT_CONFIG.get("min_free_space_gb", DEFAULT_MIN_FREE_SPACE_GB)) * 1024 * 1024 * 1024)
 MIN_FREE_SPACE_MULTIPLIER = float(AGENT_CONFIG.get("min_free_space_multiplier", DEFAULT_MIN_FREE_SPACE_MULTIPLIER))
@@ -1352,6 +1360,59 @@ def _process_group_kwargs():
     return {"start_new_session": True}
 
 
+def _task_terminal_commands(title, viewer_command):
+    """Return supported terminal emulator commands for a task log viewer."""
+    return [
+        ["x-terminal-emulator", "-T", title, "-e", *viewer_command],
+        ["gnome-terminal", f"--title={title}", "--", *viewer_command],
+        ["konsole", "-p", f"tabtitle={title}", "-e", *viewer_command],
+        ["xfce4-terminal", f"--title={title}", "-x", *viewer_command],
+        ["mate-terminal", f"--title={title}", "--", *viewer_command],
+        ["lxterminal", f"--title={title}", "-e", shlex.join(viewer_command)],
+        ["xterm", "-T", title, "-e", *viewer_command],
+    ]
+
+
+def _launch_task_log_terminal(module_name, task_id, stdout_path, stderr_path, done_path):
+    """Best-effort launch of a visible terminal that closes when the task ends."""
+    if not SHOW_TASK_TERMINAL:
+        return False
+    if not TASK_LOG_VIEWER_PATH.is_file():
+        logging.warning("Cannot open task terminal because log viewer is missing: %s", TASK_LOG_VIEWER_PATH)
+        return False
+
+    title = f"Reflection Task {task_id or 'task'} - {module_name}"
+    viewer_command = [
+        sys.executable,
+        str(TASK_LOG_VIEWER_PATH),
+        "--title",
+        title,
+        "--stdout-log",
+        str(stdout_path),
+        "--stderr-log",
+        str(stderr_path),
+        "--done-file",
+        str(done_path),
+    ]
+    for command in _task_terminal_commands(title, viewer_command):
+        if shutil.which(command[0]) is None:
+            continue
+        try:
+            subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            logging.info("Opened visible task terminal for %s using %s.", module_name, command[0])
+            return True
+        except OSError as exc:
+            logging.warning("Could not open task terminal with %s: %s", command[0], exc)
+
+    logging.warning("Could not open visible task terminal for %s: no supported terminal emulator was found.", module_name)
+    return False
+
+
 def _terminate_process_tree(process):
     """Best-effort termination of a task runner and its child processes."""
     if process.poll() is not None:
@@ -1431,6 +1492,7 @@ def _run_task_in_subprocess(module_name, source, delivery, overwrite_allowed, ta
     result_path = runtime_dir / "result.json"
     stdout_path = runtime_dir / "stdout.log"
     stderr_path = runtime_dir / "stderr.log"
+    done_path = runtime_dir / "done"
 
     command = [
         sys.executable,
@@ -1463,17 +1525,21 @@ def _run_task_in_subprocess(module_name, source, delivery, overwrite_allowed, ta
             stderr=stderr_file,
             **_process_group_kwargs(),
         )
+        _launch_task_log_terminal(module_name, task_id, stdout_path, stderr_path, done_path)
         try:
-            process.wait(timeout=timeout_seconds or None)
-        except subprocess.TimeoutExpired:
-            _terminate_process_tree(process)
-            message = _format_isolated_failure(
-                f"Task '{module_name}' timed out after {timeout_seconds} seconds and was killed.",
-                stdout_path,
-                stderr_path,
-            )
-            logging.error(message)
-            return TaskOutcome(success=False, message=message)
+            try:
+                process.wait(timeout=timeout_seconds or None)
+            except subprocess.TimeoutExpired:
+                _terminate_process_tree(process)
+                message = _format_isolated_failure(
+                    f"Task '{module_name}' timed out after {timeout_seconds} seconds and was killed.",
+                    stdout_path,
+                    stderr_path,
+                )
+                logging.error(message)
+                return TaskOutcome(success=False, message=message)
+        finally:
+            done_path.touch()
 
     stdout_tail = _read_tail(stdout_path)
     stderr_tail = _read_tail(stderr_path)
@@ -1754,6 +1820,7 @@ class FarmAgent:
             "ffmpeg": shutil.which("ffmpeg") is not None,
             "ffprobe": shutil.which("ffprobe") is not None,
             "task_isolation": TASK_ISOLATION,
+            "show_task_terminal": SHOW_TASK_TERMINAL,
             "free_temp_bytes": int(free),
             "free_disk_bytes": int(free),
             "temp_dir": tempfile.gettempdir(),
