@@ -44,6 +44,18 @@ assertSameValue(
 );
 assertSameValue(false, array_key_exists('api_token', $defaultConfig), 'Worker API token config should not be present.');
 assertSameValue(false, array_key_exists('worker_access_token', $defaultConfig), 'Worker access-token config should not be present.');
+$commitFileRoot = sys_get_temp_dir() . '/reflection_commit_root_' . bin2hex(random_bytes(6));
+mkdir($commitFileRoot);
+file_put_contents($commitFileRoot . DIRECTORY_SEPARATOR . '.reflection_commit', 'abcdef1234567890abcdef1234567890abcdef12' . PHP_EOL);
+assertSameValue(
+    'abcdef1234567890abcdef1234567890abcdef12',
+    reflection_read_deployed_version($commitFileRoot),
+    'Deployed master version should fall back to .reflection_commit when .git is not present.'
+);
+file_put_contents($commitFileRoot . DIRECTORY_SEPARATOR . '.reflection_commit', 'not a commit');
+assertSameValue(null, reflection_read_deployed_version($commitFileRoot), 'Invalid .reflection_commit content should be ignored.');
+unlink($commitFileRoot . DIRECTORY_SEPARATOR . '.reflection_commit');
+rmdir($commitFileRoot);
 assertSameValue('', $defaultConfig['transfer_auth']['username'], 'Default FTP username should be blank until configured.');
 assertSameValue('', $defaultConfig['transfer_auth']['password'], 'Default FTP password should be blank until configured.');
 

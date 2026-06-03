@@ -295,11 +295,29 @@ def _read_git_head_fallback(repo_root):
     return None
 
 
+def _read_reflection_commit_file(repo_root):
+    commit_path = Path(repo_root) / ".reflection_commit"
+    try:
+        commit = commit_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+
+    if re.fullmatch(r"[0-9a-fA-F]{7,40}", commit):
+        return commit.lower()
+    return None
+
+
 def read_git_version(start_path=__file__):
-    """Return the Reflection version from the current Git checkout."""
+    """Return the Reflection version from Git, or from .reflection_commit for deployed copies."""
     repo_root = find_git_root(start_path)
     if repo_root is None:
-        return "unknown"
+        repo_root = Path(start_path).resolve()
+        if repo_root.is_file():
+            repo_root = repo_root.parent
+        # Reflection.py lives in cluster/, so the project root is normally one level up.
+        if repo_root.name == "cluster":
+            repo_root = repo_root.parent
+        return _read_reflection_commit_file(repo_root) or "unknown"
 
     try:
         result = subprocess.run(
@@ -315,7 +333,7 @@ def read_git_version(start_path=__file__):
     except (OSError, subprocess.SubprocessError):
         pass
 
-    return _read_git_head_fallback(repo_root) or "unknown"
+    return _read_git_head_fallback(repo_root) or _read_reflection_commit_file(repo_root) or "unknown"
 
 
 VERSION = read_git_version()

@@ -196,7 +196,10 @@ python3 -m py_compile \
     "$SCRIPT_DIR/cluster/run_setup.py" \
     "$SCRIPT_DIR/cluster/toggle_start_on_boot.py"
 
-new_version="$(git -C "$SCRIPT_DIR" rev-parse --short=12 HEAD)"
+new_commit="$(git -C "$SCRIPT_DIR" rev-parse HEAD)"
+printf '%s\n' "$new_commit" > "$SCRIPT_DIR/.reflection_commit"
+chmod 0660 "$SCRIPT_DIR/.reflection_commit" 2>/dev/null || true
+new_version="${new_commit:0:12}"
 echo "Reflection updated successfully to Git version ${new_version}."
 echo "Protected local paths kept: data/, farm_settings.local.php, cluster/reflection_config.json, cluster/reflection_config.local.json, .env"
 echo "Farm workers started by update_worker or version-follow self-update will reboot after the update completes."

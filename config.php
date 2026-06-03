@@ -66,6 +66,35 @@ function reflection_read_git_version(string $appRoot): ?string
     return null;
 }
 
+
+function reflection_read_commit_file(string $appRoot): ?string
+{
+    $commitPath = $appRoot . DIRECTORY_SEPARATOR . '.reflection_commit';
+    if (!is_file($commitPath) || !is_readable($commitPath)) {
+        return null;
+    }
+
+    $commit = trim((string) file_get_contents($commitPath));
+    if ($commit === '') {
+        return null;
+    }
+
+    // Accept the normal full SHA-1 hash written by the Synology updater and
+    // short Git hashes too. Reject anything else so this file cannot inject
+    // odd values into the version policy shown to workers.
+    if (preg_match('/^[0-9a-fA-F]{7,40}$/', $commit) !== 1) {
+        return null;
+    }
+
+    return strtolower($commit);
+}
+
+function reflection_read_deployed_version(string $appRoot): ?string
+{
+    return reflection_read_git_version($appRoot)
+        ?? reflection_read_commit_file($appRoot);
+}
+
 function reflection_resolve_git_directory(string $appRoot): ?string
 {
     $gitPath = $appRoot . DIRECTORY_SEPARATOR . '.git';
@@ -323,7 +352,7 @@ function reflection_master_config(?array $farmSettings = null): array
         . DIRECTORY_SEPARATOR
         . 'reflection-farm-'
         . substr(hash('sha256', __DIR__ . '|' . (string) ($settings['farm_id'] ?? 'default')), 0, 12);
-    $detectedVersion = reflection_read_git_version($repoRoot) ?? 'unknown';
+    $detectedVersion = reflection_read_deployed_version($repoRoot) ?? 'unknown';
     $requiredVersion = reflection_env_string('REFLECTION_REQUIRED_VERSION')
         ?? ($settings['required_version'] ?: $detectedVersion);
     $configuredStorage = reflection_env_string('REFLECTION_MASTER_STORE');
