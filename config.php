@@ -194,6 +194,7 @@ function reflection_default_runtime_settings(): array
         'ess_soc_last_success_at' => null,
         'ess_soc_last_failure_at' => null,
         'idle_shutdown_after_no_job_checks' => 0,
+        'prefer_lower_shutdown_layers_for_work' => true,
         'shutdown_debug_mode' => false,
         'auto_wake_for_queued_jobs' => true,
         'automation_run_due_on_worker_checkin' => true,

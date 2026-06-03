@@ -583,6 +583,63 @@ assertSameValue(null, $crashLoopData['workers']['node-crash-b']['current_job'], 
 
 
 
+
+$priorityStorePath = sys_get_temp_dir() . '/reflection_work_priority_store_' . bin2hex(random_bytes(6)) . '.json';
+$priorityStore = new FarmStore($priorityStorePath);
+$priorityStore->updateSettings(['ess_soc_url' => '', 'prefer_lower_shutdown_layers_for_work' => true]);
+$priorityStore->updateMachines([
+    ['pc_id' => 'layer0-node', 'mac' => '00:11:22:33:44:00', 'min_soc_percent' => '', 'wake_enabled' => true, 'shutdown_layer' => 0],
+    ['pc_id' => 'layer1-node', 'mac' => '00:11:22:33:44:11', 'min_soc_percent' => '', 'wake_enabled' => true, 'shutdown_layer' => 1],
+]);
+$priorityStore->recordWorkerCheckIn('layer0-node', 'test-version');
+$priorityStore->recordWorkerCheckIn('layer1-node', 'test-version');
+$priorityJobA = $priorityStore->createJob('dummy_task', 'incoming/layer-a.dat', 'outputs/layer-a.txt', false);
+$priorityHighResponse = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'test-version',
+    'pc_id' => 'layer1-node',
+], $priorityStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
+assertSameValue('no_jobs', $priorityHighResponse['status'], 'Higher shutdown layers should wait when an eligible idle lower-layer worker is online.');
+assertSameValue('lower_shutdown_layer_idle', $priorityHighResponse['reason'], 'Layer-priority admission should explain why a higher layer did not receive normal work.');
+assertSameValue('layer0-node', $priorityHighResponse['work_layer_priority']['lower_idle_workers'][0]['pc_id'] ?? '', 'Layer-priority response should name the idle lower-layer worker.');
+$priorityLowResponse = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'test-version',
+    'pc_id' => 'layer0-node',
+], $priorityStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
+assertSameValue('task_available', $priorityLowResponse['status'], 'Lower shutdown layers should receive normal work first.');
+assertSameValue($priorityJobA['task_id'], $priorityLowResponse['task']['task_id'], 'Layer priority must not change the queued job order.');
+assertSameValue(true, $priorityStore->markJobRunning($priorityJobA['task_id'], 'layer0-node'), 'Layer-priority test should mark the lower-layer job running.');
+$priorityJobB = $priorityStore->createJob('dummy_task', 'incoming/layer-b.dat', 'outputs/layer-b.txt', false);
+$priorityHighAfterBusy = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'test-version',
+    'pc_id' => 'layer1-node',
+], $priorityStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
+assertSameValue('task_available', $priorityHighAfterBusy['status'], 'Higher layers may take normal work when lower layers are already busy.');
+assertSameValue($priorityJobB['task_id'], $priorityHighAfterBusy['task']['task_id'], 'Higher layers still take the next queued job rather than a reserved layer job.');
+@unlink($priorityStorePath);
+@unlink($priorityStorePath . '.lock');
+
+$wakeLayerStorePath = sys_get_temp_dir() . '/reflection_wake_layer_store_' . bin2hex(random_bytes(6)) . '.json';
+$wakeLayerStore = new FarmStore($wakeLayerStorePath);
+$wakeLayerStore->updateSettings(['ess_soc_url' => '', 'auto_wake_for_queued_jobs' => true, 'auto_wake_max_targets_per_run' => 20]);
+$wakeLayerStore->updateMachines([
+    ['pc_id' => 'wake-layer0', 'mac' => '00:11:22:33:44:20', 'min_soc_percent' => '', 'wake_enabled' => true, 'shutdown_layer' => 0],
+    ['pc_id' => 'wake-layer1', 'mac' => '00:11:22:33:44:21', 'min_soc_percent' => '', 'wake_enabled' => true, 'shutdown_layer' => 1],
+]);
+$wakeLayerStore->createJob('dummy_task', 'incoming/wake-a.dat', 'outputs/wake-a.txt', false);
+$wakeLayerStore->createJob('dummy_task', 'incoming/wake-b.dat', 'outputs/wake-b.txt', false);
+$wakePlanBeforeCore = $wakeLayerStore->demandWakePlan(900);
+assertSameValue(1, count($wakePlanBeforeCore['targets']), 'Demand wake should phase by shutdown layer instead of waking every layer at once.');
+assertSameValue('wake-layer0', $wakePlanBeforeCore['targets'][0]['pc_id'] ?? '', 'Demand wake should target the lowest eligible offline layer first.');
+$wakeLayerStore->recordWorkerCheckIn('wake-layer0', 'test-version');
+$wakePlanAfterCore = $wakeLayerStore->demandWakePlan(900);
+assertSameValue(1, count($wakePlanAfterCore['targets']), 'Demand wake should move upward after the lower layer is online.');
+assertSameValue('wake-layer1', $wakePlanAfterCore['targets'][0]['pc_id'] ?? '', 'Demand wake should target the next layer after the lower layer checks in.');
+@unlink($wakeLayerStorePath);
+@unlink($wakeLayerStorePath . '.lock');
+
 $updateLayerStorePath = sys_get_temp_dir() . '/reflection_update_layer_store_' . bin2hex(random_bytes(6)) . '.json';
 $updateLayerStore = new FarmStore($updateLayerStorePath);
 $updateLayerStore->updateSettings(['ess_soc_url' => '']);

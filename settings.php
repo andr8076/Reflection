@@ -38,6 +38,7 @@ try {
                 'ess_ignore_when_unavailable' => isset($_POST['ess_ignore_when_unavailable']),
                 'ess_charging_override_enabled' => isset($_POST['ess_charging_override_enabled']),
                 'idle_shutdown_after_no_job_checks' => (int) ($_POST['idle_shutdown_after_no_job_checks'] ?? 0),
+                'prefer_lower_shutdown_layers_for_work' => isset($_POST['prefer_lower_shutdown_layers_for_work']),
                 'shutdown_debug_mode' => isset($_POST['shutdown_debug_mode']),
                 'auto_wake_for_queued_jobs' => isset($_POST['auto_wake_for_queued_jobs']),
                 'automation_run_due_on_worker_checkin' => isset($_POST['automation_run_due_on_worker_checkin']),
@@ -160,6 +161,11 @@ $dataDirectory = dirname((string) $config['storage_path']);
                             <input type="checkbox" name="shutdown_debug_mode" value="1" <?= !empty($settings['shutdown_debug_mode']) ? 'checked' : '' ?>>
                             Shutdown debug mode
                             <small>When enabled, shutdown requests only stop the farm agent. The computer stays on, stops checking in, and becomes offline/stale from the master view.</small>
+                        </label>
+                        <label class="check-row">
+                            <input type="checkbox" name="prefer_lower_shutdown_layers_for_work" value="1" <?= !empty($settings['prefer_lower_shutdown_layers_for_work']) ? 'checked' : '' ?>>
+                            Prefer lower shutdown layers for normal work
+                            <small>Jobs are not reserved for a computer or a layer. Higher-layer workers simply wait when an eligible idle lower-layer worker is online. Control tasks such as shutdown are not blocked by this work preference.</small>
                         </label>
                     </div>
                 </div>
@@ -336,7 +342,7 @@ $dataDirectory = dirname((string) $config['storage_path']);
                             </tbody>
                         </table>
                     </div>
-                    <small>Higher shutdown layers power off first. Lower layers are not allowed to shut down until higher online layers have confirmed their shutdown order. Wake can be disabled for a computer while still keeping its SOC and layer policy.</small>
+                    <small>Higher shutdown layers power off first. Normal jobs are offered to lower layers first, but no job is reserved for a specific computer or layer. Wake-on-LAN is also phased by layer, so the master wakes the lowest eligible offline layer first before moving upward. Wake can be disabled for a computer while still keeping its SOC and layer policy.</small>
                     <template id="machine-row-template">
                         <tr>
                             <td><input name="machine_pc_id[__INDEX__]" placeholder="farm1"></td>

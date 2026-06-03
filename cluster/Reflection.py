@@ -541,7 +541,7 @@ def _run_update_script(target_commit=None):
         cwd=str(UPDATE_SCRIPT_PATH.parent),
         capture_output=True,
         text=True,
-        timeout=5 * 60,
+        timeout=60 * 60,
         check=False,
     )
     output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())

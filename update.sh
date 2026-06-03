@@ -58,6 +58,53 @@ for command in git python3; do
     fi
 done
 
+run_system_package_updates() {
+    # Keep Linux farm workers patched during Reflection updates. This is best-effort:
+    # a broken apt mirror, package lock, or missing sudo should not leave the
+    # Reflection application half-updated or prevent version-follow updates.
+    local apt_cmd=""
+    if command -v apt-get >/dev/null 2>&1; then
+        apt_cmd="apt-get"
+    elif command -v apt >/dev/null 2>&1; then
+        apt_cmd="apt"
+    else
+        echo "System package update skipped: apt/apt-get was not found on this system."
+        return 0
+    fi
+
+    local runner=()
+    if [[ "$(id -u)" -eq 0 ]]; then
+        runner=()
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+        runner=(sudo -n)
+    else
+        echo "System package update skipped: root or passwordless sudo is required."
+        return 0
+    fi
+
+    echo "Running system package update before finishing Reflection update..."
+    if [[ "$apt_cmd" == "apt-get" ]]; then
+        if ! DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a "${runner[@]}" apt-get update -y; then
+            echo "System package update warning: apt-get update failed; continuing Reflection update." >&2
+            return 0
+        fi
+        if ! DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a "${runner[@]}" apt-get upgrade -y; then
+            echo "System package update warning: apt-get upgrade failed; continuing Reflection update." >&2
+            return 0
+        fi
+    else
+        if ! DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a "${runner[@]}" apt update -y; then
+            echo "System package update warning: apt update failed; continuing Reflection update." >&2
+            return 0
+        fi
+        if ! DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a "${runner[@]}" apt upgrade -y; then
+            echo "System package update warning: apt upgrade failed; continuing Reflection update." >&2
+            return 0
+        fi
+    fi
+    echo "System packages updated successfully."
+}
+
 if [[ ! -f "$SCRIPT_DIR/config.php" || ! -f "$SCRIPT_DIR/cluster/Reflection.py" ]]; then
     echo "Run this script from the Reflection project directory." >&2
     exit 1
@@ -200,6 +247,7 @@ new_commit="$(git -C "$SCRIPT_DIR" rev-parse HEAD)"
 printf '%s\n' "$new_commit" > "$SCRIPT_DIR/.reflection_commit"
 chmod 0660 "$SCRIPT_DIR/.reflection_commit" 2>/dev/null || true
 new_version="${new_commit:0:12}"
+run_system_package_updates
 echo "Reflection updated successfully to Git version ${new_version}."
 echo "Protected local paths kept: data/, farm_settings.local.php, cluster/reflection_config.json, cluster/reflection_config.local.json, .env"
 echo "Farm workers started by update_worker or version-follow self-update will reboot after the update completes."

@@ -353,6 +353,7 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
 
     $allowedWorkers = $store->allowedActiveWorkers();
     $settings = $store->effectiveSettings();
+    $masterCommit = reflection_api_master_commit($config);
     if (!$store->workerFitsCurrentSoc($pcId)) {
         return reflection_api_no_jobs_response($store, $pcId, $settings, 'ess_soc_below_worker_minimum', !empty($settings['ess_shutdown_below_minimum']), $config);
     }
@@ -369,9 +370,23 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
         $store->autoWakeForQueuedJobs($staleAfterSeconds, 'worker_checkin');
     }
 
+    $layerAdmission = $store->normalWorkLayerAdmissionStatus(
+        $pcId,
+        $staleAfterSeconds,
+        $masterCommit,
+        !empty($settings['enforce_version']) && $masterCommit !== ''
+    );
+    if (empty($layerAdmission['allowed'])) {
+        return reflection_api_no_jobs_response($store, $pcId, $settings, 'lower_shutdown_layer_idle', false, $config, [
+            'work_layer_priority' => $layerAdmission,
+        ]);
+    }
+
     $job = $store->nextQueuedJobForWorker($pcId, $staleAfterSeconds);
     if ($job === null) {
-        return reflection_api_no_jobs_response($store, $pcId, $settings, 'queue_empty', false, $config);
+        return reflection_api_no_jobs_response($store, $pcId, $settings, 'queue_empty', false, $config, [
+            'work_layer_priority' => $layerAdmission,
+        ]);
     }
 
     $store->resetWorkerNoJobCheckIns($pcId);
@@ -388,7 +403,7 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
 }
 
 
-function reflection_api_no_jobs_response(FarmStore $store, string $pcId, array $settings, string $reason, bool $forceShutdown = false, array $config = []): array
+function reflection_api_no_jobs_response(FarmStore $store, string $pcId, array $settings, string $reason, bool $forceShutdown = false, array $config = [], array $extra = []): array
 {
     $shutdownLimit = max(0, (int) ($settings['idle_shutdown_after_no_job_checks'] ?? 0));
     $idleCheckIns = $store->recordWorkerNoJobCheckIn($pcId, $shutdownLimit);
@@ -402,16 +417,23 @@ function reflection_api_no_jobs_response(FarmStore $store, string $pcId, array $
         $finalReason = 'shutdown_layer_waiting';
     }
 
+    $response = [
+        'status' => 'no_jobs',
+        'shutdown_after_task' => $shutdownAfterTask,
+        'reason' => $finalReason,
+        'idle_no_job_checkins' => $idleCheckIns,
+        'idle_shutdown_after_no_job_checks' => $shutdownLimit,
+        'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
+        'shutdown_layer' => $shutdownLayer,
+    ];
+    foreach ($extra as $key => $value) {
+        if (is_string($key) && preg_match('/^[a-zA-Z0-9_]+$/', $key) === 1) {
+            $response[$key] = $value;
+        }
+    }
+
     return reflection_api_with_version_metadata(
-        [
-            'status' => 'no_jobs',
-            'shutdown_after_task' => $shutdownAfterTask,
-            'reason' => $finalReason,
-            'idle_no_job_checkins' => $idleCheckIns,
-            'idle_shutdown_after_no_job_checks' => $shutdownLimit,
-            'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
-            'shutdown_layer' => $shutdownLayer,
-        ],
+        $response,
         $config,
         $settings,
         'ok'
