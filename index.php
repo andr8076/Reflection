@@ -642,6 +642,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'job_archive_keep_lines' => (int) ($_POST['job_archive_keep_lines'] ?? 5000),
             'worker_temp_max_age_hours' => (int) ($_POST['worker_temp_max_age_hours'] ?? 24),
             'quarantine_keep_days' => (int) ($_POST['quarantine_keep_days'] ?? 14),
+            'quarantine_max_gb' => (float) ($_POST['quarantine_max_gb'] ?? 100),
         ]);
         $store->updateMachines(reflection_parse_machine_list((string) ($_POST['machines'] ?? '')));
         $maintenance = reflection_run_store_maintenance($store, $settings);

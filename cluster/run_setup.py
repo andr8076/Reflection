@@ -246,6 +246,7 @@ def collect_agent_config(
             "min_free_space_multiplier": 2.0,
             "local_temp_max_age_hours": 24,
             "quarantine_keep_days": 14,
+            "quarantine_max_gb": 100.0,
         }
 
     should_prompt = sys.stdin.isatty() if interactive is None else interactive

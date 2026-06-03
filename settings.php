@@ -22,6 +22,39 @@ try {
         } elseif ($action === 'maintenance') {
             $maintenance = reflection_run_store_maintenance($store, $store->effectiveSettings());
             $message = 'Maintenance complete. Archived ' . $maintenance['archived_jobs'] . ' old completed job(s), trimmed ' . $maintenance['trimmed_events'] . ' event(s), compacted ' . $maintenance['trimmed_file_history'] . ' file-history item(s), and trimmed ' . $maintenance['trimmed_job_archive'] . ' archived job line(s).';
+        } elseif ($action === 'purge_quarantine') {
+            $quarantineId = trim((string) ($_POST['quarantine_id'] ?? ''));
+            $location = $store->quarantineLocation($quarantineId);
+            if ($location === null) {
+                throw new RuntimeException('Unknown quarantine folder.');
+            }
+            $sourcePayload = [
+                'id' => (string) ($location['id'] ?? $quarantineId),
+                'uri' => (string) ($location['uri'] ?? ''),
+                'path' => (string) ($location['path'] ?? ''),
+            ];
+            $sourceJson = json_encode($sourcePayload, JSON_UNESCAPED_SLASHES);
+            if ($sourceJson === false) {
+                throw new RuntimeException('Could not encode quarantine purge job.');
+            }
+            if ($store->hasOpenJob('purge_quarantine', $sourceJson)) {
+                $message = 'A quarantine delete job is already queued or running for that folder.';
+            } else {
+                $jobExtra = [
+                    'quarantine_location_id' => (string) ($location['id'] ?? $quarantineId),
+                    'task_contract' => [
+                        'source' => 'tracked_quarantine_folder',
+                        'delivery' => 'none',
+                        'output' => 'manual_cleanup',
+                    ],
+                ];
+                if (!empty($location['server_id'])) {
+                    $jobExtra['transfer_server_id'] = (string) $location['server_id'];
+                }
+                $job = $store->createJob('purge_quarantine', $sourceJson, '', false, $jobExtra);
+                $store->markQuarantinePurgeQueued((string) ($location['id'] ?? $quarantineId), (string) ($job['task_id'] ?? ''));
+                $message = 'Queued quarantine delete job ' . (string) ($job['task_id'] ?? '') . ' for ' . (string) ($location['uri'] ?? $location['path'] ?? 'the selected folder') . '.';
+            }
         } else {
             $settings = $store->updateSettings([
                 'enforce_version' => isset($_POST['enforce_version']),
@@ -55,6 +88,7 @@ try {
                 'job_archive_keep_lines' => (int) ($_POST['job_archive_keep_lines'] ?? 5000),
                 'worker_temp_max_age_hours' => (int) ($_POST['worker_temp_max_age_hours'] ?? 24),
                 'quarantine_keep_days' => (int) ($_POST['quarantine_keep_days'] ?? 14),
+                'quarantine_max_gb' => (float) ($_POST['quarantine_max_gb'] ?? 100),
             ]);
             $postedMachines = reflection_parse_machine_form($_POST);
             $store->updateMachines($postedMachines ?? reflection_parse_machine_list((string) ($_POST['machines'] ?? '')));
@@ -71,6 +105,7 @@ $settings = $store->effectiveSettings();
 $machines = $store->machines();
 $machineRows = $machines === [] ? [['pc_id' => '', 'mac' => '', 'min_soc_percent' => '', 'wake_enabled' => true, 'shutdown_layer' => 0]] : array_values($machines);
 $archiveInfo = $store->archiveInfo();
+$quarantineLocations = $store->quarantineLocations();
 $dataDirectory = dirname((string) $config['storage_path']);
 ?>
 <!doctype html>
@@ -304,6 +339,11 @@ $dataDirectory = dirname((string) $config['storage_path']);
                             Remote quarantine keep days
                             <input type="number" name="quarantine_keep_days" min="1" value="<?= (int) ($settings['quarantine_keep_days'] ?? 14) ?>">
                         </label>
+                        <label>
+                            Remote quarantine max GB per folder
+                            <input type="number" name="quarantine_max_gb" min="0" step="0.1" value="<?= htmlspecialchars((string) ($settings['quarantine_max_gb'] ?? 100)) ?>">
+                            <small>Old overwrite backups are deleted oldest-first when a <code>.reflection_quarantine</code> folder exceeds this size. Use 0 to disable the size cap.</small>
+                        </label>
                     </div>
                 </div>
 
@@ -358,6 +398,57 @@ $dataDirectory = dirname((string) $config['storage_path']);
 
                 <button type="submit">Save settings</button>
             </form>
+                <div class="settings-section-box">
+                    <div class="panel-head inline-panel-head">
+                        <div>
+                            <h3>Tracked remote overwrite quarantine folders</h3>
+                            <p class="api-note">Workers report <code>.reflection_quarantine</code> folders when they safely replace an existing remote output. Manual delete queues a worker control job that empties that tracked folder.</p>
+                        </div>
+                    </div>
+                    <?php if ($quarantineLocations === []): ?>
+                        <p class="empty">No remote quarantine folders have been reported yet.</p>
+                    <?php else: ?>
+                        <div class="table-wrap">
+                            <table class="compact-table quarantine-table">
+                                <thead>
+                                    <tr>
+                                        <th>Folder</th>
+                                        <th>Last seen</th>
+                                        <th>Known contents</th>
+                                        <th>Status</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                <?php foreach ($quarantineLocations as $location): ?>
+                                    <tr>
+                                        <td>
+                                            <strong><?= reflection_h(($location['scheme'] ?? 'ftp') . '://' . ($location['host'] ?? '') . ':' . (string) ($location['port'] ?? '') ) ?></strong>
+                                            <code><?= reflection_h($location['path'] ?? '') ?></code>
+                                            <small>Last worker: <?= reflection_h($location['last_worker'] ?? 'unknown') ?><?= !empty($location['last_task_id']) ? ' · task ' . reflection_h($location['last_task_id']) : '' ?></small>
+                                        </td>
+                                        <td><?= reflection_h(reflection_relative_time($location['last_seen_at'] ?? null)) ?></td>
+                                        <td><?= (int) ($location['file_count'] ?? 0) ?> file(s)<br><small><?= reflection_h(reflection_format_bytes((int) ($location['size_bytes'] ?? 0))) ?></small></td>
+                                        <td>
+                                            <?= reflection_h((string) ($location['purge_status'] ?? 'tracked')) ?>
+                                            <?php if (!empty($location['last_purge_job'])): ?><br><small>Job <?= reflection_h($location['last_purge_job']) ?></small><?php endif; ?>
+                                            <?php if (!empty($location['last_purged_at'])): ?><br><small><?= reflection_h(reflection_relative_time($location['last_purged_at'])) ?></small><?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <form method="post" class="inline-form" onsubmit="return confirm('Queue a worker job to delete all files in this quarantine folder?');">
+                                                <input type="hidden" name="settings_action" value="purge_quarantine">
+                                                <input type="hidden" name="quarantine_id" value="<?= reflection_h($location['id'] ?? '') ?>">
+                                                <button type="submit" class="danger-button small-button">Delete contents</button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    <?php endif; ?>
+                </div>
+
         </section>
 
         <aside class="panel automation-sidebar">

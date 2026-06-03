@@ -35,6 +35,7 @@ DEFAULT_MIN_FREE_SPACE_GB = 5
 DEFAULT_MIN_FREE_SPACE_MULTIPLIER = 2.0
 DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS = 24
 DEFAULT_QUARANTINE_KEEP_DAYS = 14
+DEFAULT_QUARANTINE_MAX_GB = 100.0
 DEFAULT_CLEANUP_ROOTS = []
 DEFAULT_TRANSFER_AUTH = {
     "scheme": "ftp",
@@ -72,6 +73,7 @@ def load_agent_config(config_path=None):
         "min_free_space_multiplier": DEFAULT_MIN_FREE_SPACE_MULTIPLIER,
         "local_temp_max_age_hours": DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS,
         "quarantine_keep_days": DEFAULT_QUARANTINE_KEEP_DAYS,
+        "quarantine_max_gb": DEFAULT_QUARANTINE_MAX_GB,
     }
     env_cleanup_roots = _cleanup_roots_from_env()
     if env_cleanup_roots:
@@ -145,6 +147,9 @@ def load_agent_config(config_path=None):
 
     if "quarantine_keep_days" in loaded:
         config["quarantine_keep_days"] = max(1, int(loaded["quarantine_keep_days"]))
+
+    if "quarantine_max_gb" in loaded:
+        config["quarantine_max_gb"] = max(0.0, float(loaded["quarantine_max_gb"]))
 
     if "pc_id" in loaded:
         pc_id = str(loaded["pc_id"]).strip()
@@ -357,6 +362,7 @@ MIN_FREE_SPACE_BYTES = int(float(AGENT_CONFIG.get("min_free_space_gb", DEFAULT_M
 MIN_FREE_SPACE_MULTIPLIER = float(AGENT_CONFIG.get("min_free_space_multiplier", DEFAULT_MIN_FREE_SPACE_MULTIPLIER))
 LOCAL_TEMP_MAX_AGE_HOURS = int(AGENT_CONFIG.get("local_temp_max_age_hours", DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS))
 QUARANTINE_KEEP_DAYS = int(AGENT_CONFIG.get("quarantine_keep_days", DEFAULT_QUARANTINE_KEEP_DAYS))
+QUARANTINE_MAX_BYTES = int(float(AGENT_CONFIG.get("quarantine_max_gb", DEFAULT_QUARANTINE_MAX_GB)) * 1024 * 1024 * 1024)
 _ACTIVE_TRANSFER_AUTH = {}
 
 # Setup logging to see what the farm bot is doing
@@ -377,20 +383,20 @@ def _merge_transfer_settings(task_transfer_server=None, task_transfer_auth=None)
 
     # Local values are useful defaults when a task URL already contains a host
     # but omits credentials, or while running older jobs without transfer_server.
-    for key in ("scheme", "host", "port", "root"):
+    for key in ("id", "scheme", "host", "port", "root"):
         value = local_auth.get(key)
         if value not in (None, ""):
             merged[key] = value
 
     # Backwards compatibility: older masters used transfer_auth for both server
     # details and credentials. Keep accepting the server part from that object.
-    for key in ("scheme", "host", "port", "root"):
+    for key in ("id", "scheme", "host", "port", "root"):
         value = legacy_auth.get(key)
         if value not in (None, ""):
             merged[key] = value
 
     # Preferred path: server connection details supplied by the master.
-    for key in ("scheme", "host", "port", "root"):
+    for key in ("id", "scheme", "host", "port", "root"):
         value = server.get(key)
         if value not in (None, ""):
             merged[key] = value
@@ -681,6 +687,122 @@ def _system_storage_test(source, delivery, overwrite_allowed):
         "message": message,
     }
 
+def _normalize_quarantine_purge_source(source):
+    if isinstance(source, dict):
+        payload = source
+    else:
+        try:
+            payload = json.loads(str(source or ""))
+        except (TypeError, json.JSONDecodeError):
+            payload = {"uri": str(source or "")}
+    if not isinstance(payload, dict):
+        payload = {"uri": str(source or "")}
+    uri = str(payload.get("uri") or payload.get("quarantine_uri") or "").strip()
+    path = str(payload.get("path") or "").strip()
+    if not uri and path:
+        auth = _ACTIVE_TRANSFER_AUTH if isinstance(_ACTIVE_TRANSFER_AUTH, dict) else {}
+        scheme = str(auth.get("scheme", "ftp")).lower()
+        host = str(auth.get("host", "")).strip()
+        default_port = 22 if scheme == "sftp" else (990 if scheme == "ftps" else 21)
+        port = int(auth.get("port") or default_port)
+        netloc = host + (f":{port}" if port != default_port else "")
+        if not path.startswith("/"):
+            path = "/" + path
+        uri = f"{scheme}://{netloc}{_quote_remote_path(path)}"
+    if not uri:
+        raise ValueError("Quarantine purge task did not include a quarantine URI.")
+    parsed = urlparse(uri)
+    quarantine_path = _transfer_uri_path(parsed)
+    if not quarantine_path.endswith("/.reflection_quarantine") or ".." in quarantine_path:
+        raise ValueError(f"Refusing to purge unsafe quarantine path: {quarantine_path}")
+    return parsed, quarantine_path
+
+
+def _purge_ftp_quarantine(parsed, quarantine_path, transfer_auth):
+    deleted = 0
+    skipped = 0
+    freed = 0
+    with contextlib.closing(_ftp_connection(parsed, transfer_auth)) as ftp:
+        names = []
+        try:
+            for name, facts in ftp.mlsd(quarantine_path):
+                if name in {".", ".."}:
+                    continue
+                if isinstance(facts, dict) and str(facts.get("type", "file")).lower() not in {"file", ""}:
+                    skipped += 1
+                    continue
+                names.append(name)
+        except Exception:
+            try:
+                names = [Path(name).name for name in ftp.nlst(quarantine_path) if Path(name).name not in {".", ".."}]
+            except Exception:
+                names = []
+        for name in names:
+            remote_file = f"{quarantine_path.rstrip('/')}/{name}"
+            size = _ftp_remote_size(ftp, remote_file) or 0
+            try:
+                ftp.delete(remote_file)
+                deleted += 1
+                freed += int(size)
+            except Exception as exc:
+                skipped += 1
+                logging.info("Could not delete FTP quarantine file %s: %s", remote_file, exc)
+        with contextlib.suppress(Exception):
+            ftp.rmd(quarantine_path)
+    return deleted, freed, skipped
+
+
+def _purge_sftp_quarantine(parsed, quarantine_path, transfer_auth):
+    deleted = 0
+    skipped = 0
+    freed = 0
+    client, transport = _sftp_client(parsed, transfer_auth)
+    try:
+        try:
+            entries = client.listdir_attr(quarantine_path)
+        except Exception:
+            entries = []
+        for entry in entries:
+            filename = entry.filename
+            if filename in {".", ".."}:
+                continue
+            remote_file = f"{quarantine_path.rstrip('/')}/{filename}"
+            try:
+                # Quarantine should contain files only. Directories are skipped deliberately.
+                client.remove(remote_file)
+                deleted += 1
+                freed += int(getattr(entry, "st_size", 0) or 0)
+            except Exception as exc:
+                skipped += 1
+                logging.info("Could not delete SFTP quarantine file %s: %s", remote_file, exc)
+        with contextlib.suppress(Exception):
+            client.rmdir(quarantine_path)
+    finally:
+        client.close()
+        transport.close()
+    return deleted, freed, skipped
+
+
+def _system_purge_quarantine(source, delivery, overwrite_allowed):
+    """Built-in task that manually empties one tracked remote quarantine folder."""
+    parsed, quarantine_path = _normalize_quarantine_purge_source(source)
+    scheme = parsed.scheme.lower()
+    if scheme in {"ftp", "ftps"}:
+        deleted, freed, skipped = _purge_ftp_quarantine(parsed, quarantine_path, _ACTIVE_TRANSFER_AUTH)
+    elif scheme == "sftp":
+        deleted, freed, skipped = _purge_sftp_quarantine(parsed, quarantine_path, _ACTIVE_TRANSFER_AUTH)
+    else:
+        raise ValueError(f"Unsupported quarantine protocol: {scheme}")
+    message = f"Purged quarantine folder {quarantine_path}: deleted {deleted} file(s), freed about {freed} byte(s)."
+    if skipped:
+        message += f" Skipped {skipped} item(s)."
+    logging.info(message)
+    return {
+        "success": skipped == 0,
+        "cleanup_source": False,
+        "message": message,
+    }
+
 def built_in_tasks():
     """Return control tasks that are always available without task files."""
     return {
@@ -718,6 +840,11 @@ def built_in_tasks():
             name="storage_test",
             run=_system_storage_test,
             description="Built-in control task that tests storage server access with this worker's local login.",
+        ),
+        "purge_quarantine": TaskDefinition(
+            name="purge_quarantine",
+            run=_system_purge_quarantine,
+            description="Built-in control task that manually empties a tracked remote overwrite quarantine folder.",
         ),
     }
 
@@ -906,12 +1033,62 @@ def _remote_side_paths(remote_path, task_id):
     if parent == ".":
         parent = ""
     basename = remote.name or "delivery"
-    stamp = str(task_id or int(time.time()))
+    task_stamp = str(task_id or int(time.time()))
+    time_stamp = time.strftime("%Y%m%d%H%M%S", time.gmtime())
     tmp_dir = (parent.rstrip("/") + "/.reflection_tmp").replace("//", "/") if parent else ".reflection_tmp"
     quarantine_dir = (parent.rstrip("/") + "/.reflection_quarantine").replace("//", "/") if parent else ".reflection_quarantine"
-    tmp_path = f"{tmp_dir}/{basename}.{stamp}.tmp"
-    quarantine_path = f"{quarantine_dir}/{basename}.{stamp}.original"
+    tmp_path = f"{tmp_dir}/{basename}.{task_stamp}.tmp"
+    quarantine_path = f"{quarantine_dir}/{basename}.{time_stamp}.{task_stamp}.original"
     return tmp_dir, tmp_path, quarantine_dir, quarantine_path
+
+def _remote_quarantine_uri(parsed_uri, transfer_auth, quarantine_dir):
+    auth = transfer_auth if isinstance(transfer_auth, dict) else {}
+    scheme = (parsed_uri.scheme or str(auth.get("scheme", "ftp"))).lower()
+    host = parsed_uri.hostname or str(auth.get("host", "")).strip()
+    default_port = 22 if scheme == "sftp" else (990 if scheme == "ftps" else 21)
+    port = parsed_uri.port or int(auth.get("port") or default_port)
+    path = str(quarantine_dir or "").strip()
+    if not path.startswith("/"):
+        path = "/" + path
+    netloc = host
+    if port and int(port) != default_port:
+        netloc = f"{netloc}:{int(port)}"
+    return f"{scheme}://{netloc}{_quote_remote_path(path)}"
+
+
+def _report_quarantine_location(agent, parsed_uri, transfer_auth, quarantine_dir, task_id, stats=None):
+    """Best-effort report of a remote quarantine folder back to the master."""
+    if agent is None or not hasattr(agent, "report_quarantine_location"):
+        return
+    auth = transfer_auth if isinstance(transfer_auth, dict) else {}
+    scheme = (parsed_uri.scheme or str(auth.get("scheme", "ftp"))).lower()
+    host = parsed_uri.hostname or str(auth.get("host", "")).strip()
+    if not host:
+        return
+    default_port = 22 if scheme == "sftp" else (990 if scheme == "ftps" else 21)
+    try:
+        port = int(parsed_uri.port or auth.get("port") or default_port)
+    except (TypeError, ValueError):
+        port = default_port
+    path = str(quarantine_dir or "").strip()
+    if not path.startswith("/"):
+        path = "/" + path
+    stats = stats if isinstance(stats, dict) else {}
+    payload = {
+        "scheme": scheme,
+        "host": host,
+        "port": port,
+        "path": path,
+        "uri": _remote_quarantine_uri(parsed_uri, auth, path),
+        "server_id": str(auth.get("id", "") or ""),
+        "task_id": str(task_id or ""),
+        "file_count": int(stats.get("file_count") or 0),
+        "size_bytes": int(stats.get("size_bytes") or 0),
+    }
+    try:
+        agent.report_quarantine_location(payload)
+    except Exception as exc:
+        logging.info("Could not report quarantine folder %s: %s", payload.get("uri"), exc)
 
 def _ftp_connection(parsed_uri, transfer_auth):
     """Open an FTP/FTPS connection using URI credentials first, then task auth."""
@@ -1134,7 +1311,7 @@ def _call_upload_sftp_file(local_path, uri, transfer_auth, overwrite_allowed=Fal
             raise
         return _upload_sftp_file(local_path, uri, transfer_auth)
 
-def _safe_replace_ftp_file(local_path, uri, transfer_auth, task_id):
+def _safe_replace_ftp_file(local_path, uri, transfer_auth, task_id, agent=None):
     """Upload to temp, verify, move original to quarantine, then rename temp into place."""
     parsed = urlparse(str(uri))
     remote_path = _ftp_uri_path(parsed)
@@ -1147,6 +1324,7 @@ def _safe_replace_ftp_file(local_path, uri, transfer_auth, task_id):
     with contextlib.closing(_ftp_connection(parsed, transfer_auth)) as ftp:
         _ensure_ftp_directory(ftp, tmp_dir)
         _ensure_ftp_directory(ftp, quarantine_dir)
+        _cleanup_ftp_quarantine(ftp, quarantine_dir, reserve_bytes=source_path.stat().st_size)
         with source_path.open("rb") as source_file:
             ftp.storbinary(f"STOR {tmp_path}", source_file)
         _verify_ftp_upload_md5(ftp, source_path, tmp_path)
@@ -1156,10 +1334,11 @@ def _safe_replace_ftp_file(local_path, uri, transfer_auth, task_id):
             ftp.rename(remote_path, quarantine_path)
         ftp.rename(tmp_path, remote_path)
         _verify_ftp_upload_md5(ftp, source_path, remote_path)
-        _cleanup_ftp_quarantine(ftp, quarantine_dir)
+        stats = _cleanup_ftp_quarantine(ftp, quarantine_dir)
+        _report_quarantine_location(agent, parsed, transfer_auth, quarantine_dir, task_id, stats)
 
 
-def _safe_replace_sftp_file(local_path, uri, transfer_auth, task_id):
+def _safe_replace_sftp_file(local_path, uri, transfer_auth, task_id, agent=None):
     """Upload to temp, verify, move original to quarantine, then rename temp into place."""
     parsed = urlparse(str(uri))
     remote_path = _transfer_uri_path(parsed)
@@ -1173,6 +1352,7 @@ def _safe_replace_sftp_file(local_path, uri, transfer_auth, task_id):
     try:
         _ensure_sftp_directory(client, tmp_dir)
         _ensure_sftp_directory(client, quarantine_dir)
+        _cleanup_sftp_quarantine(client, quarantine_dir, reserve_bytes=source_path.stat().st_size)
         client.put(str(source_path), tmp_path)
         _verify_sftp_upload_md5(client, source_path, tmp_path)
         if _sftp_remote_exists(client, remote_path):
@@ -1181,44 +1361,146 @@ def _safe_replace_sftp_file(local_path, uri, transfer_auth, task_id):
             client.rename(remote_path, quarantine_path)
         client.rename(tmp_path, remote_path)
         _verify_sftp_upload_md5(client, source_path, remote_path)
-        _cleanup_sftp_quarantine(client, quarantine_dir)
+        stats = _cleanup_sftp_quarantine(client, quarantine_dir)
+        _report_quarantine_location(agent, parsed, transfer_auth, quarantine_dir, task_id, stats)
     finally:
         client.close()
         transport.close()
 
 
 
-def _cleanup_ftp_quarantine(ftp, quarantine_dir):
-    """Best-effort cleanup of old FTP quarantine files."""
+def _parse_quarantine_timestamp(name, fallback_mtime=None):
+    """Return quarantine creation-ish time from the filename, falling back to server mtime."""
+    for part in reversed(str(name).split(".")):
+        if len(part) == 14 and part.isdigit():
+            try:
+                return time.mktime(time.strptime(part, "%Y%m%d%H%M%S"))
+            except Exception:
+                pass
+    if fallback_mtime is not None:
+        return float(fallback_mtime)
+    return time.time()
+
+
+def _cleanup_quarantine_entries(entries, remove_func, label, reserve_bytes=0):
+    """Delete old quarantine files and enforce the configured size ceiling."""
     cutoff = time.time() - max(1, int(QUARANTINE_KEEP_DAYS)) * 86400
+    max_bytes = max(0, int(QUARANTINE_MAX_BYTES))
+    reserve_bytes = max(0, int(reserve_bytes or 0))
+    remaining = []
+    deleted = 0
+    freed = 0
+
+    for entry in sorted(entries, key=lambda item: item.get("mtime", time.time())):
+        if entry.get("mtime", time.time()) < cutoff:
+            if remove_func(entry["path"]):
+                deleted += 1
+                freed += int(entry.get("size") or 0)
+                entry["_deleted"] = True
+                continue
+        remaining.append(entry)
+
+    if max_bytes > 0:
+        target_bytes = max(0, max_bytes - reserve_bytes)
+        known_total = sum(int(entry.get("size") or 0) for entry in remaining if entry.get("size") is not None)
+        unknown_count = sum(1 for entry in remaining if entry.get("size") is None)
+        for entry in sorted(remaining, key=lambda item: item.get("mtime", time.time())):
+            if known_total <= target_bytes:
+                break
+            if remove_func(entry["path"]):
+                deleted += 1
+                entry["_deleted"] = True
+                entry_size = int(entry.get("size") or 0)
+                freed += entry_size
+                known_total = max(0, known_total - entry_size)
+        if unknown_count:
+            logging.info(
+                "%s quarantine size cap could not count %s file(s) because the server did not report their size.",
+                label,
+                unknown_count,
+            )
+
+    kept_entries = [entry for entry in remaining if not entry.get("_deleted")]
+    if deleted:
+        logging.info("%s quarantine cleanup removed %s file(s), freeing about %s bytes.", label, deleted, freed)
+    return {
+        "deleted": deleted,
+        "freed_bytes": freed,
+        "file_count": len(kept_entries),
+        "size_bytes": sum(int(entry.get("size") or 0) for entry in kept_entries if entry.get("size") is not None),
+    }
+
+def _cleanup_ftp_quarantine(ftp, quarantine_dir, reserve_bytes=0):
+    """Best-effort cleanup of old or over-budget FTP quarantine files."""
     try:
+        entries = []
         for name, facts in ftp.mlsd(quarantine_dir):
             if name in {".", ".."}:
                 continue
+            path = f"{quarantine_dir.rstrip('/')}/{name}"
             modified = facts.get("modify") if isinstance(facts, dict) else None
-            if not modified or len(modified) < 14:
+            fallback_mtime = None
+            if modified and len(modified) >= 14:
+                try:
+                    fallback_mtime = time.mktime(time.strptime(modified[:14], "%Y%m%d%H%M%S"))
+                except Exception:
+                    fallback_mtime = None
+            size = None
+            if isinstance(facts, dict) and str(facts.get("type", "file")).lower() not in {"file", ""}:
                 continue
+            if isinstance(facts, dict) and str(facts.get("size", "")).strip().isdigit():
+                size = int(facts.get("size"))
+            if size is None:
+                size = _ftp_remote_size(ftp, path)
+            entries.append({
+                "name": name,
+                "path": path,
+                "mtime": _parse_quarantine_timestamp(name, fallback_mtime),
+                "size": size,
+            })
+
+        def remove(path):
             try:
-                mtime = time.mktime(time.strptime(modified[:14], "%Y%m%d%H%M%S"))
-            except Exception:
-                continue
-            if mtime < cutoff:
-                with contextlib.suppress(Exception):
-                    ftp.delete(f"{quarantine_dir.rstrip('/')}/{name}")
+                ftp.delete(path)
+                return True
+            except Exception as exc:
+                logging.info("Could not delete FTP quarantine file %s: %s", path, exc)
+                return False
+
+        return _cleanup_quarantine_entries(entries, remove, "FTP", reserve_bytes=reserve_bytes)
     except Exception as exc:
         logging.info("FTP quarantine cleanup skipped for %s: %s", quarantine_dir, exc)
+        return {"deleted": 0, "freed_bytes": 0, "file_count": 0, "size_bytes": 0}
 
 
-def _cleanup_sftp_quarantine(client, quarantine_dir):
-    """Best-effort cleanup of old SFTP quarantine files."""
-    cutoff = time.time() - max(1, int(QUARANTINE_KEEP_DAYS)) * 86400
+def _cleanup_sftp_quarantine(client, quarantine_dir, reserve_bytes=0):
+    """Best-effort cleanup of old or over-budget SFTP quarantine files."""
     try:
+        entries = []
         for entry in client.listdir_attr(quarantine_dir):
-            if getattr(entry, "st_mtime", time.time()) < cutoff:
-                with contextlib.suppress(Exception):
-                    client.remove(f"{quarantine_dir.rstrip('/')}/{entry.filename}")
+            filename = entry.filename
+            if filename in {".", ".."}:
+                continue
+            path = f"{quarantine_dir.rstrip('/')}/{filename}"
+            entries.append({
+                "name": filename,
+                "path": path,
+                "mtime": _parse_quarantine_timestamp(filename, getattr(entry, "st_mtime", None)),
+                "size": int(getattr(entry, "st_size", 0)) if getattr(entry, "st_size", None) is not None else None,
+            })
+
+        def remove(path):
+            try:
+                client.remove(path)
+                return True
+            except Exception as exc:
+                logging.info("Could not delete SFTP quarantine file %s: %s", path, exc)
+                return False
+
+        return _cleanup_quarantine_entries(entries, remove, "SFTP", reserve_bytes=reserve_bytes)
     except Exception as exc:
         logging.info("SFTP quarantine cleanup skipped for %s: %s", quarantine_dir, exc)
+        return {"deleted": 0, "freed_bytes": 0, "file_count": 0, "size_bytes": 0}
 
 def _storage_test_operation(transfer_auth):
     """Verify that this worker can create, verify, rename, and delete a remote file."""
@@ -1687,12 +1969,12 @@ def _run_task_with_transfer_handling(
 
         if task_outcome.success and _is_ftp_uri(upload_delivery):
             if overwrite_allowed:
-                _safe_replace_ftp_file(prepared_delivery, upload_delivery, transfer_auth, task_id)
+                _safe_replace_ftp_file(prepared_delivery, upload_delivery, transfer_auth, task_id, agent)
             else:
                 _call_upload_ftp_file(prepared_delivery, upload_delivery, transfer_auth, overwrite_allowed=False)
         elif task_outcome.success and _is_sftp_uri(upload_delivery):
             if overwrite_allowed:
-                _safe_replace_sftp_file(prepared_delivery, upload_delivery, transfer_auth, task_id)
+                _safe_replace_sftp_file(prepared_delivery, upload_delivery, transfer_auth, task_id, agent)
             else:
                 _call_upload_sftp_file(prepared_delivery, upload_delivery, transfer_auth, overwrite_allowed=False)
         return task_outcome
@@ -1964,6 +2246,16 @@ class FarmAgent:
         }
         return self.post_to_server(payload)
 
+    def report_quarantine_location(self, location):
+        """Tell the master where an overwrite quarantine folder exists."""
+        payload = {
+            "action": "register_quarantine",
+            "version": VERSION,
+            "pc_id": PC_ID,
+            "quarantine": location if isinstance(location, dict) else {},
+        }
+        return self.post_to_server(payload)
+
     def report_task_done(self, task_id, success, error_msg=""):
         """Step 5 & 6: Report status and wait for server's cleanup greenlight."""
         payload = {
@@ -2112,8 +2404,9 @@ class FarmAgent:
             task.get("transfer_server", {}),
             task.get("transfer_auth", {}),
         )
-        global QUARANTINE_KEEP_DAYS, LOCAL_TEMP_MAX_AGE_HOURS
+        global QUARANTINE_KEEP_DAYS, QUARANTINE_MAX_BYTES, LOCAL_TEMP_MAX_AGE_HOURS
         QUARANTINE_KEEP_DAYS = max(1, int(task.get("quarantine_keep_days", QUARANTINE_KEEP_DAYS) or QUARANTINE_KEEP_DAYS))
+        QUARANTINE_MAX_BYTES = int(max(0.0, float(task.get("quarantine_max_gb", QUARANTINE_MAX_BYTES / (1024 * 1024 * 1024)) or 0.0)) * 1024 * 1024 * 1024)
         LOCAL_TEMP_MAX_AGE_HOURS = max(1, int(task.get("worker_temp_max_age_hours", LOCAL_TEMP_MAX_AGE_HOURS) or LOCAL_TEMP_MAX_AGE_HOURS))
         use_transfer_server_for_plain_paths = (
             task.get("path_mode") == "transfer"

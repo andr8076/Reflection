@@ -1,4 +1,4 @@
-"""Batch transcode videos to H.265/HEVC MP4 outputs with FFmpeg."""
+"""Batch transcode videos to H.265/HEVC MKV outputs while preserving movie streams."""
 
 import json
 import logging
@@ -10,11 +10,11 @@ from pathlib import Path
 from typing import Any
 
 TASK_NAME = "h265_encode"
-DESCRIPTION = "Transcode video files to H.265/HEVC MP4 using FFmpeg with optional hardware acceleration."
+DESCRIPTION = "Transcode the main video stream to H.265/HEVC MKV while preserving audio, subtitles, chapters, attachments, and metadata."
 TASK_SPEC_JSON = r'''
 {
   "name": "h265_encode",
-  "description": "Transcode video files to H.265/HEVC MP4 with FFmpeg.",
+  "description": "Transcode the main video stream to H.265/HEVC MKV while preserving the rest of the movie structure.",
   "source": {
     "mode": "required",
     "label": "Source video or folder",
@@ -22,14 +22,22 @@ TASK_SPEC_JSON = r'''
   },
   "delivery": {
     "mode": "auto",
-    "label": "H.265 MP4 output",
-    "help": "Automatically written beside each source as {name}_h265.mp4 unless overridden.",
-    "template": "{dir}/{name}_h265.mp4",
-    "extension": ".mp4"
+    "label": "H.265 MKV output",
+    "help": "Automatically written beside each source as {name}_h265.mkv. Audio, subtitles, chapters, attachments, and metadata are copied when FFmpeg can preserve them.",
+    "template": "{dir}/{name}_h265.mkv",
+    "extension": ".mkv"
   },
   "output": {
     "kind": "file_or_folder",
-    "extension": ".mp4"
+    "extension": ".mkv",
+    "container": "mkv",
+    "preserve_streams": true,
+    "preserve_audio": true,
+    "preserve_subtitles": true,
+    "preserve_chapters": true,
+    "preserve_metadata": true,
+    "preserve_attachments": true,
+    "encoded_streams": ["video:0"]
   }
 }
 '''
@@ -50,22 +58,21 @@ COMMON_VIDEO_EXTENSIONS = {
     "flv",
 }
 
-SOFTWARE_ARGS = ["-c:v", "libx265", "-crf", "20", "-preset", "slow"]
+SOFTWARE_ARGS = ["-c:v:0", "libx265", "-crf", "20", "-preset", "slow"]
 HARDWARE_ENCODERS = {
     "nvidia": {
         "ffmpeg_encoder": "hevc_nvenc",
-        "args": ["-c:v", "hevc_nvenc", "-rc", "vbr", "-cq", "23", "-preset", "slow"],
+        "args": ["-c:v:0", "hevc_nvenc", "-rc", "vbr", "-cq", "23", "-preset", "slow"],
     },
     "apple": {
         "ffmpeg_encoder": "hevc_videotoolbox",
-        "args": ["-c:v", "hevc_videotoolbox", "-q:v", "65"],
+        "args": ["-c:v:0", "hevc_videotoolbox", "-q:v", "65"],
     },
     "intel": {
         "ffmpeg_encoder": "hevc_qsv",
-        "args": ["-c:v", "hevc_qsv", "-global_quality", "24", "-preset", "slow"],
+        "args": ["-c:v:0", "hevc_qsv", "-global_quality", "24", "-preset", "slow"],
     },
 }
-AUDIO_ARGS = ["-c:a", "aac", "-b:a", "192k"]
 PIXEL_FORMAT_ARGS = ["-pix_fmt", "yuv420p10le"]
 
 
@@ -102,6 +109,8 @@ def run(source, delivery, overwrite_allowed):
 
     for input_file in input_files:
         output_file = _output_path(input_file, input_path, delivery_path, len(input_files))
+        if output_file.suffix.lower() != ".mkv":
+            raise ValueError(f"h265_encode delivery must end with .mkv: {output_file}")
         if output_file.exists() and not overwrite_allowed:
             raise FileExistsError(f"Target delivery file exists and overwrite is disabled: {output_file}")
 
@@ -117,7 +126,7 @@ def run(source, delivery, overwrite_allowed):
         _encode_file(input_file, output_file, encoder_args, pixel_format_args)
         encoded_count += 1
 
-    message = f"Encoded {encoded_count} file(s); skipped {skipped_count} already-HEVC file(s)."
+    message = f"Encoded {encoded_count} MKV file(s); skipped {skipped_count} already-HEVC file(s)."
     logging.info("h265_encode complete. %s", message)
     return {"success": True, "message": message, "cleanup_source": False}
 
@@ -240,20 +249,20 @@ def _analyze_video(input_file):
 
 def _output_path(input_file, input_root, delivery_path, input_count):
     if delivery_path is None:
-        return input_file.with_name(f"{input_file.stem}_h265.mp4")
+        return input_file.with_name(f"{input_file.stem}_h265.mkv")
 
     if input_count == 1 and not delivery_path.is_dir() and delivery_path.suffix:
         return delivery_path
 
     if input_root.is_dir():
         relative_parent = input_file.parent.relative_to(input_root)
-        return delivery_path / relative_parent / f"{input_file.stem}_h265.mp4"
+        return delivery_path / relative_parent / f"{input_file.stem}_h265.mkv"
 
-    return delivery_path / f"{input_file.stem}_h265.mp4"
+    return delivery_path / f"{input_file.stem}_h265.mkv"
 
 
 def _temporary_output_path(output_file):
-    suffix = output_file.suffix or ".mp4"
+    suffix = output_file.suffix or ".mkv"
     with tempfile.NamedTemporaryFile(
         prefix=f".{output_file.stem}.",
         suffix=suffix,
@@ -271,9 +280,16 @@ def _encode_file(input_file, output_file, encoder_args, pixel_format_args):
         "-y",
         "-i",
         str(input_file),
+        "-map",
+        "0",
+        "-map_metadata",
+        "0",
+        "-map_chapters",
+        "0",
+        "-c",
+        "copy",
         *encoder_args,
         *pixel_format_args,
-        *AUDIO_ARGS,
         str(temp_output),
     ]
     logging.info("Encoding %s -> %s", input_file, output_file)

@@ -168,6 +168,7 @@ final class StorageStore
         }
 
         return [
+            'id' => (string) ($server['id'] ?? ''),
             'scheme' => (string) ($server['scheme'] ?? 'ftp'),
             'host' => (string) ($server['host'] ?? ''),
             'port' => (int) ($server['port'] ?? 21),

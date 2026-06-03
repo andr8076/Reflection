@@ -85,6 +85,10 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
         return reflection_api_confirm_shutdown($payload, $store, $config, $pcId);
     }
 
+    if ($action === 'register_quarantine') {
+        return reflection_api_register_quarantine($payload, $store, $config, $pcId);
+    }
+
     if ($versionMismatch && $action === 'request_task') {
         return reflection_api_request_self_update_for_version_mismatch($store, $config, $pcId, $masterCommit);
     }
@@ -162,6 +166,7 @@ function reflection_clean_transfer_server_payload(?array $server): ?array
     }
 
     return [
+        'id' => preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($server['id'] ?? '')) ?: '',
         'scheme' => $scheme,
         'host' => $host,
         'port' => (int) ($server['port'] ?? ($scheme === 'sftp' ? 22 : ($scheme === 'ftps' ? 990 : 21))),
@@ -206,7 +211,7 @@ function reflection_worker_transfer_server_for_job(array $job, array $config): ?
 
 function reflection_is_control_task(string $module): bool
 {
-    return in_array($module, ['noop', 'status', 'reload_tasks', 'shutdown', 'update_worker', 'wake_farm', 'storage_test'], true);
+    return in_array($module, ['noop', 'status', 'reload_tasks', 'shutdown', 'update_worker', 'wake_farm', 'storage_test', 'purge_quarantine'], true);
 }
 
 function reflection_run_due_automation_on_worker_checkin(FarmStore $store, array $config): array
@@ -268,6 +273,40 @@ function reflection_api_confirm_shutdown(array $payload, FarmStore $store, array
     );
 }
 
+function reflection_api_register_quarantine(array $payload, FarmStore $store, array $config, string $pcId): array
+{
+    $settings = $store->effectiveSettings();
+    $location = $payload['quarantine'] ?? null;
+    if (!is_array($location)) {
+        return reflection_api_with_version_metadata(
+            ['status' => 'error', 'error' => 'Missing quarantine location.'],
+            $config,
+            $settings,
+            'ignore'
+        );
+    }
+
+    $record = $store->recordQuarantineLocation($pcId, $location);
+    if ($record === null) {
+        return reflection_api_with_version_metadata(
+            ['status' => 'error', 'error' => 'Invalid quarantine location.'],
+            $config,
+            $settings,
+            'ignore'
+        );
+    }
+
+    return reflection_api_with_version_metadata(
+        [
+            'status' => 'quarantine_registered',
+            'quarantine_id' => (string) ($record['id'] ?? ''),
+        ],
+        $config,
+        $settings,
+        'ok'
+    );
+}
+
 function reflection_api_shutdown_layer_payload(FarmStore $store, string $pcId, array $config): array
 {
     $staleAfterSeconds = (int) ($config['stale_after_seconds'] ?? 900);
@@ -296,6 +335,7 @@ function reflection_api_task_payload(array $job, array $config, array $settings,
         'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
         'shutdown_layer' => $shutdownLayer,
         'quarantine_keep_days' => max(1, (int) ($settings['quarantine_keep_days'] ?? 14)),
+        'quarantine_max_gb' => max(0.0, (float) ($settings['quarantine_max_gb'] ?? 100)),
         'worker_temp_max_age_hours' => max(1, (int) ($settings['worker_temp_max_age_hours'] ?? 24)),
     ];
 
@@ -304,7 +344,7 @@ function reflection_api_task_payload(array $job, array $config, array $settings,
     }
 
     $transferServer = reflection_worker_transfer_server_for_job($job, $config);
-    if ($transferServer !== null && (!reflection_is_control_task((string) $job['module']) || (string) $job['module'] === 'storage_test')) {
+    if ($transferServer !== null && (!reflection_is_control_task((string) $job['module']) || in_array((string) $job['module'], ['storage_test', 'purge_quarantine'], true))) {
         $task['transfer_server'] = $transferServer;
         $task['path_mode'] = reflection_is_control_task((string) $job['module']) ? 'control' : 'transfer';
     }

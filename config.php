@@ -207,6 +207,7 @@ function reflection_default_runtime_settings(): array
         'job_archive_keep_lines' => 5000,
         'worker_temp_max_age_hours' => 24,
         'quarantine_keep_days' => 14,
+        'quarantine_max_gb' => 100,
         'job_history_keep_completed' => 500,
         'event_log_keep_lines' => 1000,
         'file_history_keep_paths' => 500,
@@ -219,7 +220,7 @@ function reflection_default_allowed_tasks(): array
     return [
         'dummy_task' => 'Placeholder pipeline test task.',
         'render_frame' => 'Render a frame with the configured worker renderer.',
-        'h265_encode' => 'Transcode video files to H.265/HEVC MP4 with FFmpeg.',
+        'h265_encode' => 'Transcode the main video stream to H.265/HEVC MKV while preserving audio, subtitles, chapters, attachments, and metadata.',
         'compress_archive' => 'Compress a file or directory into a .zip archive.',
         'invert_image' => 'Invert an image while preserving alpha transparency when possible.',
         'noop' => 'Built-in worker connectivity check.',
@@ -250,6 +251,7 @@ function reflection_builtin_task_specs(): array
         'shutdown' => $hidden('Ask a worker to power off after reporting success.'),
         'wake_farm' => $hidden('Ask a worker to send Wake-on-LAN packets to configured farm computers.'),
         'storage_test' => $hidden('Ask a worker to verify storage server access.'),
+        'purge_quarantine' => $hidden('Ask a worker to manually empty a tracked remote overwrite quarantine folder.'),
         'update_worker' => [
             'description' => 'Ask a worker to update itself and reboot.',
             'source' => ['mode' => 'none', 'label' => 'Source', 'help' => 'The master supplies the target version automatically.'],

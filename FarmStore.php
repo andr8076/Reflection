@@ -216,6 +216,84 @@ final class FarmStore
         ];
     }
 
+    public function quarantineLocations(): array
+    {
+        $data = $this->read();
+        $locations = array_values(array_filter($data['quarantine_locations'] ?? [], static function ($location): bool {
+            return is_array($location);
+        }));
+        usort($locations, static function (array $a, array $b): int {
+            return strcmp((string) ($b['last_seen_at'] ?? ''), (string) ($a['last_seen_at'] ?? ''));
+        });
+        return $locations;
+    }
+
+    public function quarantineLocation(string $id): ?array
+    {
+        $id = trim($id);
+        if ($id === '') {
+            return null;
+        }
+
+        return $this->withLock(function (array $data) use ($id): ?array {
+            $location = $data['quarantine_locations'][$id] ?? null;
+            return is_array($location) ? $location : null;
+        });
+    }
+
+    public function recordQuarantineLocation(string $pcId, array $location): ?array
+    {
+        $pcId = trim($pcId);
+        $clean = $this->cleanQuarantineLocation($location, $pcId);
+        if ($clean === null) {
+            return null;
+        }
+
+        $record = $this->withLock(function (array $data) use ($clean): array {
+            $id = (string) $clean['id'];
+            $existing = is_array($data['quarantine_locations'][$id] ?? null) ? $data['quarantine_locations'][$id] : [];
+            $now = gmdate(DATE_ATOM);
+            $record = array_merge($existing, $clean, [
+                'first_seen_at' => trim((string) ($existing['first_seen_at'] ?? '')) !== '' ? (string) $existing['first_seen_at'] : $now,
+                'last_seen_at' => $now,
+            ]);
+            if (!array_key_exists('purge_status', $record)) {
+                $record['purge_status'] = 'tracked';
+            }
+            $data['quarantine_locations'][$id] = $record;
+            return ['data' => $data, 'result' => $record];
+        }, true);
+
+        if (is_array($record)) {
+            $this->recordSystemEvent('quarantine_tracked', '', [
+                'quarantine_id' => $record['id'] ?? '',
+                'uri' => $record['uri'] ?? '',
+                'worker' => $record['last_worker'] ?? '',
+                'task_id' => $record['last_task_id'] ?? '',
+            ]);
+        }
+
+        return is_array($record) ? $record : null;
+    }
+
+    public function markQuarantinePurgeQueued(string $id, string $taskId): void
+    {
+        $id = trim($id);
+        $taskId = trim($taskId);
+        if ($id === '' || $taskId === '') {
+            return;
+        }
+
+        $this->withLock(function (array $data) use ($id, $taskId): array {
+            if (is_array($data['quarantine_locations'][$id] ?? null)) {
+                $data['quarantine_locations'][$id]['last_purge_job'] = $taskId;
+                $data['quarantine_locations'][$id]['last_purge_queued_at'] = gmdate(DATE_ATOM);
+                $data['quarantine_locations'][$id]['purge_status'] = 'queued';
+            }
+            return ['data' => $data, 'result' => null];
+        }, true);
+    }
+
     public function createJob(string $module, ?string $source, ?string $delivery, bool $overwriteAllowed, array $extra = []): array
     {
         $job = $this->withLock(function (array $data) use ($module, $source, $delivery, $overwriteAllowed, $extra): array {
@@ -674,6 +752,10 @@ final class FarmStore
             if ($finishedJob !== null && isset($data['workers'][$pcId])) {
                 $data['workers'][$pcId]['last_check_in'] = gmdate(DATE_ATOM);
                 $data['workers'][$pcId]['current_job'] = null;
+            }
+
+            if ($finishedJob !== null && ($finishedJob['module'] ?? '') === 'purge_quarantine') {
+                $this->markQuarantinePurgeFinishedInData($data, $finishedJob);
             }
 
             return ['data' => $data, 'result' => ['finished' => $finishedJob, 'retry' => $retryJob]];
@@ -1200,6 +1282,7 @@ final class FarmStore
             $data['settings']['job_archive_keep_lines'] = max(0, (int) ($data['settings']['job_archive_keep_lines'] ?? 5000));
             $data['settings']['worker_temp_max_age_hours'] = max(1, (int) ($data['settings']['worker_temp_max_age_hours'] ?? 24));
             $data['settings']['quarantine_keep_days'] = max(1, (int) ($data['settings']['quarantine_keep_days'] ?? 14));
+            $data['settings']['quarantine_max_gb'] = max(0.0, (float) ($data['settings']['quarantine_max_gb'] ?? 100));
             return ['data' => $data, 'result' => $data['settings']];
         }, true);
     }
@@ -1989,8 +2072,129 @@ final class FarmStore
             'settings' => array_merge($this->defaultSettings(), $data['settings'] ?? []),
             'machines' => array_values($data['machines'] ?? []),
             'wake_history' => is_array($data['wake_history'] ?? null) ? $data['wake_history'] : [],
+            'quarantine_locations' => is_array($data['quarantine_locations'] ?? null) ? $this->normalizeQuarantineLocations($data['quarantine_locations']) : [],
             'last_job_number' => (int) ($data['last_job_number'] ?? 1000),
         ];
+    }
+
+
+    private function normalizeQuarantineLocations(array $locations): array
+    {
+        $normalized = [];
+        foreach ($locations as $key => $location) {
+            if (!is_array($location)) {
+                continue;
+            }
+            $clean = $this->cleanQuarantineLocation($location, (string) ($location['last_worker'] ?? ''));
+            if ($clean === null) {
+                continue;
+            }
+            $id = (string) $clean['id'];
+            $normalized[$id] = array_merge($clean, [
+                'first_seen_at' => $this->cleanTimestamp((string) ($location['first_seen_at'] ?? '')),
+                'last_seen_at' => $this->cleanTimestamp((string) ($location['last_seen_at'] ?? '')),
+                'last_purge_job' => $this->limitString((string) ($location['last_purge_job'] ?? ''), 80),
+                'last_purge_queued_at' => $this->cleanTimestamp((string) ($location['last_purge_queued_at'] ?? '')),
+                'last_purged_at' => $this->cleanTimestamp((string) ($location['last_purged_at'] ?? '')),
+                'purge_status' => $this->cleanQuarantinePurgeStatus((string) ($location['purge_status'] ?? 'tracked')),
+                'purge_message' => $this->limitString((string) ($location['purge_message'] ?? ''), 500),
+            ]);
+        }
+        return $normalized;
+    }
+
+    private function cleanQuarantineLocation(array $location, string $pcId = ''): ?array
+    {
+        $scheme = strtolower(trim((string) ($location['scheme'] ?? '')));
+        if (!in_array($scheme, ['ftp', 'ftps', 'sftp'], true)) {
+            $uri = trim((string) ($location['uri'] ?? ''));
+            $parts = $uri !== '' ? parse_url($uri) : false;
+            $scheme = is_array($parts) ? strtolower((string) ($parts['scheme'] ?? '')) : '';
+        }
+        if (!in_array($scheme, ['ftp', 'ftps', 'sftp'], true)) {
+            return null;
+        }
+
+        $host = trim((string) ($location['host'] ?? ''));
+        $path = trim((string) ($location['path'] ?? ''));
+        $uri = trim((string) ($location['uri'] ?? ''));
+        if (($host === '' || $path === '') && $uri !== '') {
+            $parts = parse_url($uri);
+            if (is_array($parts)) {
+                $host = $host !== '' ? $host : trim((string) ($parts['host'] ?? ''));
+                $path = $path !== '' ? $path : trim((string) ($parts['path'] ?? ''));
+            }
+        }
+        if ($host === '' || $path === '') {
+            return null;
+        }
+        if ($path[0] !== '/') {
+            $path = '/' . $path;
+        }
+        if (strpos($path, '..') !== false || substr($path, -strlen('/.reflection_quarantine')) !== '/.reflection_quarantine') {
+            return null;
+        }
+
+        $defaultPort = $scheme === 'sftp' ? 22 : ($scheme === 'ftps' ? 990 : 21);
+        $port = max(1, min(65535, (int) ($location['port'] ?? $defaultPort)));
+        if ($uri === '') {
+            $netloc = $host . ($port !== $defaultPort ? ':' . $port : '');
+            $uri = $scheme . '://' . $netloc . $path;
+        }
+
+        $id = trim((string) ($location['id'] ?? ''));
+        if ($id === '' || preg_match('/[^a-f0-9]/i', $id) === 1) {
+            $id = sha1(strtolower($scheme . '|' . $host . '|' . $port . '|' . $path));
+        }
+
+        return [
+            'id' => $id,
+            'scheme' => $scheme,
+            'host' => $this->limitString($host, 200),
+            'port' => $port,
+            'path' => $this->limitString($path, 500),
+            'uri' => $this->limitString($uri, 800),
+            'server_id' => $this->limitString((string) ($location['server_id'] ?? ''), 80),
+            'last_worker' => $this->limitString($pcId !== '' ? $pcId : (string) ($location['last_worker'] ?? ''), 120),
+            'last_task_id' => $this->limitString((string) ($location['task_id'] ?? ($location['last_task_id'] ?? '')), 80),
+            'file_count' => max(0, (int) ($location['file_count'] ?? 0)),
+            'size_bytes' => max(0, (int) ($location['size_bytes'] ?? 0)),
+        ];
+    }
+
+    private function cleanTimestamp(string $timestamp): string
+    {
+        $timestamp = trim($timestamp);
+        return $timestamp !== '' && strtotime($timestamp) !== false ? $timestamp : '';
+    }
+
+    private function cleanQuarantinePurgeStatus(string $status): string
+    {
+        return in_array($status, ['tracked', 'queued', 'success', 'failed'], true) ? $status : 'tracked';
+    }
+
+    private function markQuarantinePurgeFinishedInData(array &$data, array $job): void
+    {
+        $locationId = trim((string) ($job['quarantine_location_id'] ?? ''));
+        if ($locationId === '') {
+            $source = json_decode((string) ($job['source'] ?? ''), true);
+            if (is_array($source)) {
+                $locationId = trim((string) ($source['id'] ?? ''));
+            }
+        }
+        if ($locationId === '' || !is_array($data['quarantine_locations'][$locationId] ?? null)) {
+            return;
+        }
+
+        $success = (string) ($job['status'] ?? '') === 'success';
+        $data['quarantine_locations'][$locationId]['purge_status'] = $success ? 'success' : 'failed';
+        $data['quarantine_locations'][$locationId]['last_purged_at'] = gmdate(DATE_ATOM);
+        $data['quarantine_locations'][$locationId]['last_purge_job'] = (string) ($job['task_id'] ?? '');
+        $data['quarantine_locations'][$locationId]['purge_message'] = $this->limitString((string) ($job['error'] ?? ''), 500);
+        if ($success) {
+            $data['quarantine_locations'][$locationId]['file_count'] = 0;
+            $data['quarantine_locations'][$locationId]['size_bytes'] = 0;
+        }
     }
 
 
@@ -2195,7 +2399,7 @@ final class FarmStore
 
     private function isControlModule(string $module): bool
     {
-        return in_array($module, ['noop', 'status', 'reload_tasks', 'shutdown', 'update_worker', 'wake_farm', 'storage_test'], true);
+        return in_array($module, ['noop', 'status', 'reload_tasks', 'shutdown', 'update_worker', 'wake_farm', 'storage_test', 'purge_quarantine'], true);
     }
 
     private function onlineWorkersFromData(array $data, int $staleAfterSeconds): array

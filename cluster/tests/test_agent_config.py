@@ -45,6 +45,7 @@ class AgentConfigTest(unittest.TestCase):
                     "min_free_space_multiplier": Reflection.DEFAULT_MIN_FREE_SPACE_MULTIPLIER,
                     "local_temp_max_age_hours": Reflection.DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS,
                     "quarantine_keep_days": Reflection.DEFAULT_QUARANTINE_KEEP_DAYS,
+                    "quarantine_max_gb": Reflection.DEFAULT_QUARANTINE_MAX_GB,
                 },
             )
 
@@ -77,6 +78,7 @@ class AgentConfigTest(unittest.TestCase):
                     "min_free_space_multiplier": Reflection.DEFAULT_MIN_FREE_SPACE_MULTIPLIER,
                     "local_temp_max_age_hours": Reflection.DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS,
                     "quarantine_keep_days": Reflection.DEFAULT_QUARANTINE_KEEP_DAYS,
+                    "quarantine_max_gb": Reflection.DEFAULT_QUARANTINE_MAX_GB,
                 },
             )
 
@@ -733,6 +735,52 @@ class TransferHandlingTest(unittest.TestCase):
         self.assertFalse(fake_agent.delivery_exists_before_write)
         self.assertNotEqual(fake_agent.seen_source, fake_agent.seen_delivery)
         self.assertEqual(Path(fake_agent.seen_delivery).parent.name, "delivery")
+
+    def test_quarantine_cleanup_prunes_oldest_files_when_size_cap_is_exceeded(self):
+        old_max = Reflection.QUARANTINE_MAX_BYTES
+        old_days = Reflection.QUARANTINE_KEEP_DAYS
+        try:
+            Reflection.QUARANTINE_KEEP_DAYS = 9999
+            Reflection.QUARANTINE_MAX_BYTES = 100
+            removed = []
+            now = Reflection.time.time()
+            entries = [
+                {"path": "old-a", "mtime": now + 1, "size": 60},
+                {"path": "old-b", "mtime": now + 2, "size": 60},
+                {"path": "new-c", "mtime": now + 3, "size": 20},
+            ]
+
+            Reflection._cleanup_quarantine_entries(entries, lambda path: removed.append(path) or True, "test")
+
+            self.assertEqual(removed, ["old-a"])
+        finally:
+            Reflection.QUARANTINE_MAX_BYTES = old_max
+            Reflection.QUARANTINE_KEEP_DAYS = old_days
+
+    def test_quarantine_cleanup_reserves_space_before_safe_replace_upload(self):
+        old_max = Reflection.QUARANTINE_MAX_BYTES
+        old_days = Reflection.QUARANTINE_KEEP_DAYS
+        try:
+            Reflection.QUARANTINE_KEEP_DAYS = 9999
+            Reflection.QUARANTINE_MAX_BYTES = 100
+            removed = []
+            now = Reflection.time.time()
+            entries = [
+                {"path": "old-a", "mtime": now + 1, "size": 60},
+                {"path": "old-b", "mtime": now + 2, "size": 30},
+            ]
+
+            Reflection._cleanup_quarantine_entries(
+                entries,
+                lambda path: removed.append(path) or True,
+                "test",
+                reserve_bytes=50,
+            )
+
+            self.assertEqual(removed, ["old-a"])
+        finally:
+            Reflection.QUARANTINE_MAX_BYTES = old_max
+            Reflection.QUARANTINE_KEEP_DAYS = old_days
 
     def test_ftp_upload_failure_marks_task_failed(self):
         class FakeAgent:

@@ -66,5 +66,12 @@ $config = reflection_master_config();
 assertSameValue(true, isset($config['task_specs']['compress_archive']), 'Master should discover task contracts from task module files.');
 assertSameValue('auto', $config['task_specs']['compress_archive']['delivery']['mode'], 'compress_archive delivery should be automatic.');
 assertSameValue('.zip', $config['task_specs']['compress_archive']['delivery']['extension'], 'compress_archive should declare .zip output.');
+assertSameValue('auto', $config['task_specs']['h265_encode']['delivery']['mode'], 'h265_encode delivery should be automatic.');
+assertSameValue('.mkv', $config['task_specs']['h265_encode']['delivery']['extension'], 'h265_encode should declare MKV output.');
+assertSameValue('mkv', $config['task_specs']['h265_encode']['output']['container'], 'h265_encode should declare MKV container output.');
+assertSameValue(true, $config['task_specs']['h265_encode']['output']['preserve_audio'], 'h265_encode should declare audio preservation.');
+assertSameValue(true, $config['task_specs']['h265_encode']['output']['preserve_subtitles'], 'h265_encode should declare subtitle preservation.');
+assertSameValue(true, $config['task_specs']['h265_encode']['output']['preserve_chapters'], 'h265_encode should declare chapter preservation.');
+assertSameValue(true, $config['task_specs']['h265_encode']['output']['preserve_metadata'], 'h265_encode should declare metadata preservation.');
 
 echo "ui helper tests passed\n";
