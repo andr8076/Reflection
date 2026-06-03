@@ -185,6 +185,8 @@ function reflection_default_runtime_settings(): array
         'ess_min_soc_percent' => 20,
         'ess_shutdown_below_minimum' => true,
         'ess_ignore_when_unavailable' => true,
+        'ess_charging_override_enabled' => false,
+        'ess_charging' => null,
         'ess_soc_status' => 'manual',
         'ess_soc_error' => '',
         'ess_soc_raw_sample' => '',

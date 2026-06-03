@@ -45,6 +45,72 @@ function reflection_parse_machine_list(string $raw): array
     return $machines;
 }
 
+
+function reflection_parse_machine_form(array $post): ?array
+{
+    if (!isset($post['machine_pc_id']) || !is_array($post['machine_pc_id'])) {
+        return null;
+    }
+
+    $pcIds = $post['machine_pc_id'];
+    $macs = is_array($post['machine_mac'] ?? null) ? $post['machine_mac'] : [];
+    $minSocs = is_array($post['machine_min_soc_percent'] ?? null) ? $post['machine_min_soc_percent'] : [];
+    $wakeEnabled = is_array($post['machine_wake_enabled'] ?? null) ? $post['machine_wake_enabled'] : [];
+    $shutdownLayers = is_array($post['machine_shutdown_layer'] ?? null) ? $post['machine_shutdown_layer'] : [];
+
+    $keys = array_unique(array_merge(
+        array_keys($pcIds),
+        array_keys($macs),
+        array_keys($minSocs),
+        array_keys($wakeEnabled),
+        array_keys($shutdownLayers)
+    ));
+    natsort($keys);
+
+    $machines = [];
+    foreach ($keys as $key) {
+        $pcId = trim((string) ($pcIds[$key] ?? ''));
+        $mac = trim((string) ($macs[$key] ?? ''));
+        if ($pcId === '' && $mac === '') {
+            continue;
+        }
+
+        $machine = [
+            'pc_id' => $pcId,
+            'mac' => $mac,
+            'wake_enabled' => isset($wakeEnabled[$key]) && in_array((string) $wakeEnabled[$key], ['1', 'true', 'yes', 'on'], true),
+            'shutdown_layer' => max(0, (int) ($shutdownLayers[$key] ?? 0)),
+        ];
+
+        $rawMinSoc = trim((string) ($minSocs[$key] ?? ''));
+        if ($rawMinSoc !== '') {
+            $machine['min_soc_percent'] = max(0, min(100, (int) $rawMinSoc));
+            $machine['soc_margin_percent'] = $machine['min_soc_percent'];
+        }
+
+        $machines[] = $machine;
+    }
+
+    return $machines;
+}
+
+function reflection_ess_charging_label(array $settings): string
+{
+    if (!array_key_exists('ess_charging', $settings) || $settings['ess_charging'] === null || $settings['ess_charging'] === '') {
+        return 'unknown';
+    }
+
+    return !empty($settings['ess_charging']) ? 'yes' : 'no';
+}
+
+function reflection_ess_charging_override_active(array $settings): bool
+{
+    return !empty($settings['ess_charging_override_enabled'])
+        && ($settings['ess_soc_status'] ?? 'manual') === 'online'
+        && array_key_exists('ess_charging', $settings)
+        && $settings['ess_charging'] === true;
+}
+
 function reflection_machine_list_text(array $machines): string
 {
     $lines = [];

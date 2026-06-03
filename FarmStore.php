@@ -359,11 +359,10 @@ final class FarmStore
             return;
         }
 
-        $offlineAt = gmdate(DATE_ATOM, time() - 31536000);
-        $this->withLock(function (array $data) use ($pcId, $reason, $offlineAt): array {
+        $this->withLock(function (array $data) use ($pcId, $reason): array {
             $worker = $data['workers'][$pcId] ?? ['pc_id' => $pcId];
+            $worker['pc_id'] = $pcId;
             $worker['current_job'] = null;
-            $worker['last_check_in'] = $offlineAt;
             $worker['expected_offline'] = true;
             $worker['expected_offline_reason'] = $reason;
             $worker['expected_offline_at'] = gmdate(DATE_ATOM);
@@ -1145,6 +1144,10 @@ final class FarmStore
             }
             $data['settings']['ess_min_soc_percent'] = max(0, min(100, (int) ($data['settings']['ess_min_soc_percent'] ?? 20)));
             $data['settings']['ess_ignore_when_unavailable'] = !empty($data['settings']['ess_ignore_when_unavailable']);
+            $data['settings']['ess_charging_override_enabled'] = !empty($data['settings']['ess_charging_override_enabled']);
+            if (array_key_exists('ess_charging', $data['settings'])) {
+                $data['settings']['ess_charging'] = $this->cleanNullableBool($data['settings']['ess_charging']);
+            }
             $data['settings']['ess_soc_status'] = $this->cleanEssStatus((string) ($data['settings']['ess_soc_status'] ?? 'manual'));
             $data['settings']['ess_soc_error'] = $this->limitString((string) ($data['settings']['ess_soc_error'] ?? ''), 500);
             $data['settings']['ess_soc_raw_sample'] = $this->limitString((string) ($data['settings']['ess_soc_raw_sample'] ?? ''), 500);
@@ -1280,7 +1283,8 @@ final class FarmStore
         }
 
         $soc = (int) $parsed['soc'];
-        $this->recordEssSocStatus('online', $soc, '', $body, $checkedAt);
+        $charging = array_key_exists('charging', $parsed) ? $parsed['charging'] : null;
+        $this->recordEssSocStatus('online', $soc, '', $body, $checkedAt, $charging);
         return $soc;
     }
 
@@ -2091,6 +2095,9 @@ final class FarmStore
             if (!is_array($worker)) {
                 continue;
             }
+            if (!empty($worker['expected_offline'])) {
+                continue;
+            }
             $lastCheckIn = strtotime((string) ($worker['last_check_in'] ?? ''));
             if ($lastCheckIn !== false && $lastCheckIn >= $cutoff) {
                 $pcId = trim((string) ($worker['pc_id'] ?? ''));
@@ -2314,14 +2321,14 @@ final class FarmStore
 
         $plainSoc = $this->parseSocValue($trimmedBody);
         if ($plainSoc !== null) {
-            return ['soc' => $plainSoc, 'error' => ''];
+            return ['soc' => $plainSoc, 'charging' => null, 'error' => ''];
         }
 
         $payload = json_decode($body, true);
         if (json_last_error() === JSON_ERROR_NONE && is_array($payload)) {
             $soc = $this->extractSocPercent($payload);
             if ($soc !== null) {
-                return ['soc' => $soc, 'error' => ''];
+                return ['soc' => $soc, 'charging' => $this->extractChargingState($payload), 'error' => ''];
             }
 
             return ['soc' => null, 'error' => 'ESS SOC JSON was valid, but no supported SOC key contained a valid value.'];
@@ -2348,6 +2355,74 @@ final class FarmStore
                     return $soc;
                 }
             }
+        }
+
+        return null;
+    }
+
+    private function extractChargingState(array $payload): ?bool
+    {
+        foreach (['charging', 'is_charging', 'isCharging', 'charge_active', 'chargeActive'] as $key) {
+            if (array_key_exists($key, $payload)) {
+                $charging = $this->parseBoolValue($payload[$key]);
+                if ($charging !== null) {
+                    return $charging;
+                }
+            }
+        }
+
+        foreach (['charge_state', 'chargeState', 'state', 'status'] as $key) {
+            if (array_key_exists($key, $payload)) {
+                $charging = $this->parseChargingText($payload[$key]);
+                if ($charging !== null) {
+                    return $charging;
+                }
+            }
+        }
+
+        foreach (['battery', 'ess', 'system', 'data'] as $nestedKey) {
+            if (isset($payload[$nestedKey]) && is_array($payload[$nestedKey])) {
+                $charging = $this->extractChargingState($payload[$nestedKey]);
+                if ($charging !== null) {
+                    return $charging;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function parseBoolValue($value): ?bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value) || is_float($value)) {
+            if ((float) $value === 1.0) {
+                return true;
+            }
+            if ((float) $value === 0.0) {
+                return false;
+            }
+            return null;
+        }
+
+        return $this->parseChargingText($value);
+    }
+
+    private function parseChargingText($value): ?bool
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $normalized = strtolower(trim($value));
+        if (in_array($normalized, ['1', 'true', 'yes', 'y', 'on', 'charging', 'charge', 'bulk', 'absorption', 'float'], true)) {
+            return true;
+        }
+        if (in_array($normalized, ['0', 'false', 'no', 'n', 'off', 'discharging', 'idle', 'standby', 'not_charging', 'not charging'], true)) {
+            return false;
         }
 
         return null;
@@ -2390,6 +2465,14 @@ final class FarmStore
 
     private function essSocCanLimitWorkers(array $settings): bool
     {
+        if (!empty($settings['ess_charging_override_enabled'])
+            && ($settings['ess_soc_status'] ?? 'manual') === 'online'
+            && array_key_exists('ess_charging', $settings)
+            && $settings['ess_charging'] === true
+        ) {
+            return false;
+        }
+
         $url = trim((string) ($settings['ess_soc_url'] ?? ''));
         if ($url === '') {
             return true;
@@ -2402,7 +2485,7 @@ final class FarmStore
         return ($settings['ess_soc_status'] ?? 'manual') === 'online';
     }
 
-    private function recordEssSocStatus(string $status, ?int $soc, string $error = '', string $rawBody = '', ?string $checkedAt = null): void
+    private function recordEssSocStatus(string $status, ?int $soc, string $error = '', string $rawBody = '', ?string $checkedAt = null, ?bool $charging = null): void
     {
         $status = $this->cleanEssStatus($status);
         $checkedAt = $checkedAt ?? gmdate(DATE_ATOM);
@@ -2420,6 +2503,7 @@ final class FarmStore
         if ($soc !== null) {
             $update['ess_soc_percent'] = $soc;
             $update['ess_soc_last_success_at'] = $checkedAt;
+            $update['ess_charging'] = $charging;
         } elseif ($status !== 'manual') {
             $update['ess_soc_last_failure_at'] = $checkedAt;
         }
@@ -2431,9 +2515,39 @@ final class FarmStore
         if ($previousStatus !== $status || ($status !== 'online' && $previousError !== $error)) {
             $this->recordSystemEvent('ess_soc_' . $status, $error, [
                 'soc' => $soc,
+                'charging' => $charging,
                 'raw_sample' => $sample,
             ]);
         }
+    }
+
+    private function cleanNullableBool($value): ?bool
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_int($value) || is_float($value)) {
+            if ((float) $value === 1.0) {
+                return true;
+            }
+            if ((float) $value === 0.0) {
+                return false;
+            }
+        }
+        if (is_string($value)) {
+            $normalized = strtolower(trim($value));
+            if (in_array($normalized, ['1', 'true', 'yes', 'on'], true)) {
+                return true;
+            }
+            if (in_array($normalized, ['0', 'false', 'no', 'off'], true)) {
+                return false;
+            }
+        }
+
+        return null;
     }
 
     private function cleanEssStatus(string $status): string

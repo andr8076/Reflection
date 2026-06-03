@@ -36,6 +36,7 @@ try {
                 'ess_min_soc_percent' => (int) ($_POST['ess_min_soc_percent'] ?? 20),
                 'ess_shutdown_below_minimum' => isset($_POST['ess_shutdown_below_minimum']),
                 'ess_ignore_when_unavailable' => isset($_POST['ess_ignore_when_unavailable']),
+                'ess_charging_override_enabled' => isset($_POST['ess_charging_override_enabled']),
                 'idle_shutdown_after_no_job_checks' => (int) ($_POST['idle_shutdown_after_no_job_checks'] ?? 0),
                 'shutdown_debug_mode' => isset($_POST['shutdown_debug_mode']),
                 'auto_wake_for_queued_jobs' => isset($_POST['auto_wake_for_queued_jobs']),
@@ -54,7 +55,8 @@ try {
                 'worker_temp_max_age_hours' => (int) ($_POST['worker_temp_max_age_hours'] ?? 24),
                 'quarantine_keep_days' => (int) ($_POST['quarantine_keep_days'] ?? 14),
             ]);
-            $store->updateMachines(reflection_parse_machine_list((string) ($_POST['machines'] ?? '')));
+            $postedMachines = reflection_parse_machine_form($_POST);
+            $store->updateMachines($postedMachines ?? reflection_parse_machine_list((string) ($_POST['machines'] ?? '')));
             $maintenance = reflection_run_store_maintenance($store, $settings);
             $message = 'Saved settings. Archived ' . $maintenance['archived_jobs'] . ' old completed job(s), trimmed ' . $maintenance['trimmed_events'] . ' event(s), compacted ' . $maintenance['trimmed_file_history'] . ' file-history item(s), and trimmed ' . $maintenance['trimmed_job_archive'] . ' archived job line(s).';
         }
@@ -66,6 +68,7 @@ try {
 $store->refreshEssSocFromConfiguredEndpoint();
 $settings = $store->effectiveSettings();
 $machines = $store->machines();
+$machineRows = $machines === [] ? [['pc_id' => '', 'mac' => '', 'min_soc_percent' => '', 'wake_enabled' => true, 'shutdown_layer' => 0]] : array_values($machines);
 $archiveInfo = $store->archiveInfo();
 $dataDirectory = dirname((string) $config['storage_path']);
 ?>
@@ -224,6 +227,11 @@ $dataDirectory = dirname((string) $config['storage_path']);
                             Ignore SOC limits when the ESS endpoint is offline or unreadable
                         </label>
                         <label class="check-row">
+                            <input type="checkbox" name="ess_charging_override_enabled" value="1" <?= !empty($settings['ess_charging_override_enabled']) ? 'checked' : '' ?>>
+                            Ignore minimum SOC while ESS reports charging
+                            <small>Requires the ESS JSON endpoint to return a supported charging value, for example <code>{"soc":0.39,"charging":true}</code>.</small>
+                        </label>
+                        <label class="check-row">
                             <input type="checkbox" name="ess_shutdown_below_minimum" value="1" <?= !empty($settings['ess_shutdown_below_minimum']) ? 'checked' : '' ?>>
                             Tell workers to power off after current task when SOC is below minimum
                         </label>
@@ -235,6 +243,7 @@ $dataDirectory = dirname((string) $config['storage_path']);
                     <div class="ess-status-box">
                         <strong>ESS status: <?= reflection_h(reflection_ess_status_label($settings)) ?></strong>
                         <span>Current SOC: <?= (int) ($settings['ess_soc_percent'] ?? 100) ?>%</span>
+                        <span>Charging: <?= reflection_h(reflection_ess_charging_label($settings)) ?><?= reflection_ess_charging_override_active($settings) ? ' · SOC limits bypassed' : '' ?></span>
                         <span>Last check: <?= reflection_h(reflection_relative_time($settings['ess_soc_last_checked_at'] ?? null)) ?></span>
                         <span>Last valid SOC: <?= reflection_h(reflection_relative_time($settings['ess_soc_last_success_at'] ?? null)) ?></span>
                         <?php if (!empty($settings['ess_soc_error'])): ?>
@@ -293,12 +302,52 @@ $dataDirectory = dirname((string) $config['storage_path']);
                 </div>
 
                 <div class="settings-section-box">
-                    <h3>Farm computers and Wake-on-LAN</h3>
-                    <label>
-                        Machine list
-                        <textarea name="machines" rows="8" placeholder="render-01,AA:BB:CC:DD:EE:01,5,1,2&#10;render-02,AA:BB:CC:DD:EE:02,8,1,1"><?= reflection_h(reflection_machine_list_text($machines)) ?></textarea>
-                        <small>One per line: <code>pc_id,mac,min_soc_percent,wake_enabled,shutdown_layer</code>. The third value is the ESS SOC percentage this computer may run down to. Leave it blank to use the global fallback above. Higher shutdown layers power off first; lower layers are not allowed to shut down until higher online layers have confirmed their shutdown order.</small>
-                    </label>
+                    <div class="panel-head inline-panel-head">
+                        <div>
+                            <h3>Farm computers and Wake-on-LAN</h3>
+                            <p class="api-note">Add each farm computer once. Per-computer minimum SOC is the ESS percentage that machine may run down to. Leave it blank to use the global fallback above.</p>
+                        </div>
+                        <button type="button" class="ghost-button small-button" data-add-machine-row>Add computer</button>
+                    </div>
+                    <div class="table-wrap machine-editor" data-machine-editor>
+                        <table class="machine-editor-table">
+                            <thead>
+                                <tr>
+                                    <th>Computer ID</th>
+                                    <th>MAC address</th>
+                                    <th>Minimum ESS SOC %</th>
+                                    <th>Wake</th>
+                                    <th>Shutdown layer</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody id="machine-editor-body">
+                            <?php foreach ($machineRows as $machineIndex => $machine): ?>
+                                <?php $machineMinSoc = $machine['min_soc_percent'] ?? ($machine['soc_margin_percent'] ?? ''); ?>
+                                <tr>
+                                    <td><input name="machine_pc_id[<?= (int) $machineIndex ?>]" value="<?= reflection_h($machine['pc_id'] ?? '') ?>" placeholder="farm1"></td>
+                                    <td><input name="machine_mac[<?= (int) $machineIndex ?>]" value="<?= reflection_h($machine['mac'] ?? '') ?>" placeholder="AA:BB:CC:DD:EE:01"></td>
+                                    <td><input type="number" name="machine_min_soc_percent[<?= (int) $machineIndex ?>]" min="0" max="100" value="<?= reflection_h($machineMinSoc) ?>" placeholder="fallback"></td>
+                                    <td class="center-cell"><input type="checkbox" name="machine_wake_enabled[<?= (int) $machineIndex ?>]" value="1" <?= !isset($machine['wake_enabled']) || !empty($machine['wake_enabled']) ? 'checked' : '' ?>></td>
+                                    <td><input type="number" name="machine_shutdown_layer[<?= (int) $machineIndex ?>]" min="0" value="<?= (int) ($machine['shutdown_layer'] ?? 0) ?>"></td>
+                                    <td><button type="button" class="ghost-button small-button" data-remove-machine-row>Remove</button></td>
+                                </tr>
+                            <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                    <small>Higher shutdown layers power off first. Lower layers are not allowed to shut down until higher online layers have confirmed their shutdown order. Wake can be disabled for a computer while still keeping its SOC and layer policy.</small>
+                    <template id="machine-row-template">
+                        <tr>
+                            <td><input name="machine_pc_id[__INDEX__]" placeholder="farm1"></td>
+                            <td><input name="machine_mac[__INDEX__]" placeholder="AA:BB:CC:DD:EE:01"></td>
+                            <td><input type="number" name="machine_min_soc_percent[__INDEX__]" min="0" max="100" placeholder="fallback"></td>
+                            <td class="center-cell"><input type="checkbox" name="machine_wake_enabled[__INDEX__]" value="1" checked></td>
+                            <td><input type="number" name="machine_shutdown_layer[__INDEX__]" min="0" value="0"></td>
+                            <td><button type="button" class="ghost-button small-button" data-remove-machine-row>Remove</button></td>
+                        </tr>
+                    </template>
+                    <textarea name="machines" class="legacy-machine-list" aria-hidden="true"><?= reflection_h(reflection_machine_list_text($machines)) ?></textarea>
                 </div>
 
                 <button type="submit">Save settings</button>
@@ -326,5 +375,6 @@ $dataDirectory = dirname((string) $config['storage_path']);
         <p>Protect this dashboard with your web server, VPN, or reverse-proxy auth.</p>
         <p><a href="index.php">Back to dashboard</a></p>
     </footer>
+    <script src="settings.js"></script>
 </body>
 </html>

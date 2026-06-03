@@ -343,6 +343,9 @@ function reflection_worker_cards(array $workers, array $machines, int $staleAfte
             'current_job' => null,
             'last_check_in' => null,
             'idle_no_job_checkins' => 0,
+            'expected_offline' => false,
+            'expected_offline_reason' => '',
+            'expected_offline_at' => null,
             'state' => 'configured',
         ];
     }
@@ -351,8 +354,11 @@ function reflection_worker_cards(array $workers, array $machines, int $staleAfte
         $pcId = (string) ($worker['pc_id'] ?? 'unknown');
         $lastCheckIn = (string) ($worker['last_check_in'] ?? '');
         $lastSeen = $lastCheckIn !== '' ? strtotime($lastCheckIn) : false;
+        $expectedOffline = !empty($worker['expected_offline']);
         $state = !empty($worker['current_job']) ? 'running' : 'idle';
-        if ($lastSeen === false || (time() - $lastSeen) > $staleAfterSeconds) {
+        if ($expectedOffline) {
+            $state = 'offline';
+        } elseif ($lastSeen === false || (time() - $lastSeen) > $staleAfterSeconds) {
             $state = 'stale';
         }
 
@@ -361,12 +367,15 @@ function reflection_worker_cards(array $workers, array $machines, int $staleAfte
             'mac' => '',
             'min_soc_percent' => null,
             'wake_enabled' => false,
-                'shutdown_layer' => 0,
+            'shutdown_layer' => 0,
         ], [
             'version' => $worker['version'] ?? '—',
             'current_job' => $worker['current_job'] ?? null,
             'last_check_in' => $worker['last_check_in'] ?? null,
             'idle_no_job_checkins' => max(0, (int) ($worker['idle_no_job_checkins'] ?? 0)),
+            'expected_offline' => $expectedOffline,
+            'expected_offline_reason' => $worker['expected_offline_reason'] ?? '',
+            'expected_offline_at' => $worker['expected_offline_at'] ?? null,
             'state' => $state,
         ]);
     }
@@ -389,7 +398,7 @@ function reflection_count_worker_states(array $workerCards): array
 function reflection_render_worker_summary(array $workerStateCounts): string
 {
     ob_start();
-    foreach (['running', 'idle', 'stale', 'configured'] as $state):
+    foreach (['running', 'idle', 'offline', 'stale', 'configured'] as $state):
         ?>
         <span><?= reflection_h($state) ?> <strong><?= (int) ($workerStateCounts[$state] ?? 0) ?></strong></span>
         <?php
@@ -416,6 +425,9 @@ function reflection_render_worker_cards_html(array $workerCards): string
             <dl>
                 <div><dt>Current job</dt><dd><?= reflection_h($card['current_job'] ?? '—') ?></dd></div>
                 <div><dt>Last check-in</dt><dd title="<?= reflection_h($card['last_check_in'] ?? '') ?>"><?= reflection_h(reflection_relative_time($card['last_check_in'] ?? null)) ?></dd></div>
+                <?php if (!empty($card['expected_offline'])): ?>
+                    <div><dt>Expected offline</dt><dd title="<?= reflection_h($card['expected_offline_at'] ?? '') ?>"><?= reflection_h(reflection_relative_time($card['expected_offline_at'] ?? null)) ?><?= ($card['expected_offline_reason'] ?? '') !== '' ? ' · ' . reflection_h($card['expected_offline_reason']) : '' ?></dd></div>
+                <?php endif; ?>
                 <div><dt>No-job polls</dt><dd><?= (int) ($card['idle_no_job_checkins'] ?? 0) ?></dd></div>
                 <div><dt>Version</dt><dd><code><?= reflection_h($card['version'] ?? '—') ?></code></dd></div>
                 <div><dt>Wake</dt><dd><?= !empty($card['wake_enabled']) ? 'enabled' : 'disabled' ?><?= !empty($card['mac']) ? ' · ' . reflection_h($card['mac']) : '' ?></dd></div>
@@ -748,6 +760,7 @@ $store->refreshEssSocFromConfiguredEndpoint();
 $staleCount = $store->requeueStaleJobs((int) $config['stale_after_seconds']);
 $settings = $store->effectiveSettings();
 $essSocIgnored = reflection_ess_soc_is_ignored($settings);
+$essChargingOverrideActive = reflection_ess_charging_override_active($settings);
 $automaticMaintenance = reflection_run_store_maintenance($store, $settings);
 $data = $store->read();
 $workers = $data['workers'];
@@ -767,10 +780,10 @@ $demandWakePlan = $store->demandWakePlan((int) ($config['stale_after_seconds'] ?
 $wakeButtonDisabled = $wakeTargetCount === 0;
 $workerLimitDisplay = $essSocIgnored
     ? 'paused'
-    : ($allowedActiveWorkers === PHP_INT_MAX ? 'off' : (string) (int) $allowedActiveWorkers);
+    : ($essChargingOverrideActive ? 'charging' : ($allowedActiveWorkers === PHP_INT_MAX ? 'off' : (string) (int) $allowedActiveWorkers));
 $workerLimitHelp = $essSocIgnored
     ? 'ESS unavailable'
-    : ($allowedActiveWorkers === PHP_INT_MAX ? 'no SOC cap' : 'workers whose minimum ESS SOC is met');
+    : ($essChargingOverrideActive ? 'charging override active' : ($allowedActiveWorkers === PHP_INT_MAX ? 'no SOC cap' : 'workers whose minimum ESS SOC is met'));
 $workerStaleAfterSeconds = max(1, (int) ($config['stale_after_seconds'] ?? 900));
 $workerCards = reflection_worker_cards($workers, $machines, $workerStaleAfterSeconds);
 $workerStateCounts = reflection_count_worker_states($workerCards);
@@ -809,14 +822,14 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
         <strong><?= $activeCount ?></strong>
         <small><?= (int) ($statusCounts['queued'] ?? 0) ?> queued · <?= (int) ($statusCounts['running'] ?? 0) ?> running · <?= (int) ($statusCounts['held'] ?? 0) ?> held</small>
     </article>
-    <article class="metric <?= $essSocIgnored ? 'warning-metric' : '' ?>">
+    <article class="metric <?= $essSocIgnored ? 'warning-metric' : ($essChargingOverrideActive ? 'charging-metric' : '') ?>">
         <span>ESS SOC</span>
         <?php if ($essSocIgnored): ?>
             <strong>ignored</strong>
             <small><?= reflection_h(reflection_ess_status_label($settings)) ?> · last good <?= (int) ($settings['ess_soc_percent'] ?? 100) ?>%</small>
         <?php else: ?>
             <strong><?= (int) ($settings['ess_soc_percent'] ?? 100) ?>%</strong>
-            <small><?= reflection_h(reflection_ess_status_label($settings)) ?> · minimum <?= (int) ($settings['ess_min_soc_percent'] ?? 20) ?>%</small>
+            <small><?= reflection_h(reflection_ess_status_label($settings)) ?> · charging <?= reflection_h(reflection_ess_charging_label($settings)) ?><?= $essChargingOverrideActive ? ' · SOC limits bypassed' : ' · minimum ' . (int) ($settings['ess_min_soc_percent'] ?? 20) . '%' ?></small>
         <?php endif; ?>
     </article>
     <article class="metric <?= $essSocIgnored ? 'warning-metric' : '' ?>">
@@ -1085,6 +1098,8 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
     <?php endif; ?>
     <?php if ($essSocIgnored): ?>
         <div class="alert warning">ESS SOC <?= reflection_h(reflection_ess_status_label($settings)) ?>. SOC-based worker limits are being ignored until the endpoint returns a valid SOC value again. <?= reflection_h($settings['ess_soc_error'] ?? '') ?></div>
+    <?php elseif ($essChargingOverrideActive): ?>
+        <div class="alert muted">ESS reports charging. Minimum SOC limits are being bypassed while the charging override option is enabled.</div>
     <?php endif; ?>
     <?php if ($staleCount > 0): ?>
         <div class="alert warning"><?= reflection_h($staleCount) ?> lost/blocked job(s) were marked for operator review.</div>
@@ -1099,14 +1114,14 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
             <strong><?= $activeCount ?></strong>
             <small><?= (int) ($statusCounts['queued'] ?? 0) ?> queued · <?= (int) ($statusCounts['running'] ?? 0) ?> running · <?= (int) ($statusCounts['held'] ?? 0) ?> held</small>
         </article>
-        <article class="metric <?= $essSocIgnored ? 'warning-metric' : '' ?>">
+        <article class="metric <?= $essSocIgnored ? 'warning-metric' : ($essChargingOverrideActive ? 'charging-metric' : '') ?>">
             <span>ESS SOC</span>
             <?php if ($essSocIgnored): ?>
                 <strong>ignored</strong>
                 <small><?= reflection_h(reflection_ess_status_label($settings)) ?> · last good <?= (int) ($settings['ess_soc_percent'] ?? 100) ?>%</small>
             <?php else: ?>
                 <strong><?= (int) ($settings['ess_soc_percent'] ?? 100) ?>%</strong>
-                <small><?= reflection_h(reflection_ess_status_label($settings)) ?> · minimum <?= (int) ($settings['ess_min_soc_percent'] ?? 20) ?>%</small>
+                <small><?= reflection_h(reflection_ess_status_label($settings)) ?> · charging <?= reflection_h(reflection_ess_charging_label($settings)) ?><?= $essChargingOverrideActive ? ' · SOC limits bypassed' : ' · minimum ' . (int) ($settings['ess_min_soc_percent'] ?? 20) . '%' ?></small>
             <?php endif; ?>
         </article>
         <article class="metric <?= $essSocIgnored ? 'warning-metric' : '' ?>">
@@ -1242,6 +1257,8 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                     <p class="api-note panel-warning-note">ESS SOC is <?= reflection_h(reflection_ess_status_label($settings)) ?>. SOC limiting is paused, so every configured wake target is eligible until valid SOC data returns.</p>
                 <?php elseif ($wakeTargetCount === 0): ?>
                     <p class="api-note panel-warning-note">No offline wake-enabled machine is allowed by the current ESS SOC. Wake control is disabled until SOC rises, the per-machine minimums are changed, or an eligible machine goes offline.</p>
+                <?php elseif ($essChargingOverrideActive): ?>
+                    <p class="api-note">ESS reports charging and charging override is enabled. SOC minimums are bypassed, so all configured wake targets are eligible.</p>
                 <?php elseif ($allowedActiveWorkers === PHP_INT_MAX): ?>
                     <p class="api-note">SOC is not currently capping workers. All configured wake targets are eligible.</p>
                 <?php else: ?>

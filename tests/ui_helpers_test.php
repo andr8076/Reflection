@@ -32,6 +32,23 @@ worker-b,11:22:33:44:55:66,,1,0",
     'Machine-list formatter should leave the minimum ESS SOC blank when the global fallback is used.'
 );
 
+$formMachines = reflection_parse_machine_form([
+    'machine_pc_id' => ['0' => 'farm1', '1' => 'farm2', '2' => ''],
+    'machine_mac' => ['0' => 'AA:BB:CC:DD:EE:01', '1' => 'AA:BB:CC:DD:EE:02', '2' => ''],
+    'machine_min_soc_percent' => ['0' => '25', '1' => '', '2' => '80'],
+    'machine_wake_enabled' => ['0' => '1'],
+    'machine_shutdown_layer' => ['0' => '2', '1' => '0', '2' => '5'],
+]);
+assertSameValue([
+    ['pc_id' => 'farm1', 'mac' => 'AA:BB:CC:DD:EE:01', 'wake_enabled' => true, 'shutdown_layer' => 2, 'min_soc_percent' => 25, 'soc_margin_percent' => 25],
+    ['pc_id' => 'farm2', 'mac' => 'AA:BB:CC:DD:EE:02', 'wake_enabled' => false, 'shutdown_layer' => 0],
+], $formMachines, 'Machine form parser should preserve blank per-computer SOC as global fallback and unchecked wake boxes as false.');
+assertSameValue(null, reflection_parse_machine_form([]), 'Machine form parser should return null when the new UI fields are not present.');
+assertSameValue('yes', reflection_ess_charging_label(['ess_charging' => true]), 'Charging label helper should show a known charging state.');
+assertSameValue('unknown', reflection_ess_charging_label(['ess_charging' => null]), 'Charging label helper should show unknown when the endpoint does not provide charging.');
+assertSameValue(true, reflection_ess_charging_override_active(['ess_charging_override_enabled' => true, 'ess_soc_status' => 'online', 'ess_charging' => true]), 'Charging override helper should require online ESS charging true.');
+assertSameValue(false, reflection_ess_charging_override_active(['ess_charging_override_enabled' => true, 'ess_soc_status' => 'offline', 'ess_charging' => true]), 'Charging override helper should not trust stale charging state when ESS is offline.');
+
 $defaults = reflection_default_farm_settings();
 assertSameValue(reflection_default_runtime_settings(), $defaults['runtime_defaults'], 'Master config should use canonical runtime defaults.');
 assertSameValue(reflection_default_allowed_tasks(), $defaults['allowed_tasks'], 'Master config should use canonical allowed tasks.');

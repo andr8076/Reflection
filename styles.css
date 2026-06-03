@@ -489,6 +489,10 @@ dd {
     border-left-color: var(--success);
 }
 
+.computer-card.offline {
+    border-left-color: var(--muted);
+}
+
 .computer-card.stale {
     border-left-color: var(--error);
 }
@@ -526,6 +530,11 @@ dd {
 .badge.idle {
     background: var(--success-soft);
     color: var(--success);
+}
+
+.badge.offline {
+    background: var(--panel-soft);
+    color: var(--muted);
 }
 
 .badge.failed,
@@ -2171,4 +2180,41 @@ pre {
     letter-spacing: 0.04em;
     margin-right: 0.35rem;
     text-transform: uppercase;
+}
+
+.inline-panel-head {
+    align-items: flex-start;
+    gap: 1rem;
+}
+
+.machine-editor {
+    margin-top: 0.75rem;
+}
+
+.machine-editor-table th,
+.machine-editor-table td {
+    vertical-align: middle;
+}
+
+.machine-editor-table input[type="text"],
+.machine-editor-table input:not([type]),
+.machine-editor-table input[type="number"] {
+    min-width: 0;
+    width: 100%;
+}
+
+.machine-editor-table input[type="checkbox"] {
+    transform: scale(1.05);
+}
+
+.center-cell {
+    text-align: center;
+}
+
+.legacy-machine-list {
+    display: none;
+}
+
+.charging-metric {
+    border-color: rgba(80, 200, 120, 0.35);
 }
