@@ -44,4 +44,10 @@ assertSameValue(reflection_default_runtime_settings(), $store->effectiveSettings
 @unlink($storePath);
 @unlink($storePath . '.lock');
 
+
+$config = reflection_master_config();
+assertSameValue(true, isset($config['task_specs']['compress_archive']), 'Master should discover task contracts from task module files.');
+assertSameValue('auto', $config['task_specs']['compress_archive']['delivery']['mode'], 'compress_archive delivery should be automatic.');
+assertSameValue('.zip', $config['task_specs']['compress_archive']['delivery']['extension'], 'compress_archive should declare .zip output.');
+
 echo "ui helper tests passed\n";

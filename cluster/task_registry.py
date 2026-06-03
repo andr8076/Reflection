@@ -2,7 +2,7 @@
 
 import importlib.util
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -15,6 +15,7 @@ class TaskDefinition:
     run: Callable[[str, str, bool], Any]
     install: Optional[Callable[[], None]] = None
     description: str = ""
+    spec: dict = field(default_factory=dict)
 
 
 def import_task_file(path: Path):
@@ -45,11 +46,18 @@ def load_task_definition(path: Path, module=None) -> TaskDefinition:
     if installer is not None and not callable(installer):
         raise TypeError(f"{path} install value must be a function when provided.")
 
+    spec = getattr(module, "TASK_SPEC", {})
+    if spec is None:
+        spec = {}
+    if not isinstance(spec, dict):
+        raise TypeError(f"{path} TASK_SPEC must be a dictionary when provided.")
+
     return TaskDefinition(
         name=task_name,
         run=runner,
         install=installer,
         description=str(getattr(module, "DESCRIPTION", "")),
+        spec=spec,
     )
 
 

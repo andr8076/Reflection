@@ -10,6 +10,7 @@ require_once __DIR__ . '/ui_helpers.php';
 reflection_send_security_headers();
 
 $config = reflection_master_config();
+$taskSpecs = is_array($config['task_specs'] ?? null) ? $config['task_specs'] : [];
 $store = reflection_farm_store($config);
 $dataDirectory = dirname((string) $config['storage_path']);
 $storageStore = new StorageStore($dataDirectory, $config['transfer_server'] ?? null);
@@ -110,16 +111,198 @@ function reflection_apply_delivery_template(string $template, string $source): ?
         return null;
     }
 
-    $basename = basename($source);
+    $parts = reflection_split_path_template_parts($source);
+    $rendered = strtr($template, [
+        '{source}' => $parts['source'],
+        '{dir}' => $parts['dir'],
+        '{directory}' => $parts['directory'],
+        '{basename}' => $parts['basename'],
+        '{name}' => $parts['name'],
+        '{ext}' => $parts['ext'],
+        '{dot_ext}' => $parts['dot_ext'],
+    ]);
+
+    if ($parts['dir'] === '' && preg_match('#^\s*\{(?:dir|directory)\}/#', $template) === 1) {
+        $rendered = ltrim($rendered, '/');
+    }
+
+    return reflection_join_template_path($rendered);
+}
+
+
+function reflection_task_spec(string $module, array $config): array
+{
+    $specs = is_array($config['task_specs'] ?? null) ? $config['task_specs'] : [];
+    if (isset($specs[$module]) && is_array($specs[$module])) {
+        return $specs[$module];
+    }
+
+    $description = isset($config['allowed_tasks'][$module]) ? (string) $config['allowed_tasks'][$module] : '';
+    return reflection_normalize_task_spec($module, ['name' => $module, 'description' => $description], $description);
+}
+
+function reflection_task_source_mode(string $module, array $config): string
+{
+    $spec = reflection_task_spec($module, $config);
+    return (string) ($spec['source']['mode'] ?? 'required');
+}
+
+function reflection_task_delivery_mode(string $module, array $config): string
+{
+    $spec = reflection_task_spec($module, $config);
+    return (string) ($spec['delivery']['mode'] ?? 'optional');
+}
+
+function reflection_task_is_control_like(string $module, array $config): bool
+{
+    return reflection_task_source_mode($module, $config) === 'none'
+        && reflection_task_delivery_mode($module, $config) === 'none';
+}
+
+function reflection_task_select_description(string $module, string $fallbackDescription, array $taskSpecs): string
+{
+    if (isset($taskSpecs[$module]['description']) && trim((string) $taskSpecs[$module]['description']) !== '') {
+        return (string) $taskSpecs[$module]['description'];
+    }
+
+    return $fallbackDescription;
+}
+
+function reflection_split_path_template_parts(string $source): array
+{
+    $source = str_replace('\\', '/', trim($source));
+    $sourceForName = rtrim($source, '/');
+    $slash = strrpos($sourceForName, '/');
+    $directory = $slash === false ? '' : substr($sourceForName, 0, $slash);
+    $basename = $slash === false ? $sourceForName : substr($sourceForName, $slash + 1);
+    if ($basename === '') {
+        $basename = 'output';
+    }
+
     $extension = pathinfo($basename, PATHINFO_EXTENSION);
     $name = $extension !== '' ? substr($basename, 0, -strlen($extension) - 1) : $basename;
+    $dotExtension = $extension !== '' ? '.' . $extension : '';
 
-    return strtr($template, [
-        '{source}' => $source,
-        '{basename}' => $basename,
-        '{name}' => $name,
-        '{ext}' => $extension,
-    ]);
+    return [
+        'source' => $source,
+        'dir' => $directory,
+        'directory' => $directory,
+        'basename' => $basename,
+        'name' => $name !== '' ? $name : $basename,
+        'ext' => $extension,
+        'dot_ext' => $dotExtension,
+    ];
+}
+
+function reflection_join_template_path(string $value): string
+{
+    return preg_replace('#(?<!:)//+#', '/', $value) ?? $value;
+}
+
+function reflection_delivery_template_preview(string $template, string $source = 'ftp://storage/incoming/example.dat'): string
+{
+    $preview = reflection_apply_delivery_template($template, $source);
+    return $preview ?? '';
+}
+
+function reflection_path_extension_target(string $path): string
+{
+    $queryPosition = strpos($path, '?');
+    if ($queryPosition !== false) {
+        return substr($path, 0, $queryPosition);
+    }
+
+    $fragmentPosition = strpos($path, '#');
+    if ($fragmentPosition !== false) {
+        return substr($path, 0, $fragmentPosition);
+    }
+
+    return $path;
+}
+
+function reflection_delivery_has_extension(string $path, string $extension): bool
+{
+    $extension = strtolower(trim($extension));
+    if ($extension === '' || $extension === 'source') {
+        return true;
+    }
+    if ($extension[0] !== '.') {
+        $extension = '.' . $extension;
+    }
+
+    $target = strtolower(reflection_path_extension_target($path));
+    return substr($target, -strlen($extension)) === $extension;
+}
+
+function reflection_resolve_task_paths(string $module, ?string $source, ?string $delivery, array $config): array
+{
+    $spec = reflection_task_spec($module, $config);
+    $sourceMode = (string) ($spec['source']['mode'] ?? 'required');
+    $deliverySpec = is_array($spec['delivery'] ?? null) ? $spec['delivery'] : [];
+    $deliveryMode = (string) ($deliverySpec['mode'] ?? 'optional');
+    $template = trim((string) ($deliverySpec['template'] ?? ''));
+    $extension = trim((string) ($deliverySpec['extension'] ?? ''));
+
+    $sourceValue = trim((string) ($source ?? ''));
+    $deliveryValue = trim((string) ($delivery ?? ''));
+
+    if ($sourceMode === 'none') {
+        $sourceValue = '';
+    }
+
+    $sourceError = reflection_path_allowed($sourceValue !== '' ? $sourceValue : null, $sourceMode === 'required');
+    if ($sourceError !== null) {
+        return ['error' => $sourceError, 'source' => null, 'delivery' => null, 'auto_delivery' => false];
+    }
+
+    $autoDelivery = false;
+    if ($deliveryMode === 'none') {
+        $deliveryValue = '';
+    } elseif ($deliveryMode === 'auto' && $deliveryValue === '' && $template !== '') {
+        if ($sourceValue === '') {
+            return ['error' => 'A source path is required before an automatic delivery path can be generated.', 'source' => null, 'delivery' => null, 'auto_delivery' => false];
+        }
+        $deliveryValue = reflection_apply_delivery_template($template, $sourceValue) ?? '';
+        $autoDelivery = true;
+    }
+
+    $deliveryRequired = $deliveryMode === 'required' || ($deliveryMode === 'auto' && $template === '');
+    $deliveryError = reflection_path_allowed($deliveryValue !== '' ? $deliveryValue : null, $deliveryRequired);
+    if ($deliveryError !== null) {
+        return ['error' => $deliveryError, 'source' => null, 'delivery' => null, 'auto_delivery' => $autoDelivery];
+    }
+
+    if ($deliveryValue !== '' && !reflection_delivery_has_extension($deliveryValue, $extension)) {
+        return [
+            'error' => sprintf('%s delivery must end with %s.', $module, $extension),
+            'source' => null,
+            'delivery' => null,
+            'auto_delivery' => $autoDelivery,
+        ];
+    }
+
+    return [
+        'error' => null,
+        'source' => $sourceValue !== '' ? $sourceValue : null,
+        'delivery' => $deliveryValue !== '' ? $deliveryValue : null,
+        'auto_delivery' => $autoDelivery,
+        'spec' => $spec,
+    ];
+}
+
+function reflection_task_contract_summary(array $spec): string
+{
+    $sourceMode = (string) ($spec['source']['mode'] ?? 'required');
+    $delivery = is_array($spec['delivery'] ?? null) ? $spec['delivery'] : [];
+    $deliveryMode = (string) ($delivery['mode'] ?? 'optional');
+    $parts = ['source ' . $sourceMode, 'delivery ' . $deliveryMode];
+    if (!empty($delivery['extension'])) {
+        $parts[] = 'output ' . (string) $delivery['extension'];
+    }
+    if (!empty($delivery['template'])) {
+        $parts[] = 'template ' . (string) $delivery['template'];
+    }
+    return implode(' · ', $parts);
 }
 
 function reflection_uploaded_import_text(string $field): string
@@ -347,8 +530,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $module = trim((string) ($_POST['module'] ?? ''));
     $delivery = trim((string) ($_POST[$formAction === 'bulk' ? 'bulk_delivery' : 'single_delivery'] ?? ''));
     $overwriteAllowed = isset($_POST['overwrite_allowed']);
-    $controlTasks = ['noop', 'status', 'reload_tasks', 'shutdown', 'update_worker', 'wake_farm'];
+    $controlTasks = ['noop', 'status', 'reload_tasks', 'shutdown', 'update_worker', 'wake_farm', 'storage_test'];
     $isControlTask = in_array($module, $controlTasks, true);
+    $taskSpec = $module !== '' ? reflection_task_spec($module, $config) : [];
     $transferServerId = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($_POST['transfer_server_id'] ?? '')) ?: '';
     $transferExtra = (!$isControlTask && $transferServerId !== '') ? ['transfer_server_id' => $transferServerId] : [];
 
@@ -479,17 +663,26 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     continue;
                 }
 
-                $deliveryPath = reflection_apply_delivery_template($delivery, $source);
                 $lineLabel = 'line ' . ((int) $lineNumber + 1) . ' (' . $source . ')';
-                $pathError = reflection_path_allowed($source, !$isControlTask)
-                    ?? reflection_path_allowed($deliveryPath, false);
-
-                if ($pathError !== null) {
-                    $skipped[] = $lineLabel . ': ' . $pathError;
+                $resolvedPaths = reflection_resolve_task_paths($module, $source, $delivery, $config);
+                if (($resolvedPaths['error'] ?? null) !== null) {
+                    $skipped[] = $lineLabel . ': ' . (string) $resolvedPaths['error'];
                     continue;
                 }
 
-                $store->createJob($module, $source, $deliveryPath, $overwriteAllowed, $transferExtra);
+                $jobExtra = $transferExtra;
+                $jobExtra['task_contract'] = reflection_task_contract_summary($resolvedPaths['spec'] ?? reflection_task_spec($module, $config));
+                if (!empty($resolvedPaths['auto_delivery'])) {
+                    $jobExtra['delivery_auto_generated'] = true;
+                }
+
+                $store->createJob(
+                    $module,
+                    $resolvedPaths['source'] ?? null,
+                    $resolvedPaths['delivery'] ?? null,
+                    $overwriteAllowed,
+                    $jobExtra
+                );
                 $queued++;
             }
 
@@ -514,20 +707,33 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         }
     } else {
         $source = trim((string) ($_POST['single_source'] ?? ''));
+        $resolvedPaths = ['error' => null, 'source' => null, 'delivery' => null, 'auto_delivery' => false, 'spec' => $taskSpec];
         $error = reflection_validate_task($module, $config)
-            ?? ((!$isControlTask && $transferServerId !== '' && !in_array($transferServerId, $storageServerIds, true)) ? 'Choose an available storage server.' : null)
-            ?? reflection_path_allowed($source !== '' ? $source : null, !$isControlTask)
-            ?? reflection_path_allowed($delivery !== '' ? $delivery : null, false);
+            ?? ((!$isControlTask && $transferServerId !== '' && !in_array($transferServerId, $storageServerIds, true)) ? 'Choose an available storage server.' : null);
 
         if ($error === null) {
+            $resolvedPaths = reflection_resolve_task_paths($module, $source, $delivery, $config);
+            $error = $resolvedPaths['error'] ?? null;
+        }
+
+        if ($error === null) {
+            $jobExtra = $transferExtra;
+            $jobExtra['task_contract'] = reflection_task_contract_summary($resolvedPaths['spec'] ?? reflection_task_spec($module, $config));
+            if (!empty($resolvedPaths['auto_delivery'])) {
+                $jobExtra['delivery_auto_generated'] = true;
+            }
+
             $job = $store->createJob(
                 $module,
-                $source !== '' ? $source : null,
-                $delivery !== '' ? $delivery : null,
+                $resolvedPaths['source'] ?? null,
+                $resolvedPaths['delivery'] ?? null,
                 $overwriteAllowed,
-                $transferExtra
+                $jobExtra
             );
             $message = 'Queued ' . $job['task_id'] . ' for ' . $job['module'] . '.';
+            if (!empty($resolvedPaths['auto_delivery']) && !empty($job['delivery'])) {
+                $message .= ' Delivery auto-generated: ' . $job['delivery'] . '.';
+            }
             if (!$isControlTask) {
                 $notice = reflection_auto_wake_notice($store, (int) ($config['stale_after_seconds'] ?? 900), 'queue_single');
                 if ($notice !== null) {
@@ -648,7 +854,13 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
             <td><?= reflection_h($job['module'] ?? '—') ?></td>
             <td><span class="badge <?= reflection_h(reflection_status_class($jobStatusValue)) ?>"><?= reflection_h($jobStatusValue) ?></span></td>
             <td><?= reflection_h($job['worker'] ?? '—') ?></td>
-            <td class="path-cell"><code title="<?= reflection_h($job['source'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['source'] ?? '—')) ?></code><br><code title="<?= reflection_h($job['delivery'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['delivery'] ?? '—')) ?></code></td>
+            <td class="path-cell">
+                <div><span class="subtle-label">Source</span> <code title="<?= reflection_h($job['source'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['source'] ?? '—')) ?></code></div>
+                <div><span class="subtle-label">Delivery<?= !empty($job['delivery_auto_generated']) ? ' auto' : '' ?></span> <code title="<?= reflection_h($job['delivery'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['delivery'] ?? '—')) ?></code></div>
+                <?php if (!empty($job['task_contract'])): ?>
+                    <small><?= reflection_h($job['task_contract']) ?></small>
+                <?php endif; ?>
+            </td>
             <td>
                 <span title="<?= reflection_h($job['created_at'] ?? '') ?>">Created <?= reflection_h(reflection_relative_time($job['created_at'] ?? null)) ?></span><br>
                 <span title="<?= reflection_h($job['started_at'] ?? '') ?>">Started <?= reflection_h(reflection_relative_time($job['started_at'] ?? null)) ?></span><br>
@@ -934,13 +1146,19 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                 </label>
                 <label>
                     Task
-                    <select name="module" required>
+                    <select name="module" id="task-module" required>
                         <?php foreach ($config['allowed_tasks'] as $taskName => $description): ?>
-                            <option value="<?= reflection_h($taskName) ?>"><?= reflection_h($taskName) ?> — <?= reflection_h($description) ?></option>
+                            <?php $selectDescription = reflection_task_select_description((string) $taskName, (string) $description, $taskSpecs); ?>
+                            <option value="<?= reflection_h($taskName) ?>"><?= reflection_h($taskName) ?> — <?= reflection_h($selectDescription) ?></option>
                         <?php endforeach; ?>
                     </select>
                 </label>
-                <label>
+                <div id="task-contract-data" data-task-specs="<?= reflection_h(json_encode($taskSpecs, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?>"></div>
+                <section class="task-contract" id="task-contract" aria-live="polite">
+                    <strong id="task-contract-title">Task contract</strong>
+                    <small id="task-contract-summary">The selected task declares its required source, delivery behavior, and output format.</small>
+                </section>
+                <label id="storage-server-field">
                     Storage server
                     <select name="transfer_server_id">
                         <option value="">Use first available/default server</option>
@@ -951,30 +1169,32 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                     <small>Choose which FTP/SFTP server plain source/delivery paths belong to. Worker usernames/passwords stay on each worker. <a href="storage_servers.php">Add or edit storage servers</a>.</small>
                 </label>
                 <div class="mode-fields mode-single">
-                    <label>
-                        Source path or URI
-                        <input name="single_source" placeholder="ftp://farm.local/incoming/source.dat">
-                        <small>Use an FTP URL or any path the worker can read. Control tasks can leave this blank.</small>
+                    <label id="single-source-field">
+                        <span id="single-source-label">Source path or URI</span>
+                        <input name="single_source" id="single-source-input" placeholder="ftp://farm.local/incoming/source.dat">
+                        <small id="single-source-help">Use an FTP URL or any path the worker can read. Control tasks can leave this blank.</small>
                     </label>
-                    <label>
-                        Delivery path or URI
-                        <input name="single_delivery" placeholder="ftp://farm.local/outputs/result.txt">
-                        <small>Optional. The master passes this value through; workers do the writing.</small>
+                    <label id="single-delivery-field">
+                        <span id="single-delivery-label">Delivery path or URI</span>
+                        <input name="single_delivery" id="single-delivery-input" placeholder="ftp://farm.local/outputs/result.txt">
+                        <small id="single-delivery-help">Optional. The master passes this value through; workers do the writing.</small>
                     </label>
+                    <p class="api-note" id="single-delivery-preview"></p>
                 </div>
                 <div class="mode-fields mode-bulk" hidden>
-                    <label>
-                        Source list
-                        <textarea name="source_list" rows="8" placeholder="ftp://farm.local/incoming/img001.png&#10;ftp://farm.local/incoming/img002.png"></textarea>
+                    <label id="bulk-source-field">
+                        <span id="bulk-source-label">Source list</span>
+                        <textarea name="source_list" id="bulk-source-input" rows="8" placeholder="ftp://farm.local/incoming/img001.png&#10;ftp://farm.local/incoming/img002.png"></textarea>
+                        <small id="bulk-source-help">One source per line, or paste a JSON array.</small>
                     </label>
-                    <label>
+                    <label id="bulk-upload-field">
                         Upload list file
                         <input type="file" name="source_file" accept=".txt,.list,.json,text/plain,application/json">
                     </label>
-                    <label>
-                        Delivery template
-                        <input name="bulk_delivery" placeholder="ftp://farm.local/outputs/{name}.out">
-                        <small>Supports <code>{source}</code>, <code>{basename}</code>, <code>{name}</code>, and <code>{ext}</code>.</small>
+                    <label id="bulk-delivery-field">
+                        <span id="bulk-delivery-label">Delivery template</span>
+                        <input name="bulk_delivery" id="bulk-delivery-input" placeholder="ftp://farm.local/outputs/{name}.out">
+                        <small id="bulk-delivery-help">Supports <code>{source}</code>, <code>{dir}</code>, <code>{basename}</code>, <code>{name}</code>, <code>{ext}</code>, and <code>{dot_ext}</code>.</small>
                     </label>
                 </div>
                 <label class="check-row">
@@ -1141,7 +1361,13 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                         <td><?= reflection_h($job['module'] ?? '—') ?></td>
                         <td><span class="badge <?= reflection_h(reflection_status_class($jobStatusValue)) ?>"><?= reflection_h($jobStatusValue) ?></span></td>
                         <td><?= reflection_h($job['worker'] ?? '—') ?></td>
-                        <td class="path-cell"><code title="<?= reflection_h($job['source'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['source'] ?? '—')) ?></code><br><code title="<?= reflection_h($job['delivery'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['delivery'] ?? '—')) ?></code></td>
+                        <td class="path-cell">
+                <div><span class="subtle-label">Source</span> <code title="<?= reflection_h($job['source'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['source'] ?? '—')) ?></code></div>
+                <div><span class="subtle-label">Delivery<?= !empty($job['delivery_auto_generated']) ? ' auto' : '' ?></span> <code title="<?= reflection_h($job['delivery'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['delivery'] ?? '—')) ?></code></div>
+                <?php if (!empty($job['task_contract'])): ?>
+                    <small><?= reflection_h($job['task_contract']) ?></small>
+                <?php endif; ?>
+            </td>
                         <td>
                             <span title="<?= reflection_h($job['created_at'] ?? '') ?>">Created <?= reflection_h(reflection_relative_time($job['created_at'] ?? null)) ?></span><br>
                             <span title="<?= reflection_h($job['started_at'] ?? '') ?>">Started <?= reflection_h(reflection_relative_time($job['started_at'] ?? null)) ?></span><br>

@@ -1869,6 +1869,11 @@ class FarmAgent:
         total, used, free = shutil.disk_usage(tempfile.gettempdir())
         return {
             "tasks": sorted(self.task_registry),
+            "task_specs": {
+                name: definition.spec
+                for name, definition in self.task_registry.items()
+                if getattr(definition, "spec", None)
+            },
             "can_send_wol": True,
             "ffmpeg": shutil.which("ffmpeg") is not None,
             "ffprobe": shutil.which("ffprobe") is not None,

@@ -1,9 +1,34 @@
 """Example render task placeholder."""
 
+import json
 import logging
 
 TASK_NAME = "render_frame"
 DESCRIPTION = "Render a frame with Blender, FFmpeg, or another configured renderer."
+TASK_SPEC_JSON = r'''
+{
+  "name": "render_frame",
+  "description": "Render a frame with the configured worker renderer.",
+  "source": {
+    "mode": "required",
+    "label": "Render source",
+    "help": "Scene/project input for the renderer."
+  },
+  "delivery": {
+    "mode": "auto",
+    "label": "Rendered frame output",
+    "help": "Automatically written beside the source as {name}.png unless overridden.",
+    "template": "{dir}/{name}.png",
+    "extension": ".png"
+  },
+  "output": {
+    "kind": "file",
+    "extension": ".png"
+  }
+}
+'''
+TASK_SPEC = json.loads(TASK_SPEC_JSON)
+
 
 
 def install():

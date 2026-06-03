@@ -11,6 +11,30 @@ from typing import Any
 
 TASK_NAME = "h265_encode"
 DESCRIPTION = "Transcode video files to H.265/HEVC MP4 using FFmpeg with optional hardware acceleration."
+TASK_SPEC_JSON = r'''
+{
+  "name": "h265_encode",
+  "description": "Transcode video files to H.265/HEVC MP4 with FFmpeg.",
+  "source": {
+    "mode": "required",
+    "label": "Source video or folder",
+    "help": "A video file or folder containing video files."
+  },
+  "delivery": {
+    "mode": "auto",
+    "label": "H.265 MP4 output",
+    "help": "Automatically written beside each source as {name}_h265.mp4 unless overridden.",
+    "template": "{dir}/{name}_h265.mp4",
+    "extension": ".mp4"
+  },
+  "output": {
+    "kind": "file_or_folder",
+    "extension": ".mp4"
+  }
+}
+'''
+TASK_SPEC = json.loads(TASK_SPEC_JSON)
+
 
 COMMON_VIDEO_EXTENSIONS = {
     "mp4",

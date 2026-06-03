@@ -217,7 +217,7 @@ function reflection_default_allowed_tasks(): array
         'dummy_task' => 'Placeholder pipeline test task.',
         'render_frame' => 'Render a frame with the configured worker renderer.',
         'h265_encode' => 'Transcode video files to H.265/HEVC MP4 with FFmpeg.',
-        'compress_archive' => 'Compress a file or directory into a small .tar.xz archive with hardware-aware limits.',
+        'compress_archive' => 'Compress a file or directory into a .zip archive.',
         'invert_image' => 'Invert an image while preserving alpha transparency when possible.',
         'noop' => 'Built-in worker connectivity check.',
         'status' => 'Built-in worker health snapshot.',
@@ -227,6 +227,139 @@ function reflection_default_allowed_tasks(): array
         'wake_farm' => 'Ask a worker to send Wake-on-LAN packets to configured farm computers.',
         'storage_test' => 'Ask a worker to verify read/write/rename/delete access to a configured storage server.',
     ];
+}
+
+
+function reflection_builtin_task_specs(): array
+{
+    $hidden = static function (string $description): array {
+        return [
+            'description' => $description,
+            'source' => ['mode' => 'none', 'label' => 'Source', 'help' => 'Not used by this control task.'],
+            'delivery' => ['mode' => 'none', 'label' => 'Delivery', 'help' => 'Not used by this control task.'],
+            'output' => ['kind' => 'none'],
+        ];
+    };
+
+    return [
+        'noop' => $hidden('Built-in worker connectivity check.'),
+        'reload_tasks' => $hidden('Ask a worker to reload its local task registry.'),
+        'shutdown' => $hidden('Ask a worker to power off after reporting success.'),
+        'wake_farm' => $hidden('Ask a worker to send Wake-on-LAN packets to configured farm computers.'),
+        'storage_test' => $hidden('Ask a worker to verify storage server access.'),
+        'update_worker' => [
+            'description' => 'Ask a worker to update itself and reboot.',
+            'source' => ['mode' => 'none', 'label' => 'Source', 'help' => 'The master supplies the target version automatically.'],
+            'delivery' => ['mode' => 'none', 'label' => 'Delivery', 'help' => 'Not used by this control task.'],
+            'output' => ['kind' => 'none'],
+        ],
+        'status' => [
+            'description' => 'Built-in worker health snapshot.',
+            'source' => ['mode' => 'none', 'label' => 'Source', 'help' => 'Not used by this control task.'],
+            'delivery' => ['mode' => 'optional', 'label' => 'Optional status file', 'help' => 'Optional local path where the worker can write a JSON status snapshot.'],
+            'output' => ['kind' => 'optional_file', 'extension' => '.json'],
+        ],
+    ];
+}
+
+function reflection_extract_task_spec_json(string $taskFile): ?array
+{
+    if (!is_file($taskFile) || !is_readable($taskFile)) {
+        return null;
+    }
+
+    $source = (string) file_get_contents($taskFile);
+    if ($source === '') {
+        return null;
+    }
+
+    if (preg_match('/TASK_SPEC_JSON\s*=\s*r?([\'\"]{3})(.*?)\1/s', $source, $matches) !== 1) {
+        return null;
+    }
+
+    $decoded = json_decode($matches[2], true);
+    return is_array($decoded) ? $decoded : null;
+}
+
+function reflection_normalize_task_spec(string $name, array $spec, ?string $fallbackDescription = null): array
+{
+    $source = is_array($spec['source'] ?? null) ? $spec['source'] : [];
+    $delivery = is_array($spec['delivery'] ?? null) ? $spec['delivery'] : [];
+    $output = is_array($spec['output'] ?? null) ? $spec['output'] : [];
+
+    $sourceMode = strtolower((string) ($source['mode'] ?? 'required'));
+    if (!in_array($sourceMode, ['required', 'optional', 'none'], true)) {
+        $sourceMode = 'required';
+    }
+
+    $deliveryMode = strtolower((string) ($delivery['mode'] ?? 'optional'));
+    if (!in_array($deliveryMode, ['required', 'optional', 'auto', 'none'], true)) {
+        $deliveryMode = 'optional';
+    }
+
+    $extension = trim((string) ($delivery['extension'] ?? ($output['extension'] ?? '')));
+    if ($extension !== '' && $extension !== 'source' && $extension[0] !== '.') {
+        $extension = '.' . $extension;
+    }
+
+    $normalized = [
+        'name' => (string) ($spec['name'] ?? $name),
+        'description' => (string) ($spec['description'] ?? $fallbackDescription ?? ''),
+        'source' => [
+            'mode' => $sourceMode,
+            'label' => (string) ($source['label'] ?? 'Source path or URI'),
+            'help' => (string) ($source['help'] ?? ''),
+        ],
+        'delivery' => [
+            'mode' => $deliveryMode,
+            'label' => (string) ($delivery['label'] ?? 'Delivery path or URI'),
+            'help' => (string) ($delivery['help'] ?? ''),
+            'template' => trim((string) ($delivery['template'] ?? '')),
+            'extension' => $extension,
+        ],
+        'output' => $output,
+    ];
+
+    if ($normalized['delivery']['mode'] === 'auto' && $normalized['delivery']['template'] === '') {
+        $normalized['delivery']['mode'] = 'optional';
+    }
+
+    return $normalized;
+}
+
+function reflection_discover_task_specs(string $tasksDirectory, array $allowedTasks = []): array
+{
+    $specs = reflection_builtin_task_specs();
+
+    if (is_dir($tasksDirectory)) {
+        foreach (glob($tasksDirectory . DIRECTORY_SEPARATOR . '*.py') ?: [] as $taskFile) {
+            $spec = reflection_extract_task_spec_json($taskFile);
+            if ($spec === null) {
+                continue;
+            }
+
+            $name = trim((string) ($spec['name'] ?? basename($taskFile, '.py')));
+            if ($name === '') {
+                continue;
+            }
+
+            $fallbackDescription = isset($allowedTasks[$name]) ? (string) $allowedTasks[$name] : null;
+            $specs[$name] = reflection_normalize_task_spec($name, $spec, $fallbackDescription);
+        }
+    }
+
+    foreach ($allowedTasks as $name => $description) {
+        $taskName = (string) $name;
+        if (!isset($specs[$taskName])) {
+            $specs[$taskName] = reflection_normalize_task_spec($taskName, [
+                'name' => $taskName,
+                'description' => (string) $description,
+            ], (string) $description);
+        }
+    }
+
+    ksort($specs);
+    return $specs;
 }
 
 function reflection_default_farm_settings(): array
@@ -366,6 +499,9 @@ function reflection_master_config(?array $farmSettings = null): array
         $fallbackDirectory,
     );
 
+    $allowedTasks = is_array($settings['allowed_tasks'] ?? null) ? $settings['allowed_tasks'] : [];
+    $taskSpecs = reflection_discover_task_specs($repoRoot . DIRECTORY_SEPARATOR . 'cluster' . DIRECTORY_SEPARATOR . 'tasks', $allowedTasks);
+
     return [
         'farm_id' => (string) ($settings['farm_id'] ?? 'default'),
         'farm_name' => (string) ($settings['farm_name'] ?? 'Reflection Farm'),
@@ -377,7 +513,8 @@ function reflection_master_config(?array $farmSettings = null): array
             ? $requiredVersion
             : $detectedVersion,
         'runtime_defaults' => is_array($settings['runtime_defaults'] ?? null) ? $settings['runtime_defaults'] : [],
-        'allowed_tasks' => is_array($settings['allowed_tasks'] ?? null) ? $settings['allowed_tasks'] : [],
+        'allowed_tasks' => $allowedTasks,
+        'task_specs' => $taskSpecs,
         'stale_after_seconds' => (int) ($settings['stale_after_seconds'] ?? (15 * 60)),
     ];
 }

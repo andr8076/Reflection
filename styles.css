@@ -2144,3 +2144,31 @@ pre {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
+
+.task-contract {
+    background: var(--panel-soft);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    display: grid;
+    gap: 0.25rem;
+    padding: 0.85rem 1rem;
+}
+
+.task-contract strong {
+    color: var(--text);
+}
+
+.task-contract small {
+    color: var(--muted);
+    line-height: 1.4;
+}
+
+.subtle-label {
+    color: var(--muted);
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    margin-right: 0.35rem;
+    text-transform: uppercase;
+}

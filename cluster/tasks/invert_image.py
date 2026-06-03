@@ -1,5 +1,6 @@
 """Invert the colors of an image file."""
 
+import json
 import importlib.util
 import logging
 import os
@@ -11,6 +12,29 @@ TASK_NAME = "invert_image"
 DESCRIPTION = (
     "Invert an image's colors while preserving alpha transparency when possible."
 )
+TASK_SPEC_JSON = r'''
+{
+  "name": "invert_image",
+  "description": "Invert an image while preserving alpha transparency when possible.",
+  "source": {
+    "mode": "required",
+    "label": "Source image",
+    "help": "Image file the worker can read."
+  },
+  "delivery": {
+    "mode": "auto",
+    "label": "Inverted image output",
+    "help": "Automatically written beside the source as {name}_inverted{dot_ext} unless overridden.",
+    "template": "{dir}/{name}_inverted{dot_ext}"
+  },
+  "output": {
+    "kind": "file",
+    "extension": "source"
+  }
+}
+'''
+TASK_SPEC = json.loads(TASK_SPEC_JSON)
+
 
 SUPPORTED_STDLIB_FORMATS = {".bmp"}
 PILLOW_PACKAGE_HINT = "Install Pillow for PNG, JPEG, TIFF, WebP, and other image formats."

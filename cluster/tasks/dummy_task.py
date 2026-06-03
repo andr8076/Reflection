@@ -1,10 +1,35 @@
 """Example task that writes a processed output file."""
 
+import json
 import logging
 import os
 
 TASK_NAME = "dummy_task"
 DESCRIPTION = "A placeholder module to test the pipeline."
+TASK_SPEC_JSON = r'''
+{
+  "name": "dummy_task",
+  "description": "Placeholder pipeline test task.",
+  "source": {
+    "mode": "required",
+    "label": "Source value",
+    "help": "A test source value or path."
+  },
+  "delivery": {
+    "mode": "auto",
+    "label": "Dummy output",
+    "help": "Automatically written beside the source as {name}.out unless overridden.",
+    "template": "{dir}/{name}.out",
+    "extension": ".out"
+  },
+  "output": {
+    "kind": "file",
+    "extension": ".out"
+  }
+}
+'''
+TASK_SPEC = json.loads(TASK_SPEC_JSON)
+
 
 
 def install():

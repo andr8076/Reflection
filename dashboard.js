@@ -2,9 +2,162 @@
     var mode = document.getElementById('submit-mode');
     var button = document.getElementById('submit-button');
     var groups = document.querySelectorAll('.mode-fields');
+    var moduleSelect = document.getElementById('task-module');
+    var specData = document.getElementById('task-contract-data');
+    var specs = {};
+
+    if (specData && specData.getAttribute('data-task-specs')) {
+        try {
+            specs = JSON.parse(specData.getAttribute('data-task-specs')) || {};
+        } catch (error) {
+            console.error('Could not parse task specs:', error);
+        }
+    }
+
     if (!mode || !button) {
         return;
     }
+
+    function selectedSpec() {
+        var moduleName = moduleSelect ? moduleSelect.value : '';
+        return specs[moduleName] || {};
+    }
+
+    function field(id) {
+        return document.getElementById(id);
+    }
+
+    function setLabelText(id, text) {
+        var element = field(id);
+        if (element && text) {
+            element.textContent = text;
+        }
+    }
+
+    function setHelpText(id, text) {
+        var element = field(id);
+        if (element) {
+            element.textContent = text || '';
+        }
+    }
+
+    function setFieldHidden(id, hidden) {
+        var element = field(id);
+        if (!element) {
+            return;
+        }
+        element.hidden = !!hidden;
+        element.querySelectorAll('input, textarea, select').forEach(function (input) {
+            input.disabled = !!hidden || !!element.closest('[hidden]');
+        });
+    }
+
+    function pathParts(source) {
+        source = String(source || '').replace(/\\/g, '/').trim();
+        var sourceForName = source.replace(/\/+$/g, '');
+        var slash = sourceForName.lastIndexOf('/');
+        var dir = slash >= 0 ? sourceForName.slice(0, slash) : '';
+        var basename = slash >= 0 ? sourceForName.slice(slash + 1) : sourceForName;
+        if (!basename) {
+            basename = 'output';
+        }
+        var dot = basename.lastIndexOf('.');
+        var ext = dot > 0 ? basename.slice(dot + 1) : '';
+        var dotExt = ext ? '.' + ext : '';
+        var name = dot > 0 ? basename.slice(0, dot) : basename;
+        return {
+            source: source,
+            dir: dir,
+            directory: dir,
+            basename: basename,
+            name: name || basename,
+            ext: ext,
+            dot_ext: dotExt
+        };
+    }
+
+    function renderTemplate(template, source) {
+        var parts = pathParts(source || 'ftp://storage/incoming/example.dat');
+        var rendered = String(template || '').replace(/\{source\}|\{dir\}|\{directory\}|\{basename\}|\{name\}|\{ext\}|\{dot_ext\}/g, function (token) {
+            return parts[token.slice(1, -1)] || '';
+        });
+        if (!parts.dir && /^\s*\{(?:dir|directory)\}\//.test(String(template || ''))) {
+            rendered = rendered.replace(/^\/+/, '');
+        }
+        return rendered.replace(/([^:])\/+/g, '$1/');
+    }
+
+    function updateContract() {
+        var spec = selectedSpec();
+        var source = spec.source || {};
+        var delivery = spec.delivery || {};
+        var output = spec.output || {};
+        var sourceMode = source.mode || 'required';
+        var deliveryMode = delivery.mode || 'optional';
+        var title = field('task-contract-title');
+        var summary = field('task-contract-summary');
+        var moduleName = moduleSelect ? moduleSelect.value : 'task';
+        var parts = [];
+
+        if (title) {
+            title.textContent = moduleName + ' contract';
+        }
+        parts.push('source ' + sourceMode);
+        parts.push('delivery ' + deliveryMode);
+        if (delivery.extension) {
+            parts.push('must end with ' + delivery.extension);
+        } else if (output.extension === 'source') {
+            parts.push('keeps source extension');
+        }
+        if (delivery.template) {
+            parts.push('template ' + delivery.template);
+        }
+        if (summary) {
+            summary.textContent = parts.join(' · ');
+        }
+
+        setLabelText('single-source-label', source.label || 'Source path or URI');
+        setLabelText('bulk-source-label', source.label ? source.label + ' list' : 'Source list');
+        setHelpText('single-source-help', source.help || 'Use an FTP URL or any path the worker can read.');
+        setHelpText('bulk-source-help', source.help ? source.help + ' One per line.' : 'One source per line, or paste a JSON array.');
+
+        setLabelText('single-delivery-label', delivery.label || 'Delivery path or URI');
+        setLabelText('bulk-delivery-label', delivery.mode === 'auto' ? 'Delivery override template' : 'Delivery template');
+        setHelpText('single-delivery-help', delivery.help || 'Optional. The master passes this value through; workers do the writing.');
+        setHelpText('bulk-delivery-help', delivery.help || 'Supports {source}, {dir}, {basename}, {name}, {ext}, and {dot_ext}.');
+
+        var sourceHidden = sourceMode === 'none';
+        var deliveryHidden = deliveryMode === 'none' || deliveryMode === 'auto';
+        var storageHidden = sourceMode === 'none' && (deliveryMode === 'none' || deliveryMode === 'optional');
+        setFieldHidden('single-source-field', sourceHidden);
+        setFieldHidden('bulk-source-field', sourceHidden);
+        setFieldHidden('bulk-upload-field', sourceHidden);
+        setFieldHidden('single-delivery-field', deliveryHidden);
+        setFieldHidden('bulk-delivery-field', deliveryHidden);
+        setFieldHidden('storage-server-field', storageHidden);
+
+        var singleSource = field('single-source-input');
+        var singlePreview = field('single-delivery-preview');
+        if (singlePreview) {
+            if (deliveryMode === 'auto' && delivery.template) {
+                singlePreview.textContent = 'Delivery will be generated automatically, for example: ' + renderTemplate(delivery.template, singleSource ? singleSource.value : '');
+                singlePreview.hidden = false;
+            } else {
+                singlePreview.textContent = '';
+                singlePreview.hidden = true;
+            }
+        }
+
+        var singleDelivery = field('single-delivery-input');
+        var bulkDelivery = field('bulk-delivery-input');
+        if (singleDelivery && delivery.template) {
+            singleDelivery.placeholder = renderTemplate(delivery.template, singleSource ? singleSource.value : '');
+        }
+        if (bulkDelivery && delivery.template) {
+            bulkDelivery.placeholder = delivery.template;
+        }
+    }
+
     function syncMode() {
         var selected = mode.value;
         groups.forEach(function (group) {
@@ -15,8 +168,17 @@
             });
         });
         button.textContent = selected === 'bulk' ? 'Import jobs' : 'Queue job';
+        updateContract();
     }
+
     mode.addEventListener('change', syncMode);
+    if (moduleSelect) {
+        moduleSelect.addEventListener('change', updateContract);
+    }
+    var singleSourceInput = field('single-source-input');
+    if (singleSourceInput) {
+        singleSourceInput.addEventListener('input', updateContract);
+    }
     syncMode();
 }());
 
