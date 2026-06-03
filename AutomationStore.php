@@ -13,10 +13,12 @@ final class AutomationStore
     private string $lockPath;
     private string $dueCheckLockPath;
     private string $dueCheckStatePath;
+    private array $taskSpecs;
 
-    public function __construct(string $directory)
+    public function __construct(string $directory, array $taskSpecs = [])
     {
         $this->directory = $directory;
+        $this->taskSpecs = $taskSpecs;
         $this->rulesPath = $directory . DIRECTORY_SEPARATOR . 'automation_rules.json';
         $this->statePath = $directory . DIRECTORY_SEPARATOR . 'automation_state.json';
         $this->runLogPath = $directory . DIRECTORY_SEPARATOR . 'automation_runs.jsonl';
@@ -216,7 +218,13 @@ final class AutomationStore
         if (in_array((string) ($rule['command_filter_mode'] ?? 'disabled'), ['output_matches', 'output_not_matches'], true) && trim((string) ($rule['command_filter_regex'] ?? '')) === '') {
             $errors[] = 'Command output modes require a command output regex.';
         }
-        if (($rule['delivery_mode'] ?? 'template') === 'same_as_source' && empty($rule['overwrite_allowed']) && trim((string) ($rule['output_suffix'] ?? '')) === '') {
+        $taskDelivery = $this->taskDeliverySpec((string) ($rule['module'] ?? ''));
+        $taskAutoTemplate = $this->taskAutoDeliveryTemplate($taskDelivery);
+        $customDeliveryTemplate = trim((string) ($rule['delivery_template'] ?? ''));
+        $usesTaskAutoDelivery = $taskAutoTemplate !== ''
+            && (($rule['delivery_mode'] ?? 'template') !== 'template' || $customDeliveryTemplate === '');
+
+        if (!$usesTaskAutoDelivery && ($rule['delivery_mode'] ?? 'template') === 'same_as_source' && empty($rule['overwrite_allowed']) && trim((string) ($rule['output_suffix'] ?? '')) === '') {
             $errors[] = 'Same-as-source delivery without overwrite requires an output suffix.';
         }
 
@@ -224,11 +232,22 @@ final class AutomationStore
             (string) ($rule['source_template'] ?? '{worker_path}'),
             'Source template'
         ));
-        if (($rule['delivery_mode'] ?? 'template') === 'template') {
+
+        if ($usesTaskAutoDelivery) {
+            $errors = array_merge($errors, $this->templateValidationErrors($taskAutoTemplate, 'Task automatic delivery template'));
+            $requiredExtension = $this->taskDeliveryExtension($taskDelivery);
+            if (!$this->templateEndsWithExtension($taskAutoTemplate, $requiredExtension)) {
+                $errors[] = 'Task automatic delivery template for ' . (string) ($rule['module'] ?? '') . ' must end with ' . $requiredExtension . '.';
+            }
+        } elseif (($rule['delivery_mode'] ?? 'template') === 'template') {
             $errors = array_merge($errors, $this->templateValidationErrors(
-                (string) ($rule['delivery_template'] ?? ''),
+                $customDeliveryTemplate,
                 'Delivery template'
             ));
+            $requiredExtension = $this->taskDeliveryExtension($taskDelivery);
+            if ($customDeliveryTemplate !== '' && !$this->templateEndsWithExtension($customDeliveryTemplate, $requiredExtension)) {
+                $errors[] = (string) ($rule['module'] ?? 'Task') . ' delivery template must end with ' . $requiredExtension . ', or leave it blank to use the task automatic template.';
+            }
         }
         if (($rule['command_filter_mode'] ?? 'disabled') !== 'disabled') {
             $errors = array_merge($errors, $this->templateValidationErrors(
@@ -929,6 +948,14 @@ final class AutomationStore
 
     private function buildDelivery(array $rule, array $candidate, string $source): string
     {
+        $taskDelivery = $this->taskDeliverySpec((string) ($rule['module'] ?? ''));
+        $taskAutoTemplate = $this->taskAutoDeliveryTemplate($taskDelivery);
+        $customDeliveryTemplate = trim((string) ($rule['delivery_template'] ?? ''));
+
+        if ($taskAutoTemplate !== '' && (($rule['delivery_mode'] ?? 'template') !== 'template' || $customDeliveryTemplate === '')) {
+            return $this->applyPathTemplateToPath($taskAutoTemplate, $source);
+        }
+
         if (($rule['delivery_mode'] ?? 'template') === 'same_as_source') {
             if (!empty($rule['overwrite_allowed'])) {
                 return $source;
@@ -936,7 +963,87 @@ final class AutomationStore
             return $this->siblingPathWithSuffix($source, (string) ($rule['output_suffix'] ?? '_processed'));
         }
 
-        return $this->applyPathTemplate((string) ($rule['delivery_template'] ?? ''), $candidate);
+        return $this->applyPathTemplate($customDeliveryTemplate, $candidate);
+    }
+
+    private function taskDeliverySpec(string $module): array
+    {
+        $spec = $this->taskSpecs[$module]['delivery'] ?? [];
+        return is_array($spec) ? $spec : [];
+    }
+
+    private function taskAutoDeliveryTemplate(array $deliverySpec): string
+    {
+        $mode = strtolower((string) ($deliverySpec['mode'] ?? ''));
+        $template = trim((string) ($deliverySpec['template'] ?? ''));
+        return $mode === 'auto' && $template !== '' ? $template : '';
+    }
+
+    private function taskDeliveryExtension(array $deliverySpec): string
+    {
+        $extension = trim((string) ($deliverySpec['extension'] ?? ''));
+        if ($extension === '' || $extension === 'source') {
+            return '';
+        }
+        return $extension[0] === '.' ? strtolower($extension) : '.' . strtolower($extension);
+    }
+
+    private function templateEndsWithExtension(string $template, string $extension): bool
+    {
+        $extension = strtolower(trim($extension));
+        if ($extension === '') {
+            return true;
+        }
+        $template = strtolower(trim($template));
+        return substr($template, -strlen($extension)) === $extension;
+    }
+
+    private function pathTemplateParts(string $pathOrUri): array
+    {
+        $source = str_replace('\\', '/', trim($pathOrUri));
+        $sourceForName = rtrim($source, '/');
+        $slash = strrpos($sourceForName, '/');
+        $directory = $slash === false ? '' : substr($sourceForName, 0, $slash);
+        $basename = $slash === false ? $sourceForName : substr($sourceForName, $slash + 1);
+        if ($basename === '') {
+            $basename = 'output';
+        }
+
+        $extension = pathinfo($basename, PATHINFO_EXTENSION);
+        $name = $extension !== '' ? substr($basename, 0, -strlen($extension) - 1) : $basename;
+        $dotExtension = $extension !== '' ? '.' . $extension : '';
+
+        return [
+            'source' => $source,
+            'path' => $source,
+            'root' => '',
+            'relative' => $basename,
+            'dir' => $directory,
+            'directory' => $directory,
+            'basename' => $basename,
+            'name' => $name !== '' ? $name : $basename,
+            'ext' => $extension,
+            'dot_ext' => $dotExtension,
+            'mtime' => '',
+            'size' => '',
+            'worker_path' => $source,
+            'worker_root' => '',
+            'worker_relative' => $basename,
+            'worker_dir' => $directory,
+            'worker_basename' => $basename,
+            'worker_name' => $name !== '' ? $name : $basename,
+            'worker_ext' => $extension,
+            'worker_dot_ext' => $dotExtension,
+        ];
+    }
+
+    private function applyPathTemplateToPath(string $template, string $pathOrUri): string
+    {
+        $rendered = $this->applyPathTemplate($template, $this->pathTemplateParts($pathOrUri));
+        if ($rendered !== '' && preg_match('#^\s*\{(?:dir|directory)\}/#', $template) === 1 && strpos($pathOrUri, '/') === false) {
+            $rendered = ltrim($rendered, '/');
+        }
+        return preg_replace('#(?<!:)//+#', '/', $rendered) ?? $rendered;
     }
 
     private function siblingPathWithSuffix(string $pathOrUri, string $suffix): string
@@ -987,7 +1094,7 @@ final class AutomationStore
     private function validTemplatePlaceholders(): array
     {
         return [
-            'path', 'root', 'relative', 'dir', 'basename', 'name', 'ext', 'dot_ext', 'mtime', 'size',
+            'source', 'path', 'root', 'relative', 'dir', 'directory', 'basename', 'name', 'ext', 'dot_ext', 'mtime', 'size',
             'worker_path', 'worker_root', 'worker_relative', 'worker_dir', 'worker_basename', 'worker_name', 'worker_ext', 'worker_dot_ext',
         ];
     }
@@ -1022,10 +1129,12 @@ final class AutomationStore
             return '';
         }
         return strtr($template, [
+            '{source}' => (string) ($candidate['source'] ?? ($candidate['path'] ?? '')),
             '{path}' => (string) ($candidate['path'] ?? ''),
             '{root}' => (string) ($candidate['root'] ?? ''),
             '{relative}' => (string) ($candidate['relative'] ?? ''),
             '{dir}' => (string) ($candidate['dir'] ?? ''),
+            '{directory}' => (string) ($candidate['dir'] ?? ''),
             '{basename}' => (string) ($candidate['basename'] ?? ''),
             '{name}' => (string) ($candidate['name'] ?? ''),
             '{ext}' => (string) ($candidate['ext'] ?? ''),
@@ -1046,10 +1155,12 @@ final class AutomationStore
     private function applyCommandTemplate(string $template, array $candidate): string
     {
         return strtr($template, [
+            '{source}' => escapeshellarg((string) ($candidate['source'] ?? ($candidate['path'] ?? ''))),
             '{path}' => escapeshellarg((string) ($candidate['path'] ?? '')),
             '{root}' => escapeshellarg((string) ($candidate['root'] ?? '')),
             '{relative}' => escapeshellarg((string) ($candidate['relative'] ?? '')),
             '{dir}' => escapeshellarg((string) ($candidate['dir'] ?? '')),
+            '{directory}' => escapeshellarg((string) ($candidate['dir'] ?? '')),
             '{basename}' => escapeshellarg((string) ($candidate['basename'] ?? '')),
             '{name}' => escapeshellarg((string) ($candidate['name'] ?? '')),
             '{ext}' => escapeshellarg((string) ($candidate['ext'] ?? '')),

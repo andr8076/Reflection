@@ -14,7 +14,7 @@ $store = reflection_farm_store($config);
 $dataDirectory = dirname((string) $config['storage_path']);
 $automationStore = null;
 try {
-    $automationStore = new AutomationStore($dataDirectory);
+    $automationStore = new AutomationStore($dataDirectory, is_array($config['task_specs'] ?? null) ? $config['task_specs'] : []);
 } catch (Throwable $exception) {
     $automationStore = null;
 }

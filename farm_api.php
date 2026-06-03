@@ -227,7 +227,7 @@ function reflection_run_due_automation_on_worker_checkin(FarmStore $store, array
     }
 
     try {
-        $automationStore = new AutomationStore(dirname($storagePath));
+        $automationStore = new AutomationStore(dirname($storagePath), is_array($config['task_specs'] ?? null) ? $config['task_specs'] : []);
         $cooldownSeconds = max(0, (int) ($settings['automation_checkin_cooldown_seconds'] ?? 60));
         return $automationStore->runDueRulesForWorkerCheckin($store, false, $cooldownSeconds);
     } catch (Throwable $exception) {

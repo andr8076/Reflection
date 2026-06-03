@@ -2,10 +2,12 @@
     'use strict';
 
     var PLACEHOLDERS = {
+        source: { label: 'Source path', description: 'The source path after the source template is expanded.' },
         path: { label: 'Full file path', description: 'The absolute path of the matched file.' },
         root: { label: 'Scan root', description: 'The scan root that matched the file.' },
         relative: { label: 'Relative path', description: 'The file path below the matched scan root.' },
         dir: { label: 'Parent folder', description: 'The folder containing the matched file.' },
+        directory: { label: 'Parent folder alias', description: 'Alias for {dir}.' },
         basename: { label: 'Filename', description: 'The filename including the extension.' },
         name: { label: 'Name only', description: 'The filename without the final extension.' },
         ext: { label: 'Extension', description: 'The final extension without the dot.' },
@@ -34,6 +36,82 @@
     function checked(id) {
         var element = byId(id);
         return !!(element && element.checked);
+    }
+
+    function taskSpecs() {
+        var data = byId('automation-task-contract-data');
+        if (!data) {
+            return {};
+        }
+        try {
+            return JSON.parse(data.getAttribute('data-task-specs') || '{}') || {};
+        } catch (error) {
+            return {};
+        }
+    }
+
+    function selectedModule() {
+        return valueOf('automation-module-input');
+    }
+
+    function selectedTaskSpec() {
+        return taskSpecs()[selectedModule()] || {};
+    }
+
+    function selectedDeliverySpec() {
+        var spec = selectedTaskSpec();
+        return spec && spec.delivery ? spec.delivery : {};
+    }
+
+    function selectedTaskAutoTemplate() {
+        var delivery = selectedDeliverySpec();
+        return delivery && delivery.mode === 'auto' && delivery.template ? String(delivery.template) : '';
+    }
+
+    function selectedTaskExtension() {
+        var delivery = selectedDeliverySpec();
+        var extension = String((delivery && delivery.extension) || '');
+        if (!extension || extension === 'source') {
+            return '';
+        }
+        return extension.charAt(0) === '.' ? extension.toLowerCase() : '.' + extension.toLowerCase();
+    }
+
+    function taskAutoDeliveryActive() {
+        var template = selectedTaskAutoTemplate();
+        if (!template) {
+            return false;
+        }
+        return valueOf('delivery-mode-input') !== 'template' || valueOf('delivery-template-input').trim() === '';
+    }
+
+    function candidateFromPath(path) {
+        path = normalizeSlashes(path).replace(/\/+$/, '');
+        var dir = dirname(path);
+        var base = basename(path) || 'output';
+        var parts = splitNameExtension(base);
+        return {
+            '{source}': path,
+            '{path}': path,
+            '{root}': '',
+            '{relative}': base,
+            '{dir}': dir === '.' ? '' : dir,
+            '{directory}': dir === '.' ? '' : dir,
+            '{basename}': base,
+            '{name}': parts.name || base,
+            '{ext}': parts.ext,
+            '{dot_ext}': parts.ext ? '.' + parts.ext : '',
+            '{mtime}': '',
+            '{size}': '',
+            '{worker_path}': path,
+            '{worker_root}': '',
+            '{worker_relative}': base,
+            '{worker_dir}': dir === '.' ? '' : dir,
+            '{worker_basename}': base,
+            '{worker_name}': parts.name || base,
+            '{worker_ext}': parts.ext,
+            '{worker_dot_ext}': parts.ext ? '.' + parts.ext : ''
+        };
     }
 
     function firstScanRoot() {
@@ -189,10 +267,12 @@
         var workerBase = basename(workerPath);
         var workerParts = splitNameExtension(workerBase);
         return {
+            '{source}': path,
             '{path}': path,
             '{root}': root,
             '{relative}': rel,
             '{dir}': dir,
+            '{directory}': dir,
             '{basename}': base,
             '{name}': parts.name,
             '{ext}': parts.ext,
@@ -296,7 +376,7 @@
 
     function fieldIsActive(fieldId) {
         if (fieldId === 'delivery-template-input') {
-            return valueOf('delivery-mode-input') === 'template';
+            return valueOf('delivery-mode-input') === 'template' && !taskAutoDeliveryActive();
         }
         if (fieldId === 'command-template-input') {
             return valueOf('command-mode-input') !== 'disabled';
@@ -401,7 +481,11 @@
         var source = applyTemplate(valueOf('source-template-input') || '{path}', candidate, false) || candidate['{path}'];
         var deliveryMode = valueOf('delivery-mode-input') || 'template';
         var delivery = '';
-        if (deliveryMode === 'same_as_source') {
+        var autoTemplate = selectedTaskAutoTemplate();
+        var autoActive = taskAutoDeliveryActive();
+        if (autoActive) {
+            delivery = applyTemplate(autoTemplate, candidateFromPath(source), false);
+        } else if (deliveryMode === 'same_as_source') {
             delivery = checked('overwrite-allowed-input')
                 ? source
                 : appendSuffixToPath(source, valueOf('output-suffix-input'));
@@ -417,11 +501,33 @@
         setCode('preview-source', source);
         setCode('preview-delivery', delivery || 'No delivery target configured');
         setCode('source-template-preview', 'Example: ' + source);
-        setCode('delivery-template-preview', deliveryMode === 'template'
-            ? 'Example: ' + (delivery || 'No delivery target configured')
-            : 'Ignored while delivery target is “same as source location”');
+        setCode('delivery-template-preview', autoActive
+            ? 'Task automatic delivery: ' + (delivery || 'No delivery target configured')
+            : (deliveryMode === 'template'
+                ? 'Example: ' + (delivery || 'No delivery target configured')
+                : 'Ignored while delivery target is “same as source location”'));
         setCode('suffix-template-preview', 'Example if not overwriting: ' + suffixExample);
         setCode('command-template-preview', command ? 'Example command: ' + command : 'No command template configured');
+
+        var contractSummary = byId('automation-task-contract-summary');
+        var contractNote = byId('task-delivery-contract-note');
+        var deliverySpec = selectedDeliverySpec();
+        var extension = selectedTaskExtension();
+        var summaryText = 'Task delivery: ' + (deliverySpec.mode || 'optional');
+        if (autoTemplate) {
+            summaryText += ' · automatic template ' + autoTemplate;
+        }
+        if (extension) {
+            summaryText += ' · required output ' + extension;
+        }
+        if (contractSummary) {
+            contractSummary.textContent = summaryText;
+        }
+        if (contractNote) {
+            contractNote.textContent = autoActive
+                ? 'This task declares automatic delivery, so this rule will queue the generated output path shown in the preview. The old same-as-source setting is ignored for this task.'
+                : '';
+        }
 
         var grid = byId('placeholder-preview-grid');
         if (grid) {
@@ -460,6 +566,7 @@
     });
 
     [
+        'automation-module-input',
         'scan-roots-input',
         'worker-path-mappings-input',
         'template-sample-path',

@@ -39,7 +39,7 @@ $settings = $store->effectiveSettings();
 $servers = $storageStore->enabledServers(true);
 $workers = $data['workers'] ?? [];
 $automationRules = [];
-try { $automationRules = (new AutomationStore($dataDirectory))->rules(); } catch (Throwable $exception) { $automationRules = []; }
+try { $automationRules = (new AutomationStore($dataDirectory, is_array($config['task_specs'] ?? null) ? $config['task_specs'] : []))->rules(); } catch (Throwable $exception) { $automationRules = []; }
 $blockedCount = (int) (($store->jobPage(1, 10, 'blocked')['total'] ?? 0));
 $archive = $store->archiveInfo();
 $checks = [];

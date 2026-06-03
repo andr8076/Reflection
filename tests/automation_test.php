@@ -130,6 +130,7 @@ $mappedInvalid = $automationStore->validateRule($automationStore->normalizeRule(
 ]), ['dummy_task' => 'dummy']);
 assertSameValue(true, count($mappedInvalid) > 0, 'Invalid worker path mappings should be rejected.');
 
+
 $result = $automationStore->runRule($automationStore->rule($rule['id']), $farmStore, false);
 assertSameValue(0, $result['queued'], 'Unchanged files should not be queued twice.');
 
@@ -146,6 +147,51 @@ $automationStore->runDueRulesForWorkerCheckin($farmStore, false, 60);
 $cooldownCheck = $automationStore->runDueRulesForWorkerCheckin($farmStore, false, 60);
 assertSameValue('skipped', $cooldownCheck[0]['status'] ?? '', 'Repeated worker-triggered automation checks should respect the global cooldown.');
 assertSameValue('automation_check_cooldown', $cooldownCheck[0]['reason'] ?? '', 'Worker-triggered automation cooldown should report a clear reason.');
+
+$contractStore = new AutomationStore($dataDir, [
+    'h265_encode' => [
+        'delivery' => [
+            'mode' => 'auto',
+            'template' => '{dir}/{name}_h265.mkv',
+            'extension' => '.mkv',
+        ],
+    ],
+]);
+file_put_contents($scanDir . DIRECTORY_SEPARATOR . 'movie.mp4', 'video');
+touch($scanDir . DIRECTORY_SEPARATOR . 'movie.mp4', time() - 3600);
+$h265Rule = $contractStore->saveRule([
+    'name' => 'H265 automatic delivery',
+    'enabled' => false,
+    'module' => 'h265_encode',
+    'scan_roots' => $scanDir . DIRECTORY_SEPARATOR . 'movie.mp4',
+    'recursive' => false,
+    'source_template' => '{path}',
+    'delivery_mode' => 'same_as_source',
+    'overwrite_allowed' => true,
+    'extensions' => 'mp4',
+    'require_unchanged_seconds' => 0,
+    'max_files_per_scan' => 10,
+    'max_jobs_per_scan' => 10,
+], ['h265_encode' => 'H265']);
+$h265Test = $contractStore->testRule($h265Rule, $scanDir . DIRECTORY_SEPARATOR . 'movie.mp4', 10);
+assertSameValue($scanDir . DIRECTORY_SEPARATOR . 'movie_h265.mkv', $h265Test['rows'][0]['delivery'], 'Task automatic delivery should override same-as-source for h265_encode.');
+$h265Run = $contractStore->runRule($h265Rule, $farmStore, false);
+assertSameValue(1, $h265Run['queued'], 'H265 rule should queue one job.');
+$data = $farmStore->read();
+$lastJob = end($data['jobs']);
+assertSameValue($scanDir . DIRECTORY_SEPARATOR . 'movie_h265.mkv', $lastJob['delivery'], 'Queued h265 job should deliver to MKV path from task contract.');
+
+$badTemplateErrors = $contractStore->validateRule($contractStore->normalizeRule([
+    'name' => 'Bad H265 delivery',
+    'enabled' => false,
+    'module' => 'h265_encode',
+    'scan_roots' => $scanDir,
+    'source_template' => '{path}',
+    'delivery_mode' => 'template',
+    'delivery_template' => '{dir}/{name}.mp4',
+]), ['h265_encode' => 'H265']);
+assertSameValue(true, strpos(implode(' ', $badTemplateErrors), '.mkv') !== false, 'Custom h265 delivery templates must be validated against the task extension.');
+
 
 array_map('unlink', glob($dataDir . DIRECTORY_SEPARATOR . '*') ?: []);
 array_map('unlink', glob($scanDir . DIRECTORY_SEPARATOR . '*') ?: []);

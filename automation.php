@@ -11,9 +11,10 @@ require_once __DIR__ . '/ui_helpers.php';
 reflection_send_security_headers();
 
 $config = reflection_master_config();
+$taskSpecs = is_array($config['task_specs'] ?? null) ? $config['task_specs'] : [];
 $farmStore = reflection_farm_store($config);
 $dataDirectory = dirname((string) $config['storage_path']);
-$automationStore = new AutomationStore($dataDirectory);
+$automationStore = new AutomationStore($dataDirectory, is_array($config['task_specs'] ?? null) ? $config['task_specs'] : []);
 $storageStore = new StorageStore($dataDirectory, $config['transfer_server'] ?? null);
 $message = null;
 $error = null;
@@ -362,12 +363,14 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                         </label>
                         <label>
                             Worker task
-                            <select name="module" required>
+                            <select id="automation-module-input" name="module" required>
                                 <?php foreach ($config['allowed_tasks'] as $taskName => $description): ?>
                                     <option value="<?= reflection_h($taskName) ?>" <?= ($editingRule['module'] ?? '') === $taskName ? 'selected' : '' ?>><?= reflection_h($taskName) ?> — <?= reflection_h($description) ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </label>
+                        <div id="automation-task-contract-data" data-task-specs="<?= reflection_h(json_encode($taskSpecs, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?>"></div>
+                        <div class="api-note" id="automation-task-contract-summary">The selected task declares source and delivery behavior.</div>
                         <label>
                             Storage server
                             <select name="transfer_server_id">
@@ -417,7 +420,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                 </details>
 
                 <details class="form-block collapsible-form-block" data-section-key="job-templates" open>
-                    <summary class="form-section-header"><span class="section-number">3</span><div><h3>Job templates</h3><p>Define exactly what source and delivery paths are sent when jobs are created.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
+                    <summary class="form-section-header"><span class="section-number">3</span><div><h3>Job templates</h3><p>Define source mapping. Task modules may take over delivery generation when their contract declares automatic output.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
                     <div class="template-config-grid">
                         <label class="template-field-card">
                             <span class="template-field-title">Source template</span>
@@ -449,6 +452,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                         </label>
                     </div>
                     <div class="template-validation-summary template-validation-standalone" id="template-validation-summary">All active templates look valid.</div>
+                    <div class="api-note" id="task-delivery-contract-note"></div>
                     <div class="live-template-panel" aria-live="polite">
                         <div class="live-template-head">
                             <div>

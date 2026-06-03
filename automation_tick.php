@@ -18,7 +18,7 @@ function reflection_tick_output(array $payload, int $statusCode = 200): void
 $config = reflection_master_config();
 try {
     $farmStore = reflection_farm_store($config);
-    $automationStore = new AutomationStore(dirname((string) $config['storage_path']));
+    $automationStore = new AutomationStore(dirname((string) $config['storage_path']), is_array($config['task_specs'] ?? null) ? $config['task_specs'] : []);
     $results = $automationStore->runDueRules($farmStore, false);
     $queued = 0;
     foreach ($results as $result) {
