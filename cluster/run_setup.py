@@ -19,6 +19,8 @@ from Reflection import (
     DEFAULT_PC_ID,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_SERVER_URL,
+    DEFAULT_START_DELAY_SECONDS,
+    DEFAULT_SHUTDOWN_DELAY_SECONDS,
     DEFAULT_TASK_ISOLATION,
     DEFAULT_TASK_LOG_TAIL_BYTES,
     DEFAULT_SHOW_TASK_TERMINAL,
@@ -235,6 +237,8 @@ def collect_agent_config(
         current_config = {
             "server_url": DEFAULT_SERVER_URL,
             "poll_interval": DEFAULT_POLL_INTERVAL,
+            "start_delay_seconds": DEFAULT_START_DELAY_SECONDS,
+            "shutdown_delay_seconds": DEFAULT_SHUTDOWN_DELAY_SECONDS,
             "pc_id": DEFAULT_PC_ID,
             "cleanup_roots": list(DEFAULT_CLEANUP_ROOTS),
             "task_timeout_seconds": DEFAULT_TASK_TIMEOUT_SECONDS,
@@ -276,6 +280,22 @@ def collect_agent_config(
             str(current_config.get("pc_id") or DEFAULT_PC_ID),
             interactive=should_prompt,
         )
+    )
+    start_delay_seconds = _validate_non_negative_seconds(
+        _prompt_value(
+            "Worker start delay in seconds",
+            str(current_config.get("start_delay_seconds", DEFAULT_START_DELAY_SECONDS)),
+            interactive=should_prompt,
+        ),
+        "Worker start delay",
+    )
+    shutdown_delay_seconds = _validate_non_negative_seconds(
+        _prompt_value(
+            "Worker shutdown delay in seconds",
+            str(current_config.get("shutdown_delay_seconds", DEFAULT_SHUTDOWN_DELAY_SECONDS)),
+            interactive=should_prompt,
+        ),
+        "Worker shutdown delay",
     )
 
     current_cleanup_roots = _parse_cleanup_roots(
@@ -323,6 +343,8 @@ def collect_agent_config(
         "server_url": server_url,
         "poll_interval": poll_interval,
         "pc_id": pc_id,
+        "start_delay_seconds": start_delay_seconds,
+        "shutdown_delay_seconds": shutdown_delay_seconds,
         "cleanup_roots": cleanup_roots,
         "task_isolation": task_isolation,
         "show_task_terminal": show_task_terminal,

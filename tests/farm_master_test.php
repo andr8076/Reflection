@@ -463,6 +463,31 @@ $retriedJobs = array_values(array_filter($data['jobs'], static fn (array $job): 
 assertSameValue('queued', $retriedJobs[0]['status'], 'Failed jobs should be retried to the end of the queue.');
 assertSameValue(1, $retriedJobs[0]['attempt'], 'Retried jobs should increment attempt count.');
 
+$manualRetryStorePath = sys_get_temp_dir() . '/reflection_manual_retry_store_' . bin2hex(random_bytes(6)) . '.json';
+$manualRetryStore = new FarmStore($manualRetryStorePath);
+$manualRetryStore->updateSettings(['ess_soc_url' => '', 'failure_strategy' => 'mark_failed']);
+$manualFailedJob = $manualRetryStore->createJob('dummy_task', 'incoming/manual-failed.dat', 'outputs/manual-failed.txt', true, [
+    'transfer_server_id' => 'main',
+    'delivery_auto_generated' => true,
+    'task_contract' => 'auto delivery .txt',
+]);
+assertSameValue(true, $manualRetryStore->markJobRunning($manualFailedJob['task_id'], 'node-manual-retry'), 'Manual retry test job should lock.');
+assertSameValue(true, $manualRetryStore->finishJob($manualFailedJob['task_id'], 'node-manual-retry', 'failed', 'simulated failure'), 'Manual retry source should become failed.');
+$manualRetry = $manualRetryStore->retryJob($manualFailedJob['task_id']);
+assertSameValue(true, is_array($manualRetry), 'Failed jobs should be manually retryable from the dashboard.');
+assertSameValue('queued', $manualRetry['status'], 'Manual retry should create a fresh queued job.');
+assertSameValue($manualFailedJob['task_id'], $manualRetry['parent_task_id'], 'Manual retry should keep the original parent task id.');
+assertSameValue($manualFailedJob['task_id'], $manualRetry['manual_retry_from_task_id'], 'Manual retry should record the failed task it came from.');
+assertSameValue('failed', $manualRetry['manual_retry_from_status'], 'Manual retry should record the original status.');
+assertSameValue(1, $manualRetry['attempt'], 'Manual retry should increment the attempt count.');
+assertSameValue('main', $manualRetry['transfer_server_id'], 'Manual retry should preserve task routing metadata.');
+assertSameValue(true, $manualRetry['overwrite_allowed'], 'Manual retry should preserve overwrite behavior.');
+assertSameValue(null, $manualRetry['started_at'], 'Manual retry should not keep old start timestamps.');
+assertSameValue(null, $manualRetry['finished_at'], 'Manual retry should not keep old finish timestamps.');
+assertSameValue(null, $manualRetryStore->retryJob($manualRetry['task_id']), 'Already queued retry jobs should not be retried again.');
+@unlink($manualRetryStorePath);
+@unlink($manualRetryStorePath . '.lock');
+
 $staleJob = $store->createJob('dummy_task', 'incoming/stale.dat', 'outputs/stale.txt', false);
 assertSameValue(true, $store->markJobRunning($staleJob['task_id'], 'node-stale'), 'Stale test job should lock.');
 $data = $store->read();

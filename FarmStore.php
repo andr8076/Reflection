@@ -1022,12 +1022,23 @@ final class FarmStore
         return array_slice($jobs, 0, max(1, $limit));
     }
 
-    public function retryBlockedJob(string $taskId): ?array
+    public function retryJob(string $taskId, array $allowedStatuses = ['failed', 'stale', 'blocked']): ?array
     {
-        $result = $this->withLock(function (array $data) use ($taskId): array {
+        $allowedStatuses = array_values(array_filter(array_map(static function ($status): string {
+            return trim((string) $status);
+        }, $allowedStatuses), static function (string $status): bool {
+            return in_array($status, ['failed', 'stale', 'blocked'], true);
+        }));
+
+        if ($allowedStatuses === []) {
+            $allowedStatuses = ['failed', 'stale', 'blocked'];
+        }
+
+        $result = $this->withLock(function (array $data) use ($taskId, $allowedStatuses): array {
             $newJob = null;
             foreach ($data['jobs'] as $job) {
-                if (($job['task_id'] ?? '') !== $taskId || ($job['status'] ?? '') !== 'blocked') {
+                $status = (string) ($job['status'] ?? '');
+                if (($job['task_id'] ?? '') !== $taskId || !in_array($status, $allowedStatuses, true)) {
                     continue;
                 }
 
@@ -1042,8 +1053,22 @@ final class FarmStore
                 $newJob['started_at'] = null;
                 $newJob['heartbeat_at'] = null;
                 $newJob['finished_at'] = null;
-                $newJob['manual_retry_from_blocked_task_id'] = $job['task_id'];
-                unset($newJob['blocked_at'], $newJob['blocked_reason']);
+                $newJob['manual_retry_from_task_id'] = $job['task_id'];
+                $newJob['manual_retry_from_status'] = $status;
+                unset(
+                    $newJob['stale_at'],
+                    $newJob['blocked_at'],
+                    $newJob['blocked_reason'],
+                    $newJob['crash_pattern_count'],
+                    $newJob['crash_pattern_workers'],
+                    $newJob['loss_reason'],
+                    $newJob['held_at'],
+                    $newJob['held_from_status'],
+                    $newJob['held_worker'],
+                    $newJob['released_at'],
+                    $newJob['requeued_from_stale_task_id'],
+                    $newJob['manual_retry_from_blocked_task_id']
+                );
                 $newJob['crash_key'] = $this->jobCrashKey($newJob);
                 $data['jobs'][] = $newJob;
                 break;
@@ -1052,10 +1077,17 @@ final class FarmStore
         }, true);
 
         if (is_array($result)) {
-            $this->recordEvent('job_manual_retry_from_blocked', $result);
+            $this->recordEvent('job_manual_retry', $result);
+            $this->recordFileTouch($result['source'], 'manual_retry_source', $result);
+            $this->recordFileTouch($result['delivery'], 'manual_retry_delivery', $result);
             return $result;
         }
         return null;
+    }
+
+    public function retryBlockedJob(string $taskId): ?array
+    {
+        return $this->retryJob($taskId, ['blocked']);
     }
 
     public function markJobIgnored(string $taskId): bool

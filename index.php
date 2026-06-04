@@ -568,6 +568,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $message = $store->releaseHeldJob($taskId)
                     ? 'Job released back to the queue.'
                     : 'Job was not released. Only held jobs can be released.';
+            } elseif ($jobAction === 'retry') {
+                $retryJob = $store->retryJob($taskId);
+                $message = $retryJob
+                    ? 'Retry queued as ' . ($retryJob['task_id'] ?? 'new job') . '.'
+                    : 'Job was not retried. Only failed, stale, or blocked jobs can be retried.';
             } elseif ($jobAction === 'move_earlier') {
                 $message = $store->moveQueuedJob($taskId, 'earlier')
                     ? 'Job moved sooner in the queue.'
@@ -910,6 +915,14 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                             <input type="hidden" name="job_action" value="release">
                             <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
                             <button class="ghost-button small-button" type="submit">Release</button>
+                        </form>
+                    <?php endif; ?>
+                    <?php if (in_array($jobStatusValue, ['failed', 'stale', 'blocked'], true)): ?>
+                        <form method="post" style="display: inline;" data-confirm="Queue a fresh retry of this job?">
+                            <input type="hidden" name="form_action" value="job_action">
+                            <input type="hidden" name="job_action" value="retry">
+                            <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
+                            <button class="ghost-button small-button" type="submit">Retry</button>
                         </form>
                     <?php endif; ?>
                     <?php if ($jobStatusValue !== 'running'): ?>
@@ -1421,6 +1434,14 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                                         <input type="hidden" name="job_action" value="release">
                                         <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
                                         <button class="ghost-button small-button" type="submit">Release</button>
+                                    </form>
+                                <?php endif; ?>
+                                <?php if (in_array($jobStatusValue, ['failed', 'stale', 'blocked'], true)): ?>
+                                    <form method="post" data-confirm="Queue a fresh retry of this job?">
+                                        <input type="hidden" name="form_action" value="job_action">
+                                        <input type="hidden" name="job_action" value="retry">
+                                        <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
+                                        <button class="ghost-button small-button" type="submit">Retry</button>
                                     </form>
                                 <?php endif; ?>
                                 <?php if ($jobStatusValue !== 'running'): ?>

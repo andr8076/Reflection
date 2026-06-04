@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from urllib.parse import urlparse
@@ -34,6 +35,8 @@ class AgentConfigTest(unittest.TestCase):
                 {
                     "server_url": "https://farm.example.test/farm_api.php",
                     "poll_interval": 15,
+                    "start_delay_seconds": Reflection.DEFAULT_START_DELAY_SECONDS,
+                    "shutdown_delay_seconds": Reflection.DEFAULT_SHUTDOWN_DELAY_SECONDS,
                     "pc_id": "worker-01",
                     "cleanup_roots": [],
                     "task_timeout_seconds": Reflection.DEFAULT_TASK_TIMEOUT_SECONDS,
@@ -56,6 +59,8 @@ class AgentConfigTest(unittest.TestCase):
                 {
                     "server_url": "http://localhost/farm_api.php",
                     "poll_interval": 5,
+                    "start_delay_seconds": Reflection.DEFAULT_START_DELAY_SECONDS,
+                    "shutdown_delay_seconds": Reflection.DEFAULT_SHUTDOWN_DELAY_SECONDS,
                     "pc_id": "local-worker",
                     "cleanup_roots": [],
                 },
@@ -67,6 +72,8 @@ class AgentConfigTest(unittest.TestCase):
                 {
                     "server_url": "http://localhost/farm_api.php",
                     "poll_interval": 5,
+                    "start_delay_seconds": Reflection.DEFAULT_START_DELAY_SECONDS,
+                    "shutdown_delay_seconds": Reflection.DEFAULT_SHUTDOWN_DELAY_SECONDS,
                     "pc_id": "local-worker",
                     "cleanup_roots": [],
                     "task_timeout_seconds": Reflection.DEFAULT_TASK_TIMEOUT_SECONDS,
@@ -304,6 +311,39 @@ class AgentConfigTest(unittest.TestCase):
                 Reflection.load_agent_config(config_path)
 
 
+    def test_load_agent_config_accepts_worker_start_and_shutdown_delays(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "agent.json"
+            config_path.write_text(
+                json.dumps({"start_delay_seconds": 7, "shutdown_delay_seconds": 11}),
+                encoding="utf-8",
+            )
+
+            loaded = Reflection.load_agent_config(config_path)
+
+            self.assertEqual(loaded["start_delay_seconds"], 7)
+            self.assertEqual(loaded["shutdown_delay_seconds"], 11)
+
+    def test_worker_delay_helpers_sleep_only_for_configured_values(self):
+        original_start_delay = Reflection.START_DELAY_SECONDS
+        original_shutdown_delay = Reflection.SHUTDOWN_DELAY_SECONDS
+        original_sleep = Reflection.time.sleep
+        seen = []
+        try:
+            Reflection.time.sleep = lambda seconds: seen.append(seconds)
+            Reflection.START_DELAY_SECONDS = 3
+            Reflection.SHUTDOWN_DELAY_SECONDS = 4
+
+            Reflection._delay_before_agent_start()
+            Reflection._delay_before_system_shutdown()
+        finally:
+            Reflection.START_DELAY_SECONDS = original_start_delay
+            Reflection.SHUTDOWN_DELAY_SECONDS = original_shutdown_delay
+            Reflection.time.sleep = original_sleep
+
+        self.assertEqual(seen, [3, 4])
+
+
 class TaskOutcomeTest(unittest.TestCase):
     def test_plain_true_task_result_does_not_cleanup_source_by_default(self):
         outcome = Reflection._normalize_task_result(True)
@@ -525,7 +565,7 @@ class WorkerUpdateTest(unittest.TestCase):
 
 
 class TaskHeartbeatTest(unittest.TestCase):
-    def test_non_acknowledged_heartbeat_requests_local_relinquish(self):
+    def test_explicit_relinquish_instruction_requests_local_relinquish(self):
         class FakeAgent:
             def heartbeat_task(self, task_id):
                 return {"status": "task_held", "instruction": "relinquish_task"}
@@ -536,6 +576,50 @@ class TaskHeartbeatTest(unittest.TestCase):
         try:
             self.assertTrue(heartbeat.cancel_event.wait(1))
             self.assertEqual(heartbeat.cancel_reason, "task_held")
+        finally:
+            heartbeat.__exit__(None, None, None)
+
+    def test_heartbeat_network_error_does_not_relinquish_local_work(self):
+        class FakeAgent:
+            def __init__(self):
+                self.calls = 0
+
+            def heartbeat_task(self, task_id):
+                self.calls += 1
+                raise OSError("network unreachable")
+
+        agent = FakeAgent()
+        heartbeat = Reflection.TaskHeartbeat(agent, "job-network-gap", 5)
+        heartbeat.interval = 0.01
+        heartbeat.__enter__()
+        try:
+            deadline = time.time() + 1
+            while agent.calls < 2 and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertGreaterEqual(agent.calls, 2)
+            self.assertFalse(heartbeat.cancel_event.is_set())
+        finally:
+            heartbeat.__exit__(None, None, None)
+
+    def test_unexpected_heartbeat_response_without_instruction_does_not_relinquish(self):
+        class FakeAgent:
+            def __init__(self):
+                self.calls = 0
+
+            def heartbeat_task(self, task_id):
+                self.calls += 1
+                return {"status": "temporary_master_confusion"}
+
+        agent = FakeAgent()
+        heartbeat = Reflection.TaskHeartbeat(agent, "job-odd-response", 5)
+        heartbeat.interval = 0.01
+        heartbeat.__enter__()
+        try:
+            deadline = time.time() + 1
+            while agent.calls < 2 and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertGreaterEqual(agent.calls, 2)
+            self.assertFalse(heartbeat.cancel_event.is_set())
         finally:
             heartbeat.__exit__(None, None, None)
 

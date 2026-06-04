@@ -26,6 +26,8 @@ from task_registry import TaskDefinition, discover_task_definitions, normalize_t
 DEFAULT_SERVER_URL = "http://your-server-domain.com/farm_api.php"
 DEFAULT_POLL_INTERVAL = 10
 DEFAULT_HEARTBEAT_INTERVAL = 60
+DEFAULT_START_DELAY_SECONDS = 30
+DEFAULT_SHUTDOWN_DELAY_SECONDS = 30
 DEFAULT_TASK_TIMEOUT_SECONDS = 12 * 60 * 60
 DEFAULT_TASK_LOG_TAIL_BYTES = 12000
 DEFAULT_TASK_ISOLATION = True
@@ -62,6 +64,8 @@ def load_agent_config(config_path=None):
     config = {
         "server_url": DEFAULT_SERVER_URL,
         "poll_interval": DEFAULT_POLL_INTERVAL,
+        "start_delay_seconds": DEFAULT_START_DELAY_SECONDS,
+        "shutdown_delay_seconds": DEFAULT_SHUTDOWN_DELAY_SECONDS,
         "pc_id": DEFAULT_PC_ID,
         "cleanup_roots": list(DEFAULT_CLEANUP_ROOTS),
         "task_timeout_seconds": DEFAULT_TASK_TIMEOUT_SECONDS,
@@ -104,6 +108,12 @@ def load_agent_config(config_path=None):
         if heartbeat_interval <= 0:
             raise ValueError("heartbeat_interval must be greater than zero.")
         config["heartbeat_interval"] = heartbeat_interval
+
+    if "start_delay_seconds" in loaded:
+        config["start_delay_seconds"] = max(0, int(loaded["start_delay_seconds"]))
+
+    if "shutdown_delay_seconds" in loaded:
+        config["shutdown_delay_seconds"] = max(0, int(loaded["shutdown_delay_seconds"]))
 
     if "task_timeout_seconds" in loaded:
         timeout = int(loaded["task_timeout_seconds"])
@@ -346,6 +356,8 @@ AGENT_CONFIG = load_agent_config()
 SERVER_URL = AGENT_CONFIG["server_url"]  # Target PHP endpoint
 POLL_INTERVAL = AGENT_CONFIG["poll_interval"]  # Seconds to wait before checking for new jobs if idle
 HEARTBEAT_INTERVAL = int(AGENT_CONFIG.get("heartbeat_interval", DEFAULT_HEARTBEAT_INTERVAL))
+START_DELAY_SECONDS = max(0, int(AGENT_CONFIG.get("start_delay_seconds", DEFAULT_START_DELAY_SECONDS)))
+SHUTDOWN_DELAY_SECONDS = max(0, int(AGENT_CONFIG.get("shutdown_delay_seconds", DEFAULT_SHUTDOWN_DELAY_SECONDS)))
 PC_ID = AGENT_CONFIG["pc_id"]  # Unique identifier for this node
 LOCAL_TRANSFER_AUTH = AGENT_CONFIG.get("transfer_auth", {})
 CLEANUP_ROOTS = tuple(AGENT_CONFIG.get("cleanup_roots", []))
@@ -2015,15 +2027,28 @@ class TaskHeartbeat:
                 response = self.agent.heartbeat_task(self.task_id)
                 if response and response.get("status") == "heartbeat_acknowledged":
                     continue
-                self.cancel_reason = str((response or {}).get("status", "no_response"))
-                self.cancel_event.set()
-                logging.warning("Heartbeat for task %s was not acknowledged; relinquishing local work: %s", self.task_id, response)
-                return
+
+                if response and response.get("instruction") == "relinquish_task":
+                    self.cancel_reason = str(response.get("status", "relinquish_task"))
+                    self.cancel_event.set()
+                    logging.warning(
+                        "Master explicitly instructed worker to relinquish task %s: %s",
+                        self.task_id,
+                        response,
+                    )
+                    return
+
+                logging.warning(
+                    "Heartbeat for task %s was not acknowledged, but no relinquish instruction was received. Continuing local work: %s",
+                    self.task_id,
+                    response,
+                )
             except Exception as exc:
-                self.cancel_reason = str(exc)
-                self.cancel_event.set()
-                logging.warning("Heartbeat for task %s failed; relinquishing local work: %s", self.task_id, exc)
-                return
+                logging.warning(
+                    "Heartbeat for task %s could not reach the master. Continuing local work until the master explicitly says to stop: %s",
+                    self.task_id,
+                    exc,
+                )
 
 # --- CORE FARM AGENT CLASS ---
 def _command_from_env(env_name):
@@ -2081,8 +2106,25 @@ def _request_system_reboot():
         raise
 
 
+def _delay_before_agent_start():
+    """Wait briefly on worker startup so the desktop remains reachable after boot."""
+    if START_DELAY_SECONDS <= 0:
+        return
+    logging.info("Worker start delay: waiting %s seconds before contacting the master.", START_DELAY_SECONDS)
+    time.sleep(START_DELAY_SECONDS)
+
+
+def _delay_before_system_shutdown():
+    """Wait briefly before requesting OS shutdown so there is time to access the worker."""
+    if SHUTDOWN_DELAY_SECONDS <= 0:
+        return
+    logging.info("Worker shutdown delay: waiting %s seconds before requesting system shutdown.", SHUTDOWN_DELAY_SECONDS)
+    time.sleep(SHUTDOWN_DELAY_SECONDS)
+
+
 def _request_system_shutdown():
     """Request a real machine poweroff and return immediately."""
+    _delay_before_system_shutdown()
     command = _shutdown_command_from_env() or _default_shutdown_command()
     logging.info("Requesting system shutdown with command: %s", " ".join(command))
     try:
@@ -2328,6 +2370,7 @@ class FarmAgent:
 
     def run_lifecycle(self):
         """Main worker loop with a top-level guard against unexpected failures."""
+        _delay_before_agent_start()
         logging.info("Farm Agent started. Version: %s | PC: %s", VERSION, PC_ID)
         logging.info("Loaded task modules: %s", ", ".join(sorted(self.task_registry)) or "none")
         logging.info(
