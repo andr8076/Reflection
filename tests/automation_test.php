@@ -46,6 +46,14 @@ $test = $automationStore->testRule($rule, '', 10);
 assertSameValue(2, $test['scanned'], 'Filter test should scan both files under the root.');
 assertSameValue(1, $test['matched'], 'Filter test should match only txt files.');
 
+$duplicateRule = $automationStore->duplicateRule($rule['id'], ['dummy_task' => 'dummy']);
+assertSameValue(false, $duplicateRule === null, 'Existing automation rules should be duplicatable.');
+assertSameValue('', $duplicateRule['last_scan_at'] ?? '', 'Duplicated rules should not inherit the scan timestamp.');
+assertSameValue([], $duplicateRule['last_scan_summary'] ?? [], 'Duplicated rules should not inherit the scan summary.');
+assertSameValue(false, $duplicateRule['enabled'], 'Duplicated rules should be disabled until explicitly enabled.');
+assertSameValue('Text files (copy)', $duplicateRule['name'], 'Duplicated rules should get a clear copy name.');
+assertSameValue(false, $duplicateRule['id'] === $rule['id'], 'Duplicated rules should receive a new id.');
+
 $result = $automationStore->runRule($rule, $farmStore, false);
 assertSameValue(2, $result['scanned'], 'Run should scan both files.');
 assertSameValue(1, $result['queued'], 'Run should queue one matching file.');

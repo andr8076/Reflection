@@ -1144,24 +1144,104 @@ final class FarmStore
         $result = $this->withLock(function (array $data) use ($taskId): array {
             $deleted = null;
             $remaining = [];
+            $nowText = gmdate(DATE_ATOM);
             foreach ($data['jobs'] as $job) {
                 if (($job['task_id'] ?? '') === $taskId && ($job['status'] ?? '') !== 'running') {
                     $deleted = $job;
+                    $deleted['deleted_at'] = $nowText;
+                    $deleted['deleted_from_status'] = (string) ($job['status'] ?? 'unknown');
                     continue;
                 }
                 $remaining[] = $job;
             }
             if ($deleted !== null) {
                 $data['jobs'] = $remaining;
+                $data['deleted_jobs'][] = $deleted;
             }
             return ['data' => $data, 'result' => $deleted];
         }, true);
 
         if (is_array($result)) {
-            $this->recordEvent('job_deleted', $result);
+            $this->recordEvent('job_moved_to_bin', $result);
             return true;
         }
         return false;
+    }
+
+    public function restoreDeletedJob(string $taskId): bool
+    {
+        $result = $this->withLock(function (array $data) use ($taskId): array {
+            foreach ($data['jobs'] as $job) {
+                if (($job['task_id'] ?? '') === $taskId) {
+                    return ['data' => $data, 'result' => null];
+                }
+            }
+
+            $restored = null;
+            $remainingDeleted = [];
+            foreach ($data['deleted_jobs'] as $job) {
+                if (($job['task_id'] ?? '') === $taskId && $restored === null) {
+                    $restored = $job;
+                    unset($restored['deleted_at'], $restored['deleted_from_status']);
+                    continue;
+                }
+                $remainingDeleted[] = $job;
+            }
+
+            if ($restored !== null) {
+                $data['deleted_jobs'] = $remainingDeleted;
+                $data['jobs'][] = $restored;
+            }
+
+            return ['data' => $data, 'result' => $restored];
+        }, true);
+
+        if (is_array($result)) {
+            $this->recordEvent('job_restored_from_bin', $result);
+            return true;
+        }
+        return false;
+    }
+
+    public function purgeDeletedJob(string $taskId): bool
+    {
+        $result = $this->withLock(function (array $data) use ($taskId): array {
+            $purged = null;
+            $remainingDeleted = [];
+            foreach ($data['deleted_jobs'] as $job) {
+                if (($job['task_id'] ?? '') === $taskId && $purged === null) {
+                    $purged = $job;
+                    continue;
+                }
+                $remainingDeleted[] = $job;
+            }
+
+            if ($purged !== null) {
+                $data['deleted_jobs'] = $remainingDeleted;
+            }
+
+            return ['data' => $data, 'result' => $purged];
+        }, true);
+
+        if (is_array($result)) {
+            $this->recordEvent('job_purged_from_bin', $result);
+            return true;
+        }
+        return false;
+    }
+
+    public function emptyDeletedJobs(): int
+    {
+        $removed = $this->withLock(function (array $data): array {
+            $count = count($data['deleted_jobs'] ?? []);
+            $data['deleted_jobs'] = [];
+            return ['data' => $data, 'result' => $count];
+        }, true);
+
+        if ((int) $removed > 0) {
+            $this->recordSystemEvent('job_bin_emptied', '', ['removed_jobs' => (int) $removed]);
+        }
+        return (int) $removed;
     }
 
     public function moveQueuedJob(string $taskId, string $direction): bool
@@ -2100,6 +2180,7 @@ final class FarmStore
 
         return [
             'jobs' => array_values($data['jobs'] ?? []),
+            'deleted_jobs' => array_values($data['deleted_jobs'] ?? []),
             'workers' => $data['workers'] ?? [],
             'settings' => array_merge($this->defaultSettings(), $data['settings'] ?? []),
             'machines' => array_values($data['machines'] ?? []),

@@ -558,8 +558,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
             if ($jobAction === 'delete') {
                 $message = $store->deleteJob($taskId)
-                    ? 'Job deleted from the live store.'
-                    : 'Job was not deleted. Running jobs must be held before deletion.';
+                    ? 'Job moved to the bin.'
+                    : 'Job was not moved to the bin. Running jobs must be held before deletion.';
             } elseif ($jobAction === 'hold') {
                 $message = $store->holdJob($taskId)
                     ? 'Job placed on hold. Any assigned worker will relinquish it at its next heartbeat.'
@@ -926,7 +926,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                         </form>
                     <?php endif; ?>
                     <?php if ($jobStatusValue !== 'running'): ?>
-                        <form method="post" style="display: inline;" data-confirm="Delete this job from the live store?">
+                        <form method="post" style="display: inline;" data-confirm="Move this job to the bin?">
                             <input type="hidden" name="form_action" value="job_action">
                             <input type="hidden" name="job_action" value="delete">
                             <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
@@ -1445,7 +1445,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                                     </form>
                                 <?php endif; ?>
                                 <?php if ($jobStatusValue !== 'running'): ?>
-                                    <form method="post" data-confirm="Delete this job from the live store?">
+                                    <form method="post" data-confirm="Move this job to the bin?">
                                         <input type="hidden" name="form_action" value="job_action">
                                         <input type="hidden" name="job_action" value="delete">
                                         <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">

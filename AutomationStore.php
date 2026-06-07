@@ -157,6 +157,25 @@ final class AutomationStore
         });
     }
 
+    public function duplicateRule(string $id, array $allowedTasks, array $allowedStorageServerIds = []): ?array
+    {
+        $sourceRule = $this->rule($id);
+        if ($sourceRule === null) {
+            return null;
+        }
+
+        $copy = $sourceRule;
+        $copy['id'] = '';
+        $copy['name'] = $this->duplicateRuleName((string) ($sourceRule['name'] ?? 'Automation rule'));
+        $copy['enabled'] = false;
+        $copy['last_scan_at'] = null;
+        $copy['last_scan_summary'] = [];
+        $copy['created_at'] = null;
+        $copy['updated_at'] = null;
+
+        return $this->saveRule($copy, $allowedTasks, $allowedStorageServerIds);
+    }
+
     public function setEnabled(string $id, bool $enabled): ?array
     {
         return $this->withLock(function () use ($id, $enabled): ?array {
@@ -1436,6 +1455,29 @@ final class AutomationStore
         } catch (Exception $exception) {
             return 'auto_' . substr(sha1(uniqid('', true)), 0, 12);
         }
+    }
+
+    private function duplicateRuleName(string $name): string
+    {
+        $name = trim($name) !== '' ? trim($name) : 'Automation rule';
+        $existing = [];
+        foreach ($this->rules() as $rule) {
+            $existing[(string) ($rule['name'] ?? '')] = true;
+        }
+
+        $base = $name . ' (copy)';
+        if (!isset($existing[$base])) {
+            return $base;
+        }
+
+        for ($number = 2; $number < 1000; $number++) {
+            $candidate = $name . ' (copy ' . $number . ')';
+            if (!isset($existing[$candidate])) {
+                return $candidate;
+            }
+        }
+
+        return $name . ' (copy ' . gmdate('YmdHis') . ')';
     }
 
     private function readJson(string $path, array $default): array

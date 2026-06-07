@@ -1,151 +1,52 @@
 (function () {
-    var panelSelector = '#logs-viewer-panel';
-    var cardSelector = '#logs-version-card';
-    var refreshInterval = 5000;
-    var activeController = null;
-    var requestId = 0;
-    var typingTimer = null;
+    'use strict';
 
-    function panel() {
-        return document.querySelector(panelSelector);
+    function checkboxesForForm(formId) {
+        return Array.prototype.slice.call(document.querySelectorAll('input[data-row-select][form="' + formId + '"]'));
     }
 
-    function versionCard() {
-        return document.querySelector(cardSelector);
-    }
+    function updateSelectionCount(formId) {
+        var countNode = document.querySelector('[data-selection-count="' + formId + '"]');
+        var boxes = checkboxesForForm(formId);
+        var selected = boxes.filter(function (box) { return box.checked; }).length;
+        var selectAll = document.querySelector('input[data-select-all][data-target-form="' + formId + '"]');
 
-    function isEditingFilter() {
-        var active = document.activeElement;
-        return !!(active && active.closest && active.closest('.log-filter-form'));
-    }
-
-    function buildUrl(url) {
-        var target = new URL(url, window.location.href);
-        target.searchParams.set('_cache', String(Date.now()));
-        return target;
-    }
-
-    function cleanUrl(url) {
-        var target = new URL(url, window.location.href);
-        target.searchParams.delete('_cache');
-        return target;
-    }
-
-    function applyHtml(html) {
-        var doc = new DOMParser().parseFromString(html, 'text/html');
-        var newPanel = doc.querySelector(panelSelector);
-        var newCard = doc.querySelector(cardSelector);
-        var currentPanel = panel();
-        var currentCard = versionCard();
-
-        if (newPanel && currentPanel) {
-            currentPanel.replaceWith(newPanel);
+        if (countNode) {
+            countNode.textContent = selected + ' selected';
         }
-        if (newCard && currentCard) {
-            currentCard.replaceWith(newCard);
+        if (selectAll) {
+            selectAll.checked = boxes.length > 0 && selected === boxes.length;
+            selectAll.indeterminate = selected > 0 && selected < boxes.length;
         }
     }
 
-    function loadUrl(url, pushHistory) {
-        var id = ++requestId;
-        var target = buildUrl(url);
-
-        if (activeController) {
-            activeController.abort();
-        }
-        activeController = new AbortController();
-
-        return fetch(target.toString(), {
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest'
-            },
-            signal: activeController.signal
-        })
-        .then(function (response) {
-            if (!response.ok) {
-                throw new Error('HTTP ' + response.status);
-            }
-            return response.text();
-        })
-        .then(function (html) {
-            if (id !== requestId) {
-                return;
-            }
-            applyHtml(html);
-            if (pushHistory) {
-                window.history.pushState({}, '', cleanUrl(target).toString());
-            }
-        })
-        .catch(function (error) {
-            if (error.name === 'AbortError') {
-                return;
-            }
-            console.error('Log refresh failed:', error);
-        });
-    }
-
-    function urlFromFilterForm(form) {
-        var params = new URLSearchParams(new FormData(form));
-        var target = new URL(form.getAttribute('action') || window.location.pathname, window.location.href);
-        target.search = params.toString();
-        return target;
-    }
-
-    function loadFilterForm(form) {
-        loadUrl(urlFromFilterForm(form).toString(), true);
-    }
-
-    document.addEventListener('click', function (event) {
-        var link = event.target.closest && event.target.closest('#logs-viewer-panel .log-tabs a');
-        if (!link) {
+    document.addEventListener('change', function (event) {
+        var selectAll = event.target.closest && event.target.closest('input[data-select-all]');
+        if (selectAll) {
+            var formId = selectAll.getAttribute('data-target-form') || '';
+            checkboxesForForm(formId).forEach(function (box) {
+                box.checked = selectAll.checked;
+            });
+            updateSelectionCount(formId);
             return;
         }
-        event.preventDefault();
-        loadUrl(link.href, true);
+
+        var rowSelect = event.target.closest && event.target.closest('input[data-row-select]');
+        if (rowSelect) {
+            updateSelectionCount(rowSelect.getAttribute('form') || '');
+        }
     });
 
     document.addEventListener('submit', function (event) {
-        var form = event.target.closest && event.target.closest('#logs-viewer-panel .log-filter-form');
-        if (!form) {
+        var submitter = event.submitter;
+        if (!submitter || !submitter.getAttribute) {
             return;
         }
-        event.preventDefault();
-        loadFilterForm(form);
-    });
-
-    document.addEventListener('change', function (event) {
-        var field = event.target.closest && event.target.closest('#logs-viewer-panel .log-filter-form select');
-        if (!field) {
-            return;
+        var message = submitter.getAttribute('data-confirm');
+        if (message && !window.confirm(message)) {
+            event.preventDefault();
         }
-        var form = field.closest('.log-filter-form');
-        if (form) {
-            loadFilterForm(form);
-        }
-    });
+    }, true);
 
-    document.addEventListener('input', function (event) {
-        var field = event.target.closest && event.target.closest('#logs-viewer-panel .log-filter-form input[name="q"]');
-        if (!field) {
-            return;
-        }
-        window.clearTimeout(typingTimer);
-        typingTimer = window.setTimeout(function () {
-            var form = field.closest('.log-filter-form');
-            if (form) {
-                loadFilterForm(form);
-            }
-        }, 400);
-    });
-
-    window.addEventListener('popstate', function () {
-        loadUrl(window.location.href, false);
-    });
-
-    setInterval(function () {
-        if (isEditingFilter()) {
-            return;
-        }
-        loadUrl(window.location.href, false);
-    }, refreshInterval);
+    ['job-bulk-form', 'bin-bulk-form'].forEach(updateSelectionCount);
 }());

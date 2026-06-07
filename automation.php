@@ -203,6 +203,15 @@ try {
                     $message = reflection_auto_append($message, $notice);
                 }
             }
+        } elseif ($action === 'duplicate_rule') {
+            $id = (string) ($_POST['rule_id'] ?? '');
+            $duplicate = $automationStore->duplicateRule($id, $config['allowed_tasks'], $storageServerIds);
+            if ($duplicate === null) {
+                throw new RuntimeException('Automation rule was not found.');
+            }
+            $selectedId = (string) ($duplicate['id'] ?? '');
+            $editingRule = $duplicate;
+            $message = 'Automation rule duplicated as a disabled copy. Edit and enable it when ready.';
         } elseif ($action === 'delete_rule') {
             $id = (string) ($_POST['rule_id'] ?? '');
             if ($automationStore->deleteRule($id)) {
@@ -315,6 +324,11 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                         <div class="rule-actions">
                             <a class="text-link" href="automation.php?edit=<?= reflection_h($rule['id'] ?? '') ?>">Edit</a>
                             <form method="post" class="inline-button-form">
+                                <input type="hidden" name="automation_action" value="duplicate_rule">
+                                <input type="hidden" name="rule_id" value="<?= reflection_h($rule['id'] ?? '') ?>">
+                                <button type="submit" class="mini-button">Duplicate</button>
+                            </form>
+                            <form method="post" class="inline-button-form">
                                 <input type="hidden" name="automation_action" value="toggle_rule">
                                 <input type="hidden" name="rule_id" value="<?= reflection_h($rule['id'] ?? '') ?>">
                                 <input type="hidden" name="enabled" value="<?= !empty($rule['enabled']) ? '0' : '1' ?>">
@@ -334,11 +348,18 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                     <p class="api-note">A rule scans roots, filters files, applies source/delivery templates, and queues jobs for the selected worker task.</p>
                 </div>
                 <?php if (($editingRule['id'] ?? '') !== ''): ?>
-                    <form method="post" data-confirm="Delete this automation rule and its tracked state?">
-                        <input type="hidden" name="automation_action" value="delete_rule">
-                        <input type="hidden" name="rule_id" value="<?= reflection_h($editingRule['id'] ?? '') ?>">
-                        <button type="submit" class="danger-button">Delete</button>
-                    </form>
+                    <div class="button-row compact-button-row">
+                        <form method="post" class="inline-button-form">
+                            <input type="hidden" name="automation_action" value="duplicate_rule">
+                            <input type="hidden" name="rule_id" value="<?= reflection_h($editingRule['id'] ?? '') ?>">
+                            <button type="submit" class="secondary-button">Duplicate</button>
+                        </form>
+                        <form method="post" data-confirm="Delete this automation rule and its tracked state?">
+                            <input type="hidden" name="automation_action" value="delete_rule">
+                            <input type="hidden" name="rule_id" value="<?= reflection_h($editingRule['id'] ?? '') ?>">
+                            <button type="submit" class="danger-button">Delete</button>
+                        </form>
+                    </div>
                 <?php endif; ?>
             </div>
 
