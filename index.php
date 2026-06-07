@@ -449,6 +449,114 @@ function reflection_render_worker_cards_html(array $workerCards): string
     return (string) ob_get_clean();
 }
 
+function reflection_render_power_panel_html(array $context): string
+{
+    $wakeButtonDisabled = !empty($context['wakeButtonDisabled']);
+    $wakeTargetCount = (int) ($context['wakeTargetCount'] ?? 0);
+    $wakeEnabledMachineCount = (int) ($context['wakeEnabledMachineCount'] ?? 0);
+    $workerLimitDisplay = (string) ($context['workerLimitDisplay'] ?? 'off');
+    $workerLimitHelp = (string) ($context['workerLimitHelp'] ?? '');
+    $demandWakePlan = is_array($context['demandWakePlan'] ?? null) ? $context['demandWakePlan'] : [];
+    $essSocIgnored = !empty($context['essSocIgnored']);
+    $essChargingOverrideActive = !empty($context['essChargingOverrideActive']);
+    $allowedActiveWorkers = (int) ($context['allowedActiveWorkers'] ?? 0);
+    $settings = is_array($context['settings'] ?? null) ? $context['settings'] : [];
+    $queuedWork = (int) ($demandWakePlan['queued_work'] ?? 0);
+    $idleOnlineWorkers = (int) ($demandWakePlan['idle_online_workers'] ?? 0);
+    $needed = (int) ($demandWakePlan['needed'] ?? 0);
+    $readyTargets = (int) ($demandWakePlan['ready_targets'] ?? 0);
+    $demandEnabled = !empty($demandWakePlan['enabled']);
+    ob_start();
+    ?>
+    <section class="panel compact-panel power-panel" id="power-panel">
+        <div class="panel-head power-head">
+            <div>
+                <p class="eyebrow">Power</p>
+                <h2>Wake status</h2>
+                <small>Manual wake shows eligible offline PCs. Automatic demand wake is based only on queued normal jobs.</small>
+            </div>
+            <form method="post" class="bare-form">
+                <input type="hidden" name="form_action" value="wake_farm">
+                <button type="submit" class="secondary-button" <?= $wakeButtonDisabled ? 'disabled' : '' ?>>Manual wake <?= (int) $wakeTargetCount ?> PC<?= $wakeTargetCount === 1 ? '' : 's' ?></button>
+            </form>
+        </div>
+
+        <div class="power-summary simplified-power-summary">
+            <div class="power-summary-item">
+                <span>Manual wake candidates</span>
+                <strong><?= (int) $wakeTargetCount ?> / <?= (int) $wakeEnabledMachineCount ?></strong>
+                <small>offline · WOL enabled · allowed now</small>
+            </div>
+            <div class="power-summary-item">
+                <span>Auto demand wake</span>
+                <strong><?= $demandEnabled ? (int) $needed : 'off' ?></strong>
+                <small>extra PCs needed for queued jobs</small>
+            </div>
+            <div class="power-summary-item">
+                <span>Queue coverage</span>
+                <strong><?= (int) $queuedWork ?> / <?= (int) $idleOnlineWorkers ?></strong>
+                <small>queued normal jobs / idle online workers</small>
+            </div>
+            <div class="power-summary-item">
+                <span>SOC rules</span>
+                <strong><?= reflection_h($workerLimitDisplay) ?></strong>
+                <small><?= reflection_h($workerLimitHelp) ?></small>
+            </div>
+        </div>
+
+        <?php if ($wakeEnabledMachineCount === 0): ?>
+            <p class="api-note panel-warning-note">No Wake-on-LAN targets are configured. Add machines in Settings to use farm wake control.</p>
+        <?php elseif ($essSocIgnored): ?>
+            <p class="api-note panel-warning-note">ESS SOC is <?= reflection_h(reflection_ess_status_label($settings)) ?>. SOC limiting is paused, so every configured wake target is eligible until valid SOC data returns.</p>
+        <?php elseif ($wakeTargetCount === 0): ?>
+            <p class="api-note panel-warning-note">No offline wake-enabled PC is currently eligible for manual wake. This can mean all eligible machines are already online, blocked by SOC, or inside wake cooldown.</p>
+        <?php elseif ($essChargingOverrideActive): ?>
+            <p class="api-note">ESS reports charging and charging override is enabled. Minimum SOC rules are bypassed, so eligible offline wake targets may be woken.</p>
+        <?php elseif ($allowedActiveWorkers === PHP_INT_MAX): ?>
+            <p class="api-note">SOC is not currently capping workers. Manual wake can target any configured offline WOL machine.</p>
+        <?php else: ?>
+            <p class="api-note">Current SOC allows <?= (int) $allowedActiveWorkers ?> configured worker<?= $allowedActiveWorkers === 1 ? '' : 's' ?> by minimum ESS SOC. <?= (int) $wakeTargetCount ?> offline WOL target<?= $wakeTargetCount === 1 ? '' : 's' ?> are currently eligible.</p>
+        <?php endif; ?>
+
+        <?php if (!$demandEnabled): ?>
+            <p class="api-note">Automatic demand wake is off. Jobs can still be queued, but machines wake only when you press the manual button or by another external schedule.</p>
+        <?php elseif ($needed > 0): ?>
+            <p class="api-note">Automatic demand wake wants <?= (int) $needed ?> more PC<?= $needed === 1 ? '' : 's' ?> for queued work. <?= (int) $readyTargets ?> eligible target<?= $readyTargets === 1 ? '' : 's' ?> are ready after cooldown. Lower shutdown layers are woken first.</p>
+        <?php else: ?>
+            <p class="api-note">Automatic demand wake is satisfied. There are no queued normal jobs waiting for extra workers right now.</p>
+        <?php endif; ?>
+    </section>
+    <?php
+    return (string) ob_get_clean();
+}
+
+function reflection_render_storage_history_panel_html(array $settings, array $archiveInfo): string
+{
+    ob_start();
+    ?>
+    <section class="panel compact-panel history-panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">Storage</p>
+                <h2>History cleanup</h2>
+                <small>Maintenance archives old completed jobs and trims dashboard history. It does not wake workers or delete source files.</small>
+            </div>
+        </div>
+        <dl class="detail-list">
+            <div><dt>Completed jobs kept</dt><dd><?= (int) ($settings['job_history_keep_completed'] ?? 500) ?></dd></div>
+            <div><dt>Event lines kept</dt><dd><?= (int) ($settings['event_log_keep_lines'] ?? 1000) ?></dd></div>
+            <div><dt>File-history paths kept</dt><dd><?= (int) ($settings['file_history_keep_paths'] ?? 500) ?></dd></div>
+            <div><dt>Archive file</dt><dd><?= reflection_h(reflection_format_bytes((int) $archiveInfo['size_bytes'])) ?></dd></div>
+        </dl>
+        <form method="post" class="maintenance-form">
+            <input type="hidden" name="form_action" value="maintenance">
+            <button type="submit" class="ghost-button">Clean history now</button>
+        </form>
+    </section>
+    <?php
+    return (string) ob_get_clean();
+}
+
 function reflection_url_with(array $overrides): string
 {
     $query = array_merge($_GET, $overrides);
@@ -815,6 +923,18 @@ $activeJobsShownLimit = count($activeJobsAll);
 $completedInStore = (int) ($statusCounts['success'] ?? 0) + (int) ($statusCounts['failed'] ?? 0) + (int) ($statusCounts['stale'] ?? 0) + (int) ($statusCounts['blocked'] ?? 0) + (int) ($statusCounts['ignored'] ?? 0);
 $activeCount = (int) ($statusCounts['queued'] ?? 0) + (int) ($statusCounts['running'] ?? 0) + (int) ($statusCounts['held'] ?? 0);
 $maintenanceChanged = array_sum($automaticMaintenance) > 0;
+$powerPanelContext = [
+    'wakeButtonDisabled' => $wakeButtonDisabled,
+    'wakeTargetCount' => $wakeTargetCount,
+    'wakeEnabledMachineCount' => $wakeEnabledMachineCount,
+    'workerLimitDisplay' => $workerLimitDisplay,
+    'workerLimitHelp' => $workerLimitHelp,
+    'demandWakePlan' => $demandWakePlan,
+    'essSocIgnored' => $essSocIgnored,
+    'essChargingOverrideActive' => $essChargingOverrideActive,
+    'allowedActiveWorkers' => $allowedActiveWorkers,
+    'settings' => $settings,
+];
 
 // Handle AJAX dashboard refresh
 if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) ($_POST['ajax'] ?? '')) === '1')) {
@@ -859,6 +979,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
     // Render workers section
     $workerSummaryHtml = reflection_render_worker_summary($workerStateCounts);
     $workersHtml = reflection_render_worker_cards_html($workerCards);
+    $powerHtml = reflection_render_power_panel_html($powerPanelContext);
     
     // Render jobs table rows
     ob_start();
@@ -1015,6 +1136,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
         'metrics' => $metricsHtml,
         'workers' => $workersHtml,
         'worker_summary' => $workerSummaryHtml,
+        'power' => $powerHtml,
         'jobs' => $jobsHtml,
         'job_tabs' => $jobTabsHtml,
         'job_pagination' => $jobPaginationHtml,
@@ -1155,173 +1277,104 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
         </article>
     </section>
 
-    <main class="dashboard-grid">
-        <section class="panel queue-panel">
+    <main class="dashboard-grid dashboard-status-grid">
+        <section class="panel workers-panel dashboard-workers-panel">
             <div class="panel-head">
                 <div>
-                    <p class="eyebrow">Queue</p>
-                    <h2>Create jobs</h2>
+                    <p class="eyebrow">Cluster</p>
+                    <h2>Farm computers</h2>
                 </div>
-                <span class="soft-label">Single or bulk</span>
+                <div class="worker-summary" id="worker-summary">
+                    <?= reflection_render_worker_summary($workerStateCounts) ?>
+                </div>
             </div>
-            <form method="post" enctype="multipart/form-data" id="job-form">
-                <label>
-                    Submit mode
-                    <select name="form_action" id="submit-mode">
-                        <option value="single">Single job</option>
-                        <option value="bulk">Bulk import</option>
-                    </select>
-                    <small>Bulk accepts pasted paths, a JSON array, or a file generated by <code>cluster/tools/reflection-file-list.sh</code>.</small>
-                </label>
-                <label>
-                    Task
-                    <select name="module" id="task-module" required>
-                        <?php foreach ($config['allowed_tasks'] as $taskName => $description): ?>
-                            <?php $selectDescription = reflection_task_select_description((string) $taskName, (string) $description, $taskSpecs); ?>
-                            <option value="<?= reflection_h($taskName) ?>"><?= reflection_h($taskName) ?> — <?= reflection_h($selectDescription) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </label>
-                <div id="task-contract-data" data-task-specs="<?= reflection_h(json_encode($taskSpecs, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?>"></div>
-                <section class="task-contract" id="task-contract" aria-live="polite">
-                    <strong id="task-contract-title">Task contract</strong>
-                    <small id="task-contract-summary">The selected task declares its required source, delivery behavior, and output format.</small>
-                </section>
-                <label id="storage-server-field">
-                    Storage server
-                    <select name="transfer_server_id">
-                        <option value="">Use first available/default server</option>
-                        <?php foreach ($storageServers as $server): ?>
-                            <option value="<?= reflection_h($server['id'] ?? '') ?>"><?= reflection_h(reflection_storage_server_label($server)) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                    <small>Choose which FTP/SFTP server plain source/delivery paths belong to. Worker usernames/passwords stay on each worker. <a href="storage_servers.php">Add or edit storage servers</a>.</small>
-                </label>
-                <div class="mode-fields mode-single">
-                    <label id="single-source-field">
-                        <span id="single-source-label">Source path or URI</span>
-                        <input name="single_source" id="single-source-input" placeholder="ftp://farm.local/incoming/source.dat">
-                        <small id="single-source-help">Use an FTP URL or any path the worker can read. Control tasks can leave this blank.</small>
-                    </label>
-                    <label id="single-delivery-field">
-                        <span id="single-delivery-label">Delivery path or URI</span>
-                        <input name="single_delivery" id="single-delivery-input" placeholder="ftp://farm.local/outputs/result.txt">
-                        <small id="single-delivery-help">Optional. The master passes this value through; workers do the writing.</small>
-                    </label>
-                    <p class="api-note" id="single-delivery-preview"></p>
-                </div>
-                <div class="mode-fields mode-bulk" hidden>
-                    <label id="bulk-source-field">
-                        <span id="bulk-source-label">Source list</span>
-                        <textarea name="source_list" id="bulk-source-input" rows="8" placeholder="ftp://farm.local/incoming/img001.png&#10;ftp://farm.local/incoming/img002.png"></textarea>
-                        <small id="bulk-source-help">One source per line, or paste a JSON array.</small>
-                    </label>
-                    <label id="bulk-upload-field">
-                        Upload list file
-                        <input type="file" name="source_file" accept=".txt,.list,.json,text/plain,application/json">
-                    </label>
-                    <label id="bulk-delivery-field">
-                        <span id="bulk-delivery-label">Delivery template</span>
-                        <input name="bulk_delivery" id="bulk-delivery-input" placeholder="ftp://farm.local/outputs/{name}.out">
-                        <small id="bulk-delivery-help">Supports <code>{source}</code>, <code>{dir}</code>, <code>{basename}</code>, <code>{name}</code>, <code>{ext}</code>, and <code>{dot_ext}</code>.</small>
-                    </label>
-                </div>
-                <label class="check-row">
-                    <input type="checkbox" name="overwrite_allowed" value="1">
-                    Allow worker to overwrite existing delivery output
-                </label>
-                <button type="submit" id="submit-button">Queue job</button>
-            </form>
+            <div class="computer-grid" id="workers-grid">
+                <?= reflection_render_worker_cards_html($workerCards) ?>
+            </div>
         </section>
 
         <aside class="side-stack">
-            <section class="panel compact-panel power-panel">
-                <div class="panel-head power-head">
-                    <div>
-                        <p class="eyebrow">Power</p>
-                        <h2>Wake control</h2>
-                    </div>
-                    <form method="post" class="bare-form">
-                        <input type="hidden" name="form_action" value="wake_farm">
-                        <button type="submit" class="secondary-button" <?= $wakeButtonDisabled ? 'disabled' : '' ?>>Wake <?= (int) $wakeTargetCount ?> target<?= $wakeTargetCount === 1 ? '' : 's' ?></button>
-                    </form>
-                </div>
-
-                <div class="power-summary">
-                    <div class="power-summary-item">
-                        <span>Wake targets</span>
-                        <strong><?= (int) $wakeTargetCount ?> / <?= (int) $wakeEnabledMachineCount ?></strong>
-                        <small>eligible offline / configured WOL</small>
-                    </div>
-                    <div class="power-summary-item">
-                        <span>SOC worker allowance</span>
-                        <strong><?= reflection_h($workerLimitDisplay) ?></strong>
-                        <small><?= reflection_h($workerLimitHelp) ?></small>
-                    </div>
-                    <div class="power-summary-item">
-                        <span>Demand wake</span>
-                        <strong><?= !empty($demandWakePlan['enabled']) ? (int) ($demandWakePlan['needed'] ?? 0) : 'off' ?></strong>
-                        <small><?= (int) ($demandWakePlan['queued_work'] ?? 0) ?> queued · <?= (int) ($demandWakePlan['idle_online_workers'] ?? 0) ?> idle online</small>
-                    </div>
-                </div>
-
-                <?php if ($wakeEnabledMachineCount === 0): ?>
-                    <p class="api-note panel-warning-note">No Wake-on-LAN targets are configured. Add machines in the settings panel to use farm wake control.</p>
-                <?php elseif ($essSocIgnored): ?>
-                    <p class="api-note panel-warning-note">ESS SOC is <?= reflection_h(reflection_ess_status_label($settings)) ?>. SOC limiting is paused, so every configured wake target is eligible until valid SOC data returns.</p>
-                <?php elseif ($wakeTargetCount === 0): ?>
-                    <p class="api-note panel-warning-note">No offline wake-enabled machine is allowed by the current ESS SOC. Wake control is disabled until SOC rises, the per-machine minimums are changed, or an eligible machine goes offline.</p>
-                <?php elseif ($essChargingOverrideActive): ?>
-                    <p class="api-note">ESS reports charging and charging override is enabled. SOC minimums are bypassed, so all configured wake targets are eligible.</p>
-                <?php elseif ($allowedActiveWorkers === PHP_INT_MAX): ?>
-                    <p class="api-note">SOC is not currently capping workers. All configured wake targets are eligible.</p>
-                <?php else: ?>
-                    <p class="api-note">Current SOC allows <?= (int) $allowedActiveWorkers ?> configured worker<?= $allowedActiveWorkers === 1 ? '' : 's' ?> by minimum ESS SOC. <?= (int) $wakeTargetCount ?> of <?= (int) $wakeEnabledMachineCount ?> wake-enabled target<?= $wakeEnabledMachineCount === 1 ? '' : 's' ?> are eligible and offline.</p>
-                <?php endif; ?>
-                <?php if (empty($demandWakePlan['enabled'])): ?>
-                    <p class="api-note">Automatic demand wake is disabled. Jobs can still be queued normally, but machines will only wake when you press the button.</p>
-                <?php elseif ((int) ($demandWakePlan['needed'] ?? 0) > 0): ?>
-                    <p class="api-note">Demand wake currently wants <?= (int) ($demandWakePlan['needed'] ?? 0) ?> more worker<?= (int) ($demandWakePlan['needed'] ?? 0) === 1 ? '' : 's' ?>. <?= (int) ($demandWakePlan['ready_targets'] ?? 0) ?> eligible target<?= (int) ($demandWakePlan['ready_targets'] ?? 0) === 1 ? '' : 's' ?> are ready after cooldown.</p>
-                <?php else: ?>
-                    <p class="api-note">Demand wake is satisfied: queued jobs are covered by currently idle online workers or there is no queued work.</p>
-                <?php endif; ?>
-
-                <form method="post" class="bare-form maintenance-form">
-                    <input type="hidden" name="form_action" value="maintenance">
-                    <button type="submit" class="ghost-button">Run maintenance now</button>
-                </form>
-            </section>
-
-            <section class="panel compact-panel">
-                <div class="panel-head">
-                    <div>
-                        <p class="eyebrow">Storage</p>
-                        <h2>History limits</h2>
-                    </div>
-                </div>
-                <dl class="detail-list">
-                    <div><dt>Completed jobs kept</dt><dd><?= (int) ($settings['job_history_keep_completed'] ?? 500) ?></dd></div>
-                    <div><dt>Event lines kept</dt><dd><?= (int) ($settings['event_log_keep_lines'] ?? 1000) ?></dd></div>
-                    <div><dt>File-history paths kept</dt><dd><?= (int) ($settings['file_history_keep_paths'] ?? 500) ?></dd></div>
-                    <div><dt>Archive file</dt><dd><?= reflection_h(reflection_format_bytes((int) $archiveInfo['size_bytes'])) ?></dd></div>
-                </dl>
-            </section>
+            <?= reflection_render_power_panel_html($powerPanelContext) ?>
+            <?= reflection_render_storage_history_panel_html($settings, $archiveInfo) ?>
         </aside>
     </main>
 
-    <section class="panel workers-panel">
+    <section class="panel queue-panel create-jobs-panel">
         <div class="panel-head">
             <div>
-                <p class="eyebrow">Cluster</p>
-                <h2>Farm computers</h2>
+                <p class="eyebrow">Queue</p>
+                <h2>Create jobs</h2>
             </div>
-            <div class="worker-summary" id="worker-summary">
-                <?= reflection_render_worker_summary($workerStateCounts) ?>
+            <span class="soft-label">Single or bulk</span>
+        </div>
+        <form method="post" enctype="multipart/form-data" id="job-form">
+            <label>
+                Submit mode
+                <select name="form_action" id="submit-mode">
+                    <option value="single">Single job</option>
+                    <option value="bulk">Bulk import</option>
+                </select>
+                <small>Bulk accepts pasted paths, a JSON array, or a file generated by <code>cluster/tools/reflection-file-list.sh</code>.</small>
+            </label>
+            <label>
+                Task
+                <select name="module" id="task-module" required>
+                    <?php foreach ($config['allowed_tasks'] as $taskName => $description): ?>
+                        <?php $selectDescription = reflection_task_select_description((string) $taskName, (string) $description, $taskSpecs); ?>
+                        <option value="<?= reflection_h($taskName) ?>"><?= reflection_h($taskName) ?> — <?= reflection_h($selectDescription) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
+            <div id="task-contract-data" data-task-specs="<?= reflection_h(json_encode($taskSpecs, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?>"></div>
+            <section class="task-contract" id="task-contract" aria-live="polite">
+                <strong id="task-contract-title">Task contract</strong>
+                <small id="task-contract-summary">The selected task declares its required source, delivery behavior, and output format.</small>
+            </section>
+            <label id="storage-server-field">
+                Storage server
+                <select name="transfer_server_id">
+                    <option value="">Use first available/default server</option>
+                    <?php foreach ($storageServers as $server): ?>
+                        <option value="<?= reflection_h($server['id'] ?? '') ?>"><?= reflection_h(reflection_storage_server_label($server)) ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <small>Choose which FTP/SFTP server plain source/delivery paths belong to. Worker usernames/passwords stay on each worker. <a href="storage_servers.php">Add or edit storage servers</a>.</small>
+            </label>
+            <div class="mode-fields mode-single">
+                <label id="single-source-field">
+                    <span id="single-source-label">Source path or URI</span>
+                    <input name="single_source" id="single-source-input" placeholder="ftp://farm.local/incoming/source.dat">
+                    <small id="single-source-help">Use an FTP URL or any path the worker can read. Control tasks can leave this blank.</small>
+                </label>
+                <label id="single-delivery-field">
+                    <span id="single-delivery-label">Delivery path or URI</span>
+                    <input name="single_delivery" id="single-delivery-input" placeholder="ftp://farm.local/outputs/result.txt">
+                    <small id="single-delivery-help">Optional. The master passes this value through; workers do the writing.</small>
+                </label>
+                <p class="api-note" id="single-delivery-preview"></p>
             </div>
-        </div>
-        <div class="computer-grid" id="workers-grid">
-            <?= reflection_render_worker_cards_html($workerCards) ?>
-        </div>
+            <div class="mode-fields mode-bulk" hidden>
+                <label id="bulk-source-field">
+                    <span id="bulk-source-label">Source list</span>
+                    <textarea name="source_list" id="bulk-source-input" rows="8" placeholder="ftp://farm.local/incoming/img001.png&#10;ftp://farm.local/incoming/img002.png"></textarea>
+                    <small id="bulk-source-help">One source per line, or paste a JSON array.</small>
+                </label>
+                <label id="bulk-upload-field">
+                    Upload list file
+                    <input type="file" name="source_file" accept=".txt,.list,.json,text/plain,application/json">
+                </label>
+                <label id="bulk-delivery-field">
+                    <span id="bulk-delivery-label">Delivery template</span>
+                    <input name="bulk_delivery" id="bulk-delivery-input" placeholder="ftp://farm.local/outputs/{name}.out">
+                    <small id="bulk-delivery-help">Supports <code>{source}</code>, <code>{dir}</code>, <code>{basename}</code>, <code>{name}</code>, <code>{ext}</code>, and <code>{dot_ext}</code>.</small>
+                </label>
+            </div>
+            <label class="check-row">
+                <input type="checkbox" name="overwrite_allowed" value="1">
+                Allow worker to overwrite existing delivery output
+            </label>
+            <button type="submit" id="submit-button">Queue job</button>
+        </form>
     </section>
 
     <section class="panel jobs-panel">

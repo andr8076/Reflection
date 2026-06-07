@@ -2263,3 +2263,71 @@ pre {
     border: 1px solid rgba(239, 68, 68, 0.35);
     color: #991b1b;
 }
+
+.dashboard-status-grid {
+    align-items: start;
+    grid-template-columns: minmax(0, 1.15fr) minmax(20rem, 0.85fr);
+}
+
+.dashboard-workers-panel {
+    margin-bottom: 0;
+}
+
+.dashboard-workers-panel .computer-grid {
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+
+.dashboard-workers-panel .computer-card {
+    padding: 0.9rem;
+}
+
+.dashboard-workers-panel .computer-card dl {
+    gap: 0.5rem;
+}
+
+.dashboard-workers-panel .computer-card dl div {
+    padding-top: 0.45rem;
+}
+
+.simplified-power-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.history-panel .maintenance-form {
+    margin-top: 1rem;
+}
+
+.create-jobs-panel {
+    margin-bottom: 1rem;
+}
+
+@media (min-width: 900px) {
+    .create-jobs-panel #job-form {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .create-jobs-panel #task-contract-data,
+    .create-jobs-panel .task-contract,
+    .create-jobs-panel #storage-server-field,
+    .create-jobs-panel .mode-fields,
+    .create-jobs-panel .check-row,
+    .create-jobs-panel #submit-button {
+        grid-column: 1 / -1;
+    }
+
+    .create-jobs-panel .mode-fields.mode-single:not([hidden]) {
+        display: grid;
+        gap: 1rem;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .create-jobs-panel .mode-fields.mode-single #single-delivery-preview {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 1100px) {
+    .dashboard-status-grid {
+        grid-template-columns: 1fr;
+    }
+}

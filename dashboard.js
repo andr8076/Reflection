@@ -239,6 +239,11 @@
             workersGrid.innerHTML = data.workers;
         }
 
+        var powerPanel = document.getElementById('power-panel');
+        if (powerPanel && typeof data.power === 'string') {
+            powerPanel.outerHTML = data.power;
+        }
+
         var jobSummary = document.getElementById('jobs-summary');
         if (jobSummary && data.job_summary) {
             jobSummary.textContent = data.job_summary;
