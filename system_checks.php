@@ -53,7 +53,7 @@ $checks[] = reflection_check_row('Blocked-job queue', $blockedCount === 0, $bloc
 $checks[] = reflection_check_row('Job archive size', true, reflection_format_bytes((int) ($archive['size_bytes'] ?? 0)) . ' · ' . (int) ($archive['jobs'] ?? 0) . ' line(s)');
 ?>
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>System checks · Reflection Farm Master</title><link rel="stylesheet" href="styles.css"></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>System checks · Reflection Farm Master</title><?= reflection_stylesheet_links() ?></head>
 <body class="automation-page">
 <header class="hero compact-hero"><div class="hero-main"><p class="eyebrow">Reflection farm master</p><h1>System checks</h1><p class="lede">Quick checks for the master, storage, ESS, automation, and worker readiness.</p><nav class="top-nav"><a href="index.php">Dashboard</a><a href="automation.php">Automation</a><a href="storage_servers.php">Storage servers</a><a href="blocked_jobs.php">Blocked jobs</a><a class="active" href="system_checks.php">System checks</a><a href="logs.php">Logs</a><a href="settings.php">Settings</a></nav></div><aside class="version-card"><span>Use this before</span><strong>large automation runs</strong><small>It catches missing storage, dead ESS parsing, blocked jobs, and stale worker state.</small></aside></header>
 <?php if ($message !== null): ?><div class="alert success"><?= reflection_h($message) ?></div><?php endif; ?><?php if ($error !== null): ?><div class="alert error"><?= reflection_h($error) ?></div><?php endif; ?>

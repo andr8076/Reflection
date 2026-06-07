@@ -259,7 +259,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Automation · Reflection Farm Master</title>
-    <link rel="stylesheet" href="styles.css">
+    <?= reflection_stylesheet_links() ?>
 </head>
 <body class="automation-page">
     <header class="hero compact-hero">

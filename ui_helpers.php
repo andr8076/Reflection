@@ -7,6 +7,18 @@ function reflection_send_security_headers(): void
     header("Content-Security-Policy: script-src 'self'; object-src 'none'; base-uri 'self'");
 }
 
+function reflection_stylesheet_links(): string
+{
+    $bootstrapHref = 'https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css';
+    $bootstrapIntegrity = 'sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB';
+
+    $links = [
+        '<link href="' . reflection_h($bootstrapHref) . '" rel="stylesheet" integrity="' . reflection_h($bootstrapIntegrity) . '" crossorigin="anonymous">',
+    ];
+
+    return implode(PHP_EOL . '    ', $links) . PHP_EOL;
+}
+
 function reflection_h($value): string
 {
     return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');

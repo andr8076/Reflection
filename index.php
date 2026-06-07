@@ -1260,7 +1260,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Reflection Farm Master</title>
-    <link rel="stylesheet" href="styles.css">
+    <?= reflection_stylesheet_links() ?>
 </head>
 <body>
     <header class="hero">
