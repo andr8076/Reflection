@@ -271,7 +271,8 @@ final class AutomationStore
         if (($rule['command_filter_mode'] ?? 'disabled') !== 'disabled') {
             $errors = array_merge($errors, $this->templateValidationErrors(
                 (string) ($rule['command_filter_command'] ?? ''),
-                'Command template'
+                'Command template',
+                $this->validCommandTemplatePlaceholders()
             ));
         }
 
@@ -1118,11 +1119,26 @@ final class AutomationStore
         ];
     }
 
-    private function templateValidationErrors(string $template, string $label): array
+    private function validCommandTemplatePlaceholders(): array
+    {
+        return array_values(array_unique(array_merge($this->validTemplatePlaceholders(), [
+            'farm_root', 'task_dir', 'task_file',
+        ])));
+    }
+
+    private function templateValidationErrors(string $template, string $label, ?array $validPlaceholders = null): array
     {
         $template = trim($template);
         if ($template === '') {
             return [];
+        }
+
+        // Be defensive here: command templates have their own placeholder set.
+        // The save path passes that set explicitly, but this label-based fallback
+        // prevents future call sites from accidentally validating command filters
+        // against path-only placeholders and rejecting {task_file}.
+        if ($validPlaceholders === null && strtolower($label) === 'command template') {
+            $validPlaceholders = $this->validCommandTemplatePlaceholders();
         }
 
         $errors = [];
@@ -1131,7 +1147,7 @@ final class AutomationStore
         }
 
         preg_match_all('/\{([^{}]+)\}/', $template, $matches);
-        $valid = array_flip($this->validTemplatePlaceholders());
+        $valid = array_flip($validPlaceholders ?? $this->validTemplatePlaceholders());
         foreach (($matches[1] ?? []) as $placeholder) {
             if (!isset($valid[$placeholder])) {
                 $errors[] = $label . ' contains unknown placeholder {' . $placeholder . '}.';

@@ -108,6 +108,26 @@ $invalidErrors = $automationStore->validateRule($automationStore->normalizeRule(
 assertSameValue(true, count($invalidErrors) > 0, 'Invalid template placeholders should be rejected.');
 assertSameValue(true, strpos(implode(' ', $invalidErrors), '{relatiive}') !== false, 'Invalid placeholder error should include the bad placeholder name.');
 
+$commandPlaceholderErrors = $automationStore->validateRule($automationStore->normalizeRule([
+    'name' => 'Command task placeholder',
+    'enabled' => false,
+    'module' => 'dummy_task',
+    'scan_roots' => $scanDir,
+    'source_template' => '{path}',
+    'command_filter_mode' => 'exit_zero',
+    'command_filter_command' => 'python3 {task_file} --preflight {path}',
+]), ['dummy_task' => 'dummy']);
+assertSameValue(false, strpos(implode(' ', $commandPlaceholderErrors), '{task_file}') !== false, 'Command templates should allow task-owned placeholders like {task_file}.');
+
+$pathTaskPlaceholderErrors = $automationStore->validateRule($automationStore->normalizeRule([
+    'name' => 'Path task placeholder invalid',
+    'enabled' => false,
+    'module' => 'dummy_task',
+    'scan_roots' => $scanDir,
+    'source_template' => '{task_file}',
+]), ['dummy_task' => 'dummy']);
+assertSameValue(true, strpos(implode(' ', $pathTaskPlaceholderErrors), '{task_file}') !== false, 'Path templates should still reject command-only placeholders like {task_file}.');
+
 
 $mappedRule = $automationStore->saveRule([
     'name' => 'Mapped worker paths',

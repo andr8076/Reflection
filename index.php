@@ -416,30 +416,55 @@ function reflection_render_worker_cards_html(array $workerCards): string
     endif;
 
     foreach ($workerCards as $card):
+        $state = (string) ($card['state'] ?? 'unknown');
+        $stateClass = reflection_status_class($state);
+        $currentJob = trim((string) ($card['current_job'] ?? ''));
+        $currentJobDisplay = $currentJob !== '' ? $currentJob : '—';
+        $lastCheckIn = $card['last_check_in'] ?? null;
+        $version = trim((string) ($card['version'] ?? ''));
+        $versionDisplay = $version !== '' ? $version : '—';
+        $minSoc = ($card['min_soc_percent'] ?? null) === null ? 'global' : ((int) $card['min_soc_percent']) . '%';
+        $layer = (int) ($card['shutdown_layer'] ?? 0);
+        $wakeLabel = !empty($card['wake_enabled']) ? 'WOL on' : 'WOL off';
+        $mac = trim((string) ($card['mac'] ?? ''));
+        $powerTitle = trim($wakeLabel . ($mac !== '' ? ' · ' . $mac : '') . ' · minimum ESS SOC ' . $minSoc . ' · shutdown layer ' . $layer);
         ?>
-        <article class="computer-card <?= reflection_h(reflection_status_class($card['state'] ?? 'unknown')) ?>">
-            <div class="computer-card-head">
+        <article class="worker-row <?= reflection_h($stateClass) ?>">
+            <div class="worker-row-main">
                 <strong><?= reflection_h($card['pc_id'] ?? 'unknown') ?></strong>
-                <span class="badge <?= reflection_h(reflection_status_class($card['state'] ?? 'unknown')) ?>"><?= reflection_h($card['state'] ?? 'unknown') ?></span>
+                <span class="badge <?= reflection_h($stateClass) ?>"><?= reflection_h($state) ?></span>
             </div>
-            <dl>
-                <div><dt>Current job</dt><dd><?= reflection_h($card['current_job'] ?? '—') ?></dd></div>
-                <div><dt>Last check-in</dt><dd title="<?= reflection_h($card['last_check_in'] ?? '') ?>"><?= reflection_h(reflection_relative_time($card['last_check_in'] ?? null)) ?></dd></div>
-                <?php if (!empty($card['expected_offline'])): ?>
-                    <div><dt>Expected offline</dt><dd title="<?= reflection_h($card['expected_offline_at'] ?? '') ?>"><?= reflection_h(reflection_relative_time($card['expected_offline_at'] ?? null)) ?><?= ($card['expected_offline_reason'] ?? '') !== '' ? ' · ' . reflection_h($card['expected_offline_reason']) : '' ?></dd></div>
-                <?php endif; ?>
-                <div><dt>No-job polls</dt><dd><?= (int) ($card['idle_no_job_checkins'] ?? 0) ?></dd></div>
-                <div><dt>Version</dt><dd><code><?= reflection_h($card['version'] ?? '—') ?></code></dd></div>
-                <div><dt>Wake</dt><dd><?= !empty($card['wake_enabled']) ? 'enabled' : 'disabled' ?><?= !empty($card['mac']) ? ' · ' . reflection_h($card['mac']) : '' ?></dd></div>
-                <div><dt>Minimum ESS SOC</dt><dd><?= ($card['min_soc_percent'] ?? null) === null ? 'global fallback' : ((int) $card['min_soc_percent']) . '%' ?></dd></div>
-                <div><dt>Shutdown layer</dt><dd><?= (int) ($card['shutdown_layer'] ?? 0) ?></dd></div>
-            </dl>
-            <?php if (($card['state'] ?? '') === 'stale'): ?>
-                <form method="post" class="button-row computer-actions" data-confirm="Remove this stale worker check-in from the board?">
+            <div class="worker-row-cell worker-job-cell">
+                <span>Job</span>
+                <strong><code title="<?= reflection_h($currentJobDisplay) ?>"><?= reflection_h(reflection_short_value($currentJobDisplay, 30)) ?></code></strong>
+            </div>
+            <div class="worker-row-cell">
+                <span>Seen</span>
+                <strong title="<?= reflection_h($lastCheckIn ?? '') ?>"><?= reflection_h(reflection_relative_time($lastCheckIn)) ?></strong>
+            </div>
+            <div class="worker-row-cell">
+                <span>Version</span>
+                <strong><code title="<?= reflection_h($versionDisplay) ?>"><?= reflection_h(reflection_short_value($versionDisplay, 14)) ?></code></strong>
+            </div>
+            <div class="worker-row-cell worker-power-cell">
+                <span>Power rule</span>
+                <strong title="<?= reflection_h($powerTitle) ?>">SOC <?= reflection_h($minSoc) ?> · L<?= $layer ?> · <?= reflection_h($wakeLabel) ?></strong>
+            </div>
+            <div class="worker-row-cell worker-polls-cell">
+                <span>No-job</span>
+                <strong><?= (int) ($card['idle_no_job_checkins'] ?? 0) ?></strong>
+            </div>
+            <?php if (!empty($card['expected_offline'])): ?>
+                <div class="worker-row-note" title="<?= reflection_h($card['expected_offline_at'] ?? '') ?>">
+                    Expected offline <?= reflection_h(reflection_relative_time($card['expected_offline_at'] ?? null)) ?><?= ($card['expected_offline_reason'] ?? '') !== '' ? ' · ' . reflection_h($card['expected_offline_reason']) : '' ?>
+                </div>
+            <?php endif; ?>
+            <?php if ($state === 'stale'): ?>
+                <form method="post" class="worker-row-action" data-confirm="Remove this stale worker check-in from the board?">
                     <input type="hidden" name="form_action" value="worker_action">
                     <input type="hidden" name="worker_action" value="remove_stale">
                     <input type="hidden" name="pc_id" value="<?= reflection_h($card['pc_id'] ?? '') ?>">
-                    <button type="submit" class="danger-button small-button">Remove stale check-in</button>
+                    <button type="submit" class="danger-button small-button">Remove stale</button>
                 </form>
             <?php endif; ?>
         </article>
