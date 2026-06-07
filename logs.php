@@ -235,7 +235,7 @@ if (!in_array($logType, $validLogs, true)) {
 $limit = (int) ($_GET['limit'] ?? 100);
 $limit = max(5, min(1000, $limit));
 $query = trim((string) ($_GET['q'] ?? ''));
-$validJobFilters = ['all', 'active', 'queued', 'running', 'held', 'success', 'failed', 'stale', 'blocked', 'ignored', 'finished'];
+$validJobFilters = ['all', 'active', 'queued', 'running', 'held', 'success', 'skipped', 'failed', 'stale', 'blocked', 'ignored', 'finished'];
 $jobStatus = (string) ($_GET['job_status'] ?? 'all');
 if (!in_array($jobStatus, $validJobFilters, true)) {
     $jobStatus = 'all';
@@ -252,7 +252,7 @@ $deletedJobs = reflection_sort_deleted_jobs(array_values($data['deleted_jobs'] ?
 $statusCounts = reflection_job_status_counts($liveJobs);
 $deletedStatusCounts = reflection_job_status_counts($deletedJobs);
 $activeCount = (int) ($statusCounts['queued'] ?? 0) + (int) ($statusCounts['running'] ?? 0) + (int) ($statusCounts['held'] ?? 0);
-$completedInStore = (int) ($statusCounts['success'] ?? 0) + (int) ($statusCounts['failed'] ?? 0) + (int) ($statusCounts['stale'] ?? 0) + (int) ($statusCounts['blocked'] ?? 0) + (int) ($statusCounts['ignored'] ?? 0);
+$completedInStore = (int) ($statusCounts['success'] ?? 0) + (int) ($statusCounts['skipped'] ?? 0) + (int) ($statusCounts['failed'] ?? 0) + (int) ($statusCounts['stale'] ?? 0) + (int) ($statusCounts['blocked'] ?? 0) + (int) ($statusCounts['ignored'] ?? 0);
 $deletedActiveCount = (int) ($deletedStatusCounts['queued'] ?? 0) + (int) ($deletedStatusCounts['running'] ?? 0) + (int) ($deletedStatusCounts['held'] ?? 0);
 $deletedFinishedCount = max(0, count($deletedJobs) - $deletedActiveCount);
 

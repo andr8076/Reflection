@@ -29,7 +29,7 @@ TASK_SPEC_JSON = r'''
   "source": {
     "mode": "required",
     "label": "Source video or folder",
-    "help": "A video file or folder containing video files. JSON options may tune encoder mode, recursion, extension filters, and worker-side skip_hevc behavior."
+    "help": "A video file or folder containing video files. JSON options may tune encoder mode, encode_profile, recursion, extension filters, and worker-side skip_hevc behavior. encode_profile defaults to auto, which uses the 4k profile for 4K sources and standard for everything else."
   },
   "delivery": {
     "mode": "auto",
@@ -45,12 +45,47 @@ TASK_SPEC_JSON = r'''
     "command": "python3 {task_file} --preflight {path}",
     "timeout_seconds": 900,
     "profile_command_example": "python3 {task_file} --preflight {path} --profile '{\"min_saving_percent\":30}'",
-    "four_k_only_example": "python3 {task_file} --preflight {path} --only-4k --min-saving-percent 30",
+    "four_k_only_example": "python3 {task_file} --preflight {path} --only-4k --encode-profile 4k --min-saving-percent 30",
     "hard_skips": ["already_h265", "already_av1_or_vp9", "4k_source_by_default"],
     "sample_encode": true,
     "minimum_saving_percent": 25,
     "minimum_ssim": 0.985,
     "minimum_vmaf": 93
+  },
+  "encode_profiles": {
+    "default": "auto",
+    "auto": {
+      "label": "Auto",
+      "help": "Automatically uses the 4k profile for 4K sources and the standard profile otherwise."
+    },
+    "standard": {
+      "label": "Standard / HD",
+      "mode": "software",
+      "crf": 20,
+      "preset": "slow",
+      "pixel_format": "yuv420p10le"
+    },
+    "4k": {
+      "label": "4K balanced",
+      "mode": "software",
+      "crf": 22,
+      "preset": "slow",
+      "pixel_format": "yuv420p10le"
+    },
+    "4k_quality": {
+      "label": "4K quality",
+      "mode": "software",
+      "crf": 20,
+      "preset": "slow",
+      "pixel_format": "yuv420p10le"
+    },
+    "space_saver": {
+      "label": "Space saver",
+      "mode": "software",
+      "crf": 24,
+      "preset": "medium",
+      "pixel_format": "yuv420p10le"
+    }
   },
   "output": {
     "kind": "file_or_folder",
@@ -85,6 +120,37 @@ COMMON_VIDEO_EXTENSIONS = {
 
 EFFICIENT_CODECS = {"hevc", "h265", "av1", "vp9"}
 SOFTWARE_ARGS = ["-c:v:0", "libx265", "-crf", "20", "-preset", "slow"]
+DEFAULT_ENCODE_PROFILE = "auto"
+ENCODE_PROFILES = {
+    "standard": {
+        "label": "Standard / HD",
+        "mode": "software",
+        "crf": "20",
+        "preset": "slow",
+        "pixel_format": "yuv420p10le",
+    },
+    "4k": {
+        "label": "4K balanced",
+        "mode": "software",
+        "crf": "22",
+        "preset": "slow",
+        "pixel_format": "yuv420p10le",
+    },
+    "4k_quality": {
+        "label": "4K quality",
+        "mode": "software",
+        "crf": "20",
+        "preset": "slow",
+        "pixel_format": "yuv420p10le",
+    },
+    "space_saver": {
+        "label": "Space saver",
+        "mode": "software",
+        "crf": "24",
+        "preset": "medium",
+        "pixel_format": "yuv420p10le",
+    },
+}
 HARDWARE_ENCODERS = {
     "nvidia": {
         "ffmpeg_encoder": "hevc_nvenc",
@@ -115,6 +181,13 @@ DEFAULT_PREFLIGHT_OPTIONS = {
     "min_ssim": 0.985,
     "min_vmaf": 93.0,
     "quality_metric": "auto",
+    "encode_profile": DEFAULT_ENCODE_PROFILE,
+    "mode": "software",
+    "crf": None,
+    "preset": None,
+    "pixel_format": None,
+    "pix_fmt": None,
+    "x265_params": None,
     "only_4k": False,
     "skip_under_width": 0,
     "skip_under_height": 0,
@@ -158,7 +231,6 @@ def run(source, delivery, overwrite_allowed):
     allowed_extensions = _normalize_extensions(options.get("extensions"))
     recursive = _option_enabled(options.get("recursive", False))
     skip_hevc = _option_enabled(options.get("skip_hevc", True))
-    encoder_args, pixel_format_args = _choose_encoder(str(options.get("mode", "software")).lower())
     delivery_path = Path(delivery).expanduser() if delivery else None
 
     input_files = _collect_files(input_path, allowed_extensions, recursive)
@@ -185,6 +257,8 @@ def run(source, delivery, overwrite_allowed):
             skip_reasons.append(reason)
             continue
 
+        profile_name, encoder_args, pixel_format_args = _encoder_for_analysis(options, analysis)
+        logging.info("Using H.265 encode profile %s for %s.", profile_name, input_file)
 
         if analysis["height"] > 1080:
             logging.warning("%s is %sp; keeping original resolution.", input_file, analysis["height"])
@@ -240,12 +314,18 @@ def preflight_file(input_file: Path | str, options: dict[str, Any] | None = None
     if max_height > 0 and height > max_height:
         return _preflight_decision(False, f"height {height} above preflight maximum {max_height}", analysis=analysis)
 
-    if not _option_enabled(config["sample_encode"]):
-        return _preflight_decision(True, f"hard checks passed ({codec} {width}x{height})", analysis=analysis)
+    if encoder_args is None:
+        profile_name, encoder_args, resolved_pixel_format_args = _encoder_for_analysis(config, analysis)
+        if pixel_format_args is None:
+            pixel_format_args = resolved_pixel_format_args
+    else:
+        profile_name = _selected_profile_name(config, analysis)
+        pixel_format_args = pixel_format_args if pixel_format_args is not None else PIXEL_FORMAT_ARGS
 
-    encoder_args = encoder_args or SOFTWARE_ARGS
-    pixel_format_args = pixel_format_args if pixel_format_args is not None else PIXEL_FORMAT_ARGS
-    return _sample_preflight(path, analysis, config, encoder_args, pixel_format_args)
+    if not _option_enabled(config["sample_encode"]):
+        return _preflight_decision(True, f"hard checks passed ({codec} {width}x{height}) using profile {profile_name}", analysis=analysis, encode_profile=profile_name)
+
+    return _sample_preflight(path, analysis, config, encoder_args, pixel_format_args, profile_name)
 
 
 def preflight_source(source: str, extra_options: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -290,6 +370,22 @@ def _preflight_options(options: dict[str, Any]) -> dict[str, Any]:
         "preflight_min_vmaf": "min_vmaf",
         "quality_metric": "quality_metric",
         "preflight_quality_metric": "quality_metric",
+        "encode_profile": "encode_profile",
+        "profile": "encode_profile",
+        "preflight_encode_profile": "encode_profile",
+        "mode": "mode",
+        "encoder_mode": "mode",
+        "preflight_mode": "mode",
+        "crf": "crf",
+        "preflight_crf": "crf",
+        "preset": "preset",
+        "preflight_preset": "preset",
+        "pixel_format": "pixel_format",
+        "pix_fmt": "pix_fmt",
+        "preflight_pixel_format": "pixel_format",
+        "preflight_pix_fmt": "pix_fmt",
+        "x265_params": "x265_params",
+        "preflight_x265_params": "x265_params",
         "only_4k": "only_4k",
         "preflight_only_4k": "only_4k",
         "skip_under_width": "skip_under_width",
@@ -314,6 +410,13 @@ def _preflight_options(options: dict[str, Any]) -> dict[str, Any]:
     config["quality_metric"] = str(config["quality_metric"] or "auto").strip().lower()
     if config["quality_metric"] not in {"auto", "vmaf", "ssim", "none"}:
         config["quality_metric"] = "auto"
+    config["encode_profile"] = _normalize_profile_name(config.get("encode_profile"))
+    config["mode"] = str(config.get("mode") or "software").strip().lower()
+    for key in ("crf", "preset", "pixel_format", "pix_fmt", "x265_params"):
+        if config.get(key) is not None:
+            config[key] = str(config.get(key)).strip()
+            if config[key] == "":
+                config[key] = None
     for key in ("skip_under_width", "skip_under_height", "skip_over_width", "skip_over_height"):
         try:
             config[key] = max(0, int(float(config.get(key) or 0)))
@@ -346,7 +449,7 @@ def _normalize_sample_points(value: Any) -> list[float]:
     return points[:8] or list(DEFAULT_PREFLIGHT_OPTIONS["sample_points"])
 
 
-def _sample_preflight(path: Path, analysis: dict[str, Any], config: dict[str, Any], encoder_args: list[str], pixel_format_args: list[str]) -> dict[str, Any]:
+def _sample_preflight(path: Path, analysis: dict[str, Any], config: dict[str, Any], encoder_args: list[str], pixel_format_args: list[str], profile_name: str) -> dict[str, Any]:
     duration = float(analysis.get("duration") or 0.0)
     if duration <= 0:
         return _preflight_decision(False, "missing duration for sample test", analysis=analysis)
@@ -393,6 +496,7 @@ def _sample_preflight(path: Path, analysis: dict[str, Any], config: dict[str, An
             analysis=analysis,
             saving_percent=saving_percent,
             quality_metric=quality_metric_used,
+            encode_profile=profile_name,
         )
 
     if quality_scores:
@@ -407,6 +511,7 @@ def _sample_preflight(path: Path, analysis: dict[str, Any], config: dict[str, An
                     saving_percent=saving_percent,
                     quality_metric=quality_metric_used,
                     quality_score=average_quality,
+                    encode_profile=profile_name,
                 )
         elif quality_metric_used == "ssim":
             minimum = float(config["min_ssim"])
@@ -418,6 +523,7 @@ def _sample_preflight(path: Path, analysis: dict[str, Any], config: dict[str, An
                     saving_percent=saving_percent,
                     quality_metric=quality_metric_used,
                     quality_score=average_quality,
+                    encode_profile=profile_name,
                 )
 
         return _preflight_decision(
@@ -426,6 +532,7 @@ def _sample_preflight(path: Path, analysis: dict[str, Any], config: dict[str, An
             analysis=analysis,
             saving_percent=saving_percent,
             quality_metric=quality_metric_used,
+            encode_profile=profile_name,
             quality_score=average_quality,
         )
 
@@ -435,6 +542,7 @@ def _sample_preflight(path: Path, analysis: dict[str, Any], config: dict[str, An
         analysis=analysis,
         saving_percent=saving_percent,
         quality_metric=quality_metric_used,
+        encode_profile=profile_name,
     )
 
 
@@ -648,7 +756,60 @@ def _detected_hardware():
     return "none"
 
 
-def _choose_encoder(mode):
+def _normalize_profile_name(value: Any) -> str:
+    profile = str(value or DEFAULT_ENCODE_PROFILE).strip().lower().replace("-", "_")
+    aliases = {
+        "": DEFAULT_ENCODE_PROFILE,
+        "default": DEFAULT_ENCODE_PROFILE,
+        "auto": DEFAULT_ENCODE_PROFILE,
+        "normal": "standard",
+        "hd": "standard",
+        "1080p": "standard",
+        "uhd": "4k",
+        "4k_balanced": "4k",
+        "quality_4k": "4k_quality",
+    }
+    profile = aliases.get(profile, profile)
+    if profile != DEFAULT_ENCODE_PROFILE and profile not in ENCODE_PROFILES:
+        raise ValueError(f"Unknown h265 encode_profile {profile!r}. Valid profiles: auto, " + ", ".join(sorted(ENCODE_PROFILES)))
+    return profile
+
+
+def _selected_profile_name(options: dict[str, Any], analysis: dict[str, Any]) -> str:
+    profile = _normalize_profile_name(options.get("encode_profile", options.get("profile", DEFAULT_ENCODE_PROFILE)))
+    if profile == DEFAULT_ENCODE_PROFILE:
+        width = int(analysis.get("width") or 0)
+        height = int(analysis.get("height") or 0)
+        return "4k" if width >= 3840 or height >= 2160 else "standard"
+    return profile
+
+
+def _profile_options(options: dict[str, Any], analysis: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    profile_name = _selected_profile_name(options, analysis)
+    profile = dict(ENCODE_PROFILES[profile_name])
+
+    # Job/source JSON and preflight CLI flags may override profile pieces while
+    # still using the task-owned profile defaults as the base.
+    if options.get("mode"):
+        profile["mode"] = str(options.get("mode")).strip().lower()
+    for key in ("crf", "preset", "x265_params"):
+        if options.get(key) not in {None, ""}:
+            profile[key] = str(options.get(key)).strip()
+    pixel_format = options.get("pixel_format", options.get("pix_fmt"))
+    if pixel_format not in {None, ""}:
+        profile["pixel_format"] = str(pixel_format).strip()
+
+    return profile_name, profile
+
+
+def _encoder_for_analysis(options: dict[str, Any], analysis: dict[str, Any]) -> tuple[str, list[str], list[str]]:
+    profile_name, profile = _profile_options(options, analysis)
+    encoder_args, pixel_format_args = _choose_encoder(str(profile.get("mode") or "software").lower(), profile)
+    return profile_name, encoder_args, pixel_format_args
+
+
+def _choose_encoder(mode: str, profile: dict[str, Any] | None = None) -> tuple[list[str], list[str]]:
+    profile = profile or ENCODE_PROFILES["standard"]
     if mode in {"hardware", "hw", "auto"}:
         hardware_name = _detected_hardware()
         if hardware_name != "none":
@@ -657,7 +818,20 @@ def _choose_encoder(mode):
             return HARDWARE_ENCODERS[hardware_name]["args"], []
         logging.warning("Hardware HEVC encoder was requested but none was detected; using libx265.")
 
-    return SOFTWARE_ARGS, PIXEL_FORMAT_ARGS
+    encoder_args = [
+        "-c:v:0",
+        "libx265",
+        "-crf",
+        str(profile.get("crf") or "20"),
+        "-preset",
+        str(profile.get("preset") or "slow"),
+    ]
+    if profile.get("x265_params"):
+        encoder_args.extend(["-x265-params", str(profile["x265_params"])])
+
+    pixel_format = str(profile.get("pixel_format") or "").strip()
+    pixel_format_args = ["-pix_fmt", pixel_format] if pixel_format and pixel_format.lower() not in {"none", "copy", "source"} else []
+    return encoder_args, pixel_format_args
 
 
 def _ffmpeg_encoder_available(encoder_name: str) -> bool:
@@ -783,6 +957,8 @@ def _format_cli_result(result: dict[str, Any]) -> str:
         height = analysis.get("height")
         if codec and width and height:
             details.append(f"{codec} {width}x{height}")
+    if result.get("encode_profile"):
+        details.append(f"profile {result['encode_profile']}")
     if "saving_percent" in result:
         details.append(f"saving {float(result['saving_percent']):.1f}%")
     if "quality_metric" in result and result.get("quality_metric") not in {None, "none"} and "quality_score" in result:
@@ -830,6 +1006,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-saving-percent", type=float, help="Required sample size saving percentage.")
     parser.add_argument("--sample-seconds", type=int, help="Length of each sample in seconds.")
     parser.add_argument("--sample-points", help="Comma/space-separated sample positions, e.g. 12,35,60,82 or 0.12,0.35,0.60,0.82.")
+    parser.add_argument("--encode-profile", choices=["auto", "standard", "4k", "4k_quality", "space_saver"], help="Encoder profile to use for the sample test. Default auto uses the 4k profile for 4K sources and standard otherwise.")
+    parser.add_argument("--mode", choices=["software", "hardware", "hw", "auto"], help="Encoder mode for the sample test/profile.")
+    parser.add_argument("--crf", help="Override libx265 CRF for the sample test/profile.")
+    parser.add_argument("--preset", help="Override libx265 preset for the sample test/profile.")
+    parser.add_argument("--pix-fmt", help="Override output pixel format for the sample test/profile, e.g. yuv420p10le or none.")
+    parser.add_argument("--x265-params", help="Extra x265 parameter string for software encodes, e.g. aq-mode=3.")
     parser.add_argument("--quality-metric", choices=["auto", "vmaf", "ssim", "none"], help="Quality metric to use after the sample encode.")
     parser.add_argument("--min-ssim", type=float, help="Minimum average SSIM score.")
     parser.add_argument("--min-vmaf", type=float, help="Minimum average VMAF score.")
@@ -861,6 +1043,18 @@ def main(argv: list[str] | None = None) -> int:
             extra_options["skip_hevc"] = False
         if args.no_sample:
             extra_options["sample_encode"] = False
+        if args.encode_profile is not None:
+            extra_options["encode_profile"] = args.encode_profile
+        if args.mode is not None:
+            extra_options["mode"] = args.mode
+        if args.crf is not None:
+            extra_options["crf"] = args.crf
+        if args.preset is not None:
+            extra_options["preset"] = args.preset
+        if args.pix_fmt is not None:
+            extra_options["pix_fmt"] = args.pix_fmt
+        if args.x265_params is not None:
+            extra_options["x265_params"] = args.x265_params
         if args.min_saving_percent is not None:
             extra_options["min_saving_percent"] = args.min_saving_percent
         if args.sample_seconds is not None:

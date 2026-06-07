@@ -49,6 +49,55 @@ function reflection_storage_server_label(array $server): string
     );
 }
 
+function reflection_job_display_status(array $job): array
+{
+    $status = (string) ($job['status'] ?? 'unknown');
+    $hasWorkerFilter = is_array($job['worker_command_filter'] ?? null);
+    $stage = (string) ($job['stage'] ?? '');
+    $preflight = (string) ($job['worker_preflight_status'] ?? '');
+    $label = $status;
+    $class = $status;
+    $detail = '';
+
+    if ($hasWorkerFilter) {
+        if ($status === 'queued') {
+            $label = 'candidate';
+            $class = 'candidate';
+            $detail = 'Worker preflight pending';
+        } elseif ($status === 'running') {
+            if (in_array($stage, ['preparing_source', 'preflight_pending'], true) || $preflight === 'preparing') {
+                $label = 'preparing';
+                $class = 'running';
+                $detail = 'Preparing source for worker preflight';
+            } elseif ($stage === 'preflight_running' || $preflight === 'running') {
+                $label = 'preflight';
+                $class = 'running';
+                $detail = 'Running worker command filter';
+            } elseif ($preflight === 'passed') {
+                $label = 'running';
+                $class = 'running';
+                $detail = 'Preflight passed';
+            }
+        } elseif ($status === 'skipped') {
+            $label = 'preflight skipped';
+            $class = 'skipped';
+            $detail = 'Skipped by worker command filter';
+        }
+    }
+
+    $note = trim((string) ($job['worker_preflight_note'] ?? $job['stage_message'] ?? ''));
+    if ($note !== '') {
+        $detail = $detail !== '' ? $detail . ' · ' . $note : $note;
+    }
+
+    return [
+        'status' => $status,
+        'label' => $label,
+        'class' => $class,
+        'detail' => $detail,
+    ];
+}
+
 function reflection_validate_task(string $module, array $config): ?string
 {
     return array_key_exists($module, $config['allowed_tasks']) ? null : 'Choose an allowed task.';
@@ -487,6 +536,9 @@ function reflection_render_power_panel_html(array $context): string
     $allowedActiveWorkers = (int) ($context['allowedActiveWorkers'] ?? 0);
     $settings = is_array($context['settings'] ?? null) ? $context['settings'] : [];
     $queuedWork = (int) ($demandWakePlan['queued_work'] ?? 0);
+    $queuedCandidateWork = (int) ($demandWakePlan['queued_candidate_work'] ?? 0);
+    $queuedConfirmedWork = (int) ($demandWakePlan['queued_confirmed_work'] ?? max(0, $queuedWork - $queuedCandidateWork));
+    $effectiveQueuedWork = (int) ($demandWakePlan['effective_queued_work'] ?? $queuedWork);
     $idleOnlineWorkers = (int) ($demandWakePlan['idle_online_workers'] ?? 0);
     $needed = (int) ($demandWakePlan['needed'] ?? 0);
     $readyTargets = (int) ($demandWakePlan['ready_targets'] ?? 0);
@@ -498,7 +550,7 @@ function reflection_render_power_panel_html(array $context): string
             <div>
                 <p class="eyebrow">Power</p>
                 <h2>Wake status</h2>
-                <small>Manual wake shows eligible offline PCs. Automatic demand wake is based only on queued normal jobs.</small>
+                <small>Manual wake shows eligible offline PCs. Automatic demand wake is conservative for preflight-candidate queues.</small>
             </div>
             <form method="post" class="bare-form">
                 <input type="hidden" name="form_action" value="wake_farm">
@@ -515,12 +567,17 @@ function reflection_render_power_panel_html(array $context): string
             <div class="power-summary-item">
                 <span>Auto demand wake</span>
                 <strong><?= $demandEnabled ? (int) $needed : 'off' ?></strong>
-                <small>extra PCs needed for queued jobs</small>
+                <small>extra PCs needed now</small>
             </div>
             <div class="power-summary-item">
                 <span>Queue coverage</span>
-                <strong><?= (int) $queuedWork ?> / <?= (int) $idleOnlineWorkers ?></strong>
-                <small>queued normal jobs / idle online workers</small>
+                <strong><?= (int) $effectiveQueuedWork ?> / <?= (int) $idleOnlineWorkers ?></strong>
+                <small>effective work / idle online workers</small>
+            </div>
+            <div class="power-summary-item">
+                <span>Candidate queue</span>
+                <strong><?= (int) $queuedCandidateWork ?></strong>
+                <small>worker preflight pending</small>
             </div>
             <div class="power-summary-item">
                 <span>SOC rules</span>
@@ -546,9 +603,9 @@ function reflection_render_power_panel_html(array $context): string
         <?php if (!$demandEnabled): ?>
             <p class="api-note">Automatic demand wake is off. Jobs can still be queued, but machines wake only when you press the manual button or by another external schedule.</p>
         <?php elseif ($needed > 0): ?>
-            <p class="api-note">Automatic demand wake wants <?= (int) $needed ?> more PC<?= $needed === 1 ? '' : 's' ?> for queued work. <?= (int) $readyTargets ?> eligible target<?= $readyTargets === 1 ? '' : 's' ?> are ready after cooldown. Lower shutdown layers are woken first.</p>
+            <p class="api-note">Automatic demand wake wants <?= (int) $needed ?> more PC<?= $needed === 1 ? '' : 's' ?> for queued work. <?= (int) $readyTargets ?> eligible target<?= $readyTargets === 1 ? '' : 's' ?> are ready after cooldown. Worker-preflight candidates are counted conservatively so the farm does not wake every PC just to discover many files should be skipped. Lower shutdown layers are woken first.</p>
         <?php else: ?>
-            <p class="api-note">Automatic demand wake is satisfied. There are no queued normal jobs waiting for extra workers right now.</p>
+            <p class="api-note">Automatic demand wake is satisfied. There are no queued jobs that need another worker right now. Candidate jobs remain in the queue until a farm computer tests and either processes or skips them.</p>
         <?php endif; ?>
     </section>
     <?php
@@ -927,7 +984,7 @@ $workerStaleAfterSeconds = max(1, (int) ($config['stale_after_seconds'] ?? 900))
 $workerCards = reflection_worker_cards($workers, $machines, $workerStaleAfterSeconds);
 $workerStateCounts = reflection_count_worker_states($workerCards);
 $archiveInfo = $store->archiveInfo();
-$validJobFilters = ['all', 'active', 'queued', 'running', 'held', 'success', 'failed', 'stale', 'blocked', 'ignored', 'finished'];
+$validJobFilters = ['all', 'active', 'queued', 'running', 'held', 'success', 'skipped', 'failed', 'stale', 'blocked', 'ignored', 'finished'];
 $jobStatus = (string) ($_GET['job_status'] ?? 'all');
 if (!in_array($jobStatus, $validJobFilters, true)) {
     $jobStatus = 'all';
@@ -945,7 +1002,7 @@ $activeJobsPreviewLimit = 5;
 $activeJobsPreview = array_slice($activeJobsAll, 0, $activeJobsPreviewLimit);
 $activeJobsMore = array_slice($activeJobsAll, $activeJobsPreviewLimit);
 $activeJobsShownLimit = count($activeJobsAll);
-$completedInStore = (int) ($statusCounts['success'] ?? 0) + (int) ($statusCounts['failed'] ?? 0) + (int) ($statusCounts['stale'] ?? 0) + (int) ($statusCounts['blocked'] ?? 0) + (int) ($statusCounts['ignored'] ?? 0);
+$completedInStore = (int) ($statusCounts['success'] ?? 0) + (int) ($statusCounts['skipped'] ?? 0) + (int) ($statusCounts['failed'] ?? 0) + (int) ($statusCounts['stale'] ?? 0) + (int) ($statusCounts['blocked'] ?? 0) + (int) ($statusCounts['ignored'] ?? 0);
 $activeCount = (int) ($statusCounts['queued'] ?? 0) + (int) ($statusCounts['running'] ?? 0) + (int) ($statusCounts['held'] ?? 0);
 $maintenanceChanged = array_sum($automaticMaintenance) > 0;
 $powerPanelContext = [
@@ -1013,11 +1070,14 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
         <tr><td colspan="8" class="empty">No jobs match this filter.</td></tr>
     <?php endif; ?>
     <?php foreach ($jobs as $job): ?>
-        <?php $jobStatusValue = (string) ($job['status'] ?? 'unknown'); ?>
+        <?php $jobStatusValue = (string) ($job['status'] ?? 'unknown'); $jobDisplay = reflection_job_display_status($job); ?>
         <tr>
             <td><code><?= reflection_h($job['task_id'] ?? '—') ?></code></td>
             <td><?= reflection_h($job['module'] ?? '—') ?></td>
-            <td><span class="badge <?= reflection_h(reflection_status_class($jobStatusValue)) ?>"><?= reflection_h($jobStatusValue) ?></span></td>
+            <td>
+                <span class="badge <?= reflection_h(reflection_status_class($jobDisplay['class'])) ?>"><?= reflection_h($jobDisplay['label']) ?></span>
+                <?php if ($jobDisplay['detail'] !== ''): ?><small class="job-stage-note"><?= reflection_h(reflection_short_value($jobDisplay['detail'], 120)) ?></small><?php endif; ?>
+            </td>
             <td><?= reflection_h($job['worker'] ?? '—') ?></td>
             <td class="path-cell">
                 <div><span class="subtle-label">Source</span> <code title="<?= reflection_h($job['source'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['source'] ?? '—')) ?></code></div>
@@ -1091,7 +1151,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
     // Render job status tabs
     ob_start();
     ?>
-    <?php foreach (['all', 'active', 'queued', 'running', 'held', 'success', 'failed', 'stale', 'blocked', 'ignored', 'finished'] as $filter): ?>
+    <?php foreach (['all', 'active', 'queued', 'running', 'held', 'success', 'skipped', 'failed', 'stale', 'blocked', 'ignored', 'finished'] as $filter): ?>
         <?php
             if ($filter === 'all') {
                 $tabCount = array_sum($statusCounts);
@@ -1218,10 +1278,12 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
             <div class="mini-list active-work-preview-list">
                 <?php foreach ($activeJobsPreview as $job): ?>
                     <article class="mini-row">
-                        <span class="badge <?= reflection_h(reflection_status_class($job['status'] ?? 'unknown')) ?>"><?= reflection_h($job['status'] ?? 'unknown') ?></span>
+                        <?php $jobDisplay = reflection_job_display_status($job); ?>
+                        <span class="badge <?= reflection_h(reflection_status_class($jobDisplay['class'])) ?>"><?= reflection_h($jobDisplay['label']) ?></span>
                         <div>
                             <strong><code><?= reflection_h($job['task_id'] ?? '—') ?></code> · <?= reflection_h($job['module'] ?? '—') ?></strong>
                             <small><?= reflection_h(reflection_short_value($job['source'] ?? '—', 70)) ?></small>
+                            <?php if ($jobDisplay['detail'] !== ''): ?><small><?= reflection_h(reflection_short_value($jobDisplay['detail'], 70)) ?></small><?php endif; ?>
                         </div>
                     </article>
                 <?php endforeach; ?>
@@ -1232,10 +1294,12 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                     <div class="mini-list active-work-expanded-list">
                         <?php foreach ($activeJobsMore as $job): ?>
                             <article class="mini-row">
-                                <span class="badge <?= reflection_h(reflection_status_class($job['status'] ?? 'unknown')) ?>"><?= reflection_h($job['status'] ?? 'unknown') ?></span>
+                                <?php $jobDisplay = reflection_job_display_status($job); ?>
+                                <span class="badge <?= reflection_h(reflection_status_class($jobDisplay['class'])) ?>"><?= reflection_h($jobDisplay['label']) ?></span>
                                 <div>
                                     <strong><code><?= reflection_h($job['task_id'] ?? '—') ?></code> · <?= reflection_h($job['module'] ?? '—') ?></strong>
                                     <small><?= reflection_h(reflection_short_value($job['source'] ?? '—', 70)) ?></small>
+                                    <?php if ($jobDisplay['detail'] !== ''): ?><small><?= reflection_h(reflection_short_value($jobDisplay['detail'], 70)) ?></small><?php endif; ?>
                                 </div>
                             </article>
                         <?php endforeach; ?>
@@ -1430,7 +1494,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
             </form>
         </div>
         <nav class="status-tabs" aria-label="Job status filters" data-job-status-tabs id="job-status-tabs">
-            <?php foreach (['all', 'active', 'queued', 'running', 'held', 'success', 'failed', 'stale', 'blocked', 'ignored', 'finished'] as $filter): ?>
+            <?php foreach (['all', 'active', 'queued', 'running', 'held', 'success', 'skipped', 'failed', 'stale', 'blocked', 'ignored', 'finished'] as $filter): ?>
                 <?php
                     if ($filter === 'all') {
                         $tabCount = array_sum($statusCounts);
@@ -1464,11 +1528,14 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                     <tr><td colspan="8" class="empty">No jobs match this filter.</td></tr>
                 <?php endif; ?>
                 <?php foreach ($jobs as $job): ?>
-                    <?php $jobStatusValue = (string) ($job['status'] ?? 'unknown'); ?>
+                    <?php $jobStatusValue = (string) ($job['status'] ?? 'unknown'); $jobDisplay = reflection_job_display_status($job); ?>
                     <tr>
                         <td><code><?= reflection_h($job['task_id'] ?? '—') ?></code></td>
                         <td><?= reflection_h($job['module'] ?? '—') ?></td>
-                        <td><span class="badge <?= reflection_h(reflection_status_class($jobStatusValue)) ?>"><?= reflection_h($jobStatusValue) ?></span></td>
+                        <td>
+                            <span class="badge <?= reflection_h(reflection_status_class($jobDisplay['class'])) ?>"><?= reflection_h($jobDisplay['label']) ?></span>
+                            <?php if ($jobDisplay['detail'] !== ''): ?><small class="job-stage-note"><?= reflection_h(reflection_short_value($jobDisplay['detail'], 120)) ?></small><?php endif; ?>
+                        </td>
                         <td><?= reflection_h($job['worker'] ?? '—') ?></td>
                         <td class="path-cell">
                 <div><span class="subtle-label">Source</span> <code title="<?= reflection_h($job['source'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['source'] ?? '—')) ?></code></div>

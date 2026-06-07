@@ -665,6 +665,31 @@ assertSameValue('wake-layer1', $wakePlanAfterCore['targets'][0]['pc_id'] ?? '', 
 @unlink($wakeLayerStorePath);
 @unlink($wakeLayerStorePath . '.lock');
 
+$candidateWakeStorePath = sys_get_temp_dir() . '/reflection_candidate_wake_store_' . bin2hex(random_bytes(6)) . '.json';
+$candidateWakeStore = new FarmStore($candidateWakeStorePath);
+$candidateWakeStore->updateSettings(['ess_soc_url' => '', 'auto_wake_for_queued_jobs' => true, 'auto_wake_max_targets_per_run' => 20]);
+$candidateWakeStore->updateMachines([
+    ['pc_id' => 'candidate-wake-1', 'mac' => '00:11:22:33:45:01', 'min_soc_percent' => '', 'wake_enabled' => true, 'shutdown_layer' => 0],
+    ['pc_id' => 'candidate-wake-2', 'mac' => '00:11:22:33:45:02', 'min_soc_percent' => '', 'wake_enabled' => true, 'shutdown_layer' => 0],
+    ['pc_id' => 'candidate-wake-3', 'mac' => '00:11:22:33:45:03', 'min_soc_percent' => '', 'wake_enabled' => true, 'shutdown_layer' => 0],
+]);
+for ($candidateIndex = 0; $candidateIndex < 20; $candidateIndex++) {
+    $candidateWakeStore->createJob('dummy_task', 'incoming/candidate-' . $candidateIndex . '.dat', 'outputs/candidate-' . $candidateIndex . '.txt', false, [
+        'worker_command_filter' => ['mode' => 'exit_zero', 'command' => 'true', 'regex' => '', 'timeout_seconds' => 10],
+        'candidate_job' => true,
+        'worker_preflight_status' => 'pending',
+    ]);
+}
+$candidateWakePlan = $candidateWakeStore->demandWakePlan(900);
+assertSameValue(20, $candidateWakePlan['queued_candidate_work'], 'Demand wake should count queued worker-preflight candidates separately.');
+assertSameValue(1, $candidateWakePlan['effective_queued_work'], 'Candidate-only queues should be treated conservatively for automatic wake.');
+assertSameValue(1, count($candidateWakePlan['targets']), 'Candidate-only queues should wake only one extra worker at a time.');
+$candidateWakeStore->createJob('dummy_task', 'incoming/confirmed.dat', 'outputs/confirmed.txt', false);
+$candidateWakePlanWithConfirmed = $candidateWakeStore->demandWakePlan(900);
+assertSameValue(2, $candidateWakePlanWithConfirmed['effective_queued_work'], 'Confirmed jobs should be counted in addition to one candidate backlog slot.');
+@unlink($candidateWakeStorePath);
+@unlink($candidateWakeStorePath . '.lock');
+
 $updateLayerStorePath = sys_get_temp_dir() . '/reflection_update_layer_store_' . bin2hex(random_bytes(6)) . '.json';
 $updateLayerStore = new FarmStore($updateLayerStorePath);
 $updateLayerStore->updateSettings(['ess_soc_url' => '']);

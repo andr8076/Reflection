@@ -110,6 +110,8 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
             return reflection_api_confirm_taken($payload, $store, $pcId);
         case 'heartbeat_task':
             return reflection_api_heartbeat_task($payload, $store, $pcId);
+        case 'task_stage':
+            return reflection_api_task_stage($payload, $store, $pcId);
         case 'report_done':
             return reflection_api_report_done($payload, $store, $pcId);
         default:
@@ -240,7 +242,7 @@ function reflection_run_due_automation_on_worker_checkin(FarmStore $store, array
 function reflection_api_allows_mismatched_version_action(array $payload, FarmStore $store): bool
 {
     $action = (string) ($payload['action'] ?? '');
-    if (!in_array($action, ['confirm_taken', 'heartbeat_task', 'report_done'], true)) {
+    if (!in_array($action, ['confirm_taken', 'heartbeat_task', 'task_stage', 'report_done'], true)) {
         return false;
     }
 
@@ -354,6 +356,10 @@ function reflection_api_task_payload(array $job, array $config, array $settings,
         if ($transferAuth !== null) {
             $task['transfer_auth'] = $transferAuth;
         }
+    }
+
+    if (is_array($job['worker_command_filter'] ?? null)) {
+        $task['worker_command_filter'] = $job['worker_command_filter'];
     }
 
     return $task;
@@ -513,6 +519,24 @@ function reflection_api_heartbeat_task(array $payload, FarmStore $store, string 
     return ['status' => 'not_available', 'instruction' => 'relinquish_task'];
 }
 
+function reflection_api_task_stage(array $payload, FarmStore $store, string $pcId): array
+{
+    $taskId = trim((string) ($payload['task_id'] ?? ''));
+    $stage = trim((string) ($payload['stage'] ?? ''));
+    $message = trim((string) ($payload['message'] ?? ''));
+
+    if ($taskId === '' || $stage === '') {
+        return ['status' => 'error', 'error' => 'Missing task_id or stage.'];
+    }
+
+    if (!$store->updateJobStage($taskId, $pcId, $stage, $message)) {
+        return ['status' => 'not_available', 'instruction' => 'relinquish_task'];
+    }
+
+    return ['status' => 'stage_acknowledged'];
+}
+
+
 function reflection_api_report_done(array $payload, FarmStore $store, string $pcId): array
 {
     $taskId = trim((string) ($payload['task_id'] ?? ''));
@@ -523,7 +547,7 @@ function reflection_api_report_done(array $payload, FarmStore $store, string $pc
         return ['status' => 'error', 'error' => 'Missing task_id.'];
     }
 
-    if (!in_array($status, ['success', 'failed'], true)) {
+    if (!in_array($status, ['success', 'failed', 'skipped'], true)) {
         return ['status' => 'error', 'error' => 'Invalid completion status.'];
     }
 

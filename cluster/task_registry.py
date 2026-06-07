@@ -115,6 +115,7 @@ def normalize_task_result(result: Any) -> dict:
             "reload_tasks": False,
             "cleanup_source": False,
             "message": "",
+            "skipped": False,
         }
     if isinstance(result, dict):
         return {
@@ -125,6 +126,7 @@ def normalize_task_result(result: Any) -> dict:
             "reload_tasks": bool(result.get("reload_tasks", False)),
             "cleanup_source": bool(result.get("cleanup_source", False)),
             "message": str(result.get("message", "")),
+            "skipped": bool(result.get("skipped", False)),
         }
     if hasattr(result, "success"):
         return {
@@ -135,5 +137,6 @@ def normalize_task_result(result: Any) -> dict:
             "reload_tasks": bool(getattr(result, "reload_tasks", False)),
             "cleanup_source": bool(getattr(result, "cleanup_source", False)),
             "message": str(getattr(result, "message", "")),
+            "skipped": bool(getattr(result, "skipped", False)),
         }
     raise TypeError("Task run() must return a bool, dict, or TaskOutcome-like object.")

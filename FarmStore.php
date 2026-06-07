@@ -565,6 +565,13 @@ final class FarmStore
                     $now = gmdate(DATE_ATOM);
                     $job['started_at'] = $now;
                     $job['heartbeat_at'] = $now;
+                    if (is_array($job['worker_command_filter'] ?? null)) {
+                        $job['stage'] = 'preparing_source';
+                        $job['worker_preflight_status'] = 'preparing';
+                        $job['worker_preflight_note'] = 'Worker picked up this candidate and is preparing the source before the command filter.';
+                    } else {
+                        $job['stage'] = 'processing';
+                    }
                     $lockedJob = $job;
                     break;
                 }
@@ -576,6 +583,7 @@ final class FarmStore
                     'pc_id' => $pcId,
                     'last_check_in' => gmdate(DATE_ATOM),
                     'current_job' => $taskId,
+                    'current_job_stage' => (string) ($lockedJob['stage'] ?? ''),
                     'idle_no_job_checkins' => 0,
                 ]);
             }
@@ -590,6 +598,65 @@ final class FarmStore
         }
 
         return false;
+    }
+
+    public function updateJobStage(string $taskId, string $pcId, string $stage, string $message = ''): bool
+    {
+        $stage = strtolower(trim(preg_replace('/[^a-zA-Z0-9_-]+/', '_', $stage)));
+        if ($stage === '' || $taskId === '' || $pcId === '') {
+            return false;
+        }
+        $message = trim($message);
+        if (strlen($message) > 500) {
+            $message = substr($message, 0, 500);
+        }
+
+        $result = $this->withLock(function (array $data) use ($taskId, $pcId, $stage, $message): array {
+            $updatedJob = null;
+            $now = gmdate(DATE_ATOM);
+            foreach ($data['jobs'] as &$job) {
+                if (
+                    ($job['task_id'] ?? '') === $taskId
+                    && ($job['status'] ?? '') === 'running'
+                    && ($job['worker'] ?? '') === $pcId
+                ) {
+                    $job['stage'] = $stage;
+                    $job['stage_at'] = $now;
+                    if ($message !== '') {
+                        $job['stage_message'] = $message;
+                    }
+                    if (is_array($job['worker_command_filter'] ?? null)) {
+                        if (in_array($stage, ['preparing_source', 'preflight_pending'], true)) {
+                            $job['worker_preflight_status'] = 'preparing';
+                        } elseif ($stage === 'preflight_running') {
+                            $job['worker_preflight_status'] = 'running';
+                        } elseif (in_array($stage, ['processing', 'encoding', 'delivery', 'uploading'], true)) {
+                            $job['worker_preflight_status'] = 'passed';
+                        }
+                        if ($message !== '') {
+                            $job['worker_preflight_note'] = $message;
+                        }
+                    }
+                    $updatedJob = $job;
+                    break;
+                }
+            }
+            unset($job);
+
+            if ($updatedJob !== null) {
+                $data['workers'][$pcId] = array_merge($data['workers'][$pcId] ?? [], [
+                    'pc_id' => $pcId,
+                    'last_check_in' => $now,
+                    'current_job' => $taskId,
+                    'current_job_stage' => $stage,
+                    'idle_no_job_checkins' => 0,
+                ]);
+            }
+
+            return ['data' => $data, 'result' => $updatedJob];
+        }, true);
+
+        return is_array($result);
     }
 
     public function heartbeatJob(string $taskId, string $pcId): bool
@@ -722,9 +789,23 @@ final class FarmStore
                     && ($job['status'] ?? '') === 'running'
                     && ($job['worker'] ?? '') === $pcId
                 ) {
-                    $job['status'] = $status === 'success' ? 'success' : 'failed';
+                    $job['status'] = in_array($status, ['success', 'skipped'], true) ? $status : 'failed';
                     $job['error'] = $error;
                     $job['finished_at'] = gmdate(DATE_ATOM);
+                    if (is_array($job['worker_command_filter'] ?? null)) {
+                        if ($job['status'] === 'skipped') {
+                            $job['worker_preflight_status'] = 'skipped';
+                            $job['stage'] = 'preflight_skipped';
+                            $job['worker_preflight_note'] = $error !== '' ? $error : 'Worker command filter skipped this candidate.';
+                        } elseif ($job['status'] === 'success') {
+                            $job['worker_preflight_status'] = 'passed';
+                            $job['stage'] = 'finished';
+                        } else {
+                            $job['stage'] = 'failed';
+                        }
+                    } else {
+                        $job['stage'] = $job['status'];
+                    }
                     $finishedJob = $job;
 
                     $settings = array_merge($this->defaultSettings(), $data['settings'] ?? []);
@@ -752,6 +833,7 @@ final class FarmStore
             if ($finishedJob !== null && isset($data['workers'][$pcId])) {
                 $data['workers'][$pcId]['last_check_in'] = gmdate(DATE_ATOM);
                 $data['workers'][$pcId]['current_job'] = null;
+                $data['workers'][$pcId]['current_job_stage'] = null;
             }
 
             if ($finishedJob !== null && ($finishedJob['module'] ?? '') === 'purge_quarantine') {
@@ -1589,9 +1671,17 @@ final class FarmStore
         $data = $this->read();
         $settings = array_merge($this->defaultSettings(), $data['settings'] ?? []);
         $queuedWork = 0;
+        $queuedCandidateWork = 0;
+        $queuedConfirmedWork = 0;
         foreach ($data['jobs'] as $job) {
-            if (($job['status'] ?? '') === 'queued' && !$this->isControlModule((string) ($job['module'] ?? ''))) {
-                $queuedWork++;
+            if (($job['status'] ?? '') !== 'queued' || $this->isControlModule((string) ($job['module'] ?? ''))) {
+                continue;
+            }
+            $queuedWork++;
+            if (is_array($job['worker_command_filter'] ?? null)) {
+                $queuedCandidateWork++;
+            } else {
+                $queuedConfirmedWork++;
             }
         }
 
@@ -1603,7 +1693,12 @@ final class FarmStore
             }
         }
 
-        $needed = max(0, $queuedWork - $idleOnlineWorkers);
+        // Jobs with a worker command filter are candidate work: the server can
+        // list them, but a farm PC still has to run the local preflight before
+        // we know whether there is real encoding/compression work. Count all
+        // normal jobs, but let candidate-only backlogs wake conservatively.
+        $effectiveQueuedWork = $queuedConfirmedWork + ($queuedCandidateWork > 0 ? 1 : 0);
+        $needed = max(0, $effectiveQueuedWork - $idleOnlineWorkers);
         $eligibleTargets = $this->wakeTargetsFromData($data, $settings, $staleAfterSeconds, true, false);
         $cooldownSeconds = max(0, (int) ($settings['auto_wake_cooldown_seconds'] ?? 300));
         $readyTargets = $this->filterWakeTargetsByCooldown($eligibleTargets, $data['wake_history'] ?? [], $cooldownSeconds);
@@ -1613,6 +1708,9 @@ final class FarmStore
         return [
             'enabled' => !empty($settings['auto_wake_for_queued_jobs']),
             'queued_work' => $queuedWork,
+            'queued_candidate_work' => $queuedCandidateWork,
+            'queued_confirmed_work' => $queuedConfirmedWork,
+            'effective_queued_work' => $effectiveQueuedWork,
             'online_workers' => count($onlineWorkers),
             'idle_online_workers' => $idleOnlineWorkers,
             'needed' => $needed,

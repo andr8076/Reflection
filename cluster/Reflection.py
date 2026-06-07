@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shlex
 import shutil
 import socket
@@ -444,6 +445,7 @@ class TaskOutcome:
     cleanup_source: bool = False
     message: str = ""
     relinquished: bool = False
+    skipped: bool = False
 
 
 def run_task_installer(task_name):
@@ -1910,6 +1912,152 @@ def _run_task_in_subprocess(module_name, source, delivery, overwrite_allowed, ta
     return TaskOutcome(success=False, message=message)
 
 
+
+
+def _limit_text(value, limit=4096):
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
+
+
+def _build_worker_command_filter_command(template, module_name, source_path, delivery_path=None):
+    """Replace command placeholders on the worker side with local worker paths."""
+    cluster_dir = Path(__file__).resolve().parent
+    farm_root = cluster_dir.parent
+    task_dir = cluster_dir / "tasks"
+    task_file = task_dir / f"{Path(str(module_name or '')).name}.py"
+    source_path = str(source_path or "")
+    delivery_path = str(delivery_path or "")
+    source_path_obj = Path(source_path) if source_path else Path("")
+    source_dir = str(source_path_obj.parent) if source_path else ""
+    source_basename = source_path_obj.name if source_path else ""
+    source_ext = source_path_obj.suffix[1:].lower() if source_path_obj.suffix else ""
+    source_name = source_path_obj.stem if source_path else ""
+
+    replacements = {
+        "{source}": shlex.quote(source_path),
+        "{path}": shlex.quote(source_path),
+        "{worker_path}": shlex.quote(source_path),
+        "{delivery}": shlex.quote(delivery_path),
+        "{worker_delivery}": shlex.quote(delivery_path),
+        "{dir}": shlex.quote(source_dir),
+        "{directory}": shlex.quote(source_dir),
+        "{worker_dir}": shlex.quote(source_dir),
+        "{basename}": shlex.quote(source_basename),
+        "{worker_basename}": shlex.quote(source_basename),
+        "{name}": shlex.quote(source_name),
+        "{worker_name}": shlex.quote(source_name),
+        "{ext}": shlex.quote(source_ext),
+        "{worker_ext}": shlex.quote(source_ext),
+        "{dot_ext}": shlex.quote(f".{source_ext}" if source_ext else ""),
+        "{worker_dot_ext}": shlex.quote(f".{source_ext}" if source_ext else ""),
+        "{farm_root}": shlex.quote(str(farm_root)),
+        "{task_dir}": shlex.quote(str(task_dir)),
+        "{task_file}": shlex.quote(str(task_file)),
+    }
+    return str(template or "").translate(str.maketrans({})) if False else strtr_python(str(template or ""), replacements)
+
+
+def strtr_python(text, replacements):
+    for key, value in replacements.items():
+        text = text.replace(key, value)
+    return text
+
+
+def _evaluate_worker_command_filter(filter_spec, module_name, source_path, delivery_path=None, cancellation_event=None):
+    """Run an optional automation command filter locally on this worker.
+
+    The master never executes this filter. A non-match becomes a skipped job,
+    not a failed task, because the command is a preflight gate.
+    """
+    if not isinstance(filter_spec, dict):
+        return None
+    mode = str(filter_spec.get("mode") or "disabled")
+    template = str(filter_spec.get("command") or "").strip()
+    if mode == "disabled" or not template:
+        return None
+
+    timeout_seconds = max(1, int(filter_spec.get("timeout_seconds") or 20))
+    command = _build_worker_command_filter_command(template, module_name, source_path, delivery_path)
+    logging.info("Running worker command filter for %s: %s", module_name, command)
+
+    try:
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            **_process_group_kwargs(),
+        )
+        started_at = time.monotonic()
+        while process.poll() is None:
+            if cancellation_event is not None and cancellation_event.wait(0.2):
+                _terminate_process_tree(process)
+                return TaskOutcome(
+                    success=False,
+                    relinquished=True,
+                    message="Worker command filter was relinquished by the master.",
+                )
+            if time.monotonic() - started_at >= timeout_seconds:
+                _terminate_process_tree(process)
+                return TaskOutcome(
+                    success=True,
+                    skipped=True,
+                    message=f"Worker command filter timed out after {timeout_seconds} seconds.",
+                )
+        stdout, stderr = process.communicate(timeout=2)
+    except subprocess.TimeoutExpired:
+        _terminate_process_tree(process)
+        return TaskOutcome(success=True, skipped=True, message="Worker command filter timed out while closing.")
+    except Exception as exc:
+        logging.exception("Worker command filter could not run: %s", exc)
+        return TaskOutcome(success=True, skipped=True, message=f"Worker command filter could not run: {exc}")
+
+    output = _limit_text("\n".join(part.strip() for part in (stdout, stderr) if part and part.strip()), 4096)
+    exit_code = int(process.returncode or 0)
+
+    if mode == "exit_zero":
+        if exit_code == 0:
+            logging.info("Worker command filter accepted file. Output: %s", output or "(empty)")
+            return None
+        return TaskOutcome(
+            success=True,
+            skipped=True,
+            message=f"Worker command filter skipped file: command exited with {exit_code}. {output}".strip(),
+        )
+
+    if exit_code != 0:
+        return TaskOutcome(
+            success=True,
+            skipped=True,
+            message=f"Worker command filter skipped file: command exited with {exit_code}. {output}".strip(),
+        )
+
+    regex = str(filter_spec.get("regex") or "").strip()
+    if not regex:
+        return TaskOutcome(success=True, skipped=True, message="Worker command filter regex is blank.")
+
+    try:
+        matches = re.search(regex, output or "") is not None
+    except re.error as exc:
+        return TaskOutcome(success=True, skipped=True, message=f"Worker command filter regex is invalid: {exc}")
+
+    if mode == "output_matches":
+        if matches:
+            logging.info("Worker command filter accepted file by output match. Output: %s", output or "(empty)")
+            return None
+        return TaskOutcome(success=True, skipped=True, message=f"Worker command filter skipped file: output did not match. {output}".strip())
+
+    if mode == "output_not_matches":
+        if not matches:
+            logging.info("Worker command filter accepted file by output non-match. Output: %s", output or "(empty)")
+            return None
+        return TaskOutcome(success=True, skipped=True, message=f"Worker command filter skipped file: output matched excluded pattern. {output}".strip())
+
+    return TaskOutcome(success=True, skipped=True, message=f"Worker command filter mode is unknown: {mode}")
+
 def _run_task_with_transfer_handling(
     agent,
     module_name,
@@ -1920,11 +2068,14 @@ def _run_task_with_transfer_handling(
     transfer_auth,
     use_transfer_server_for_plain_paths=False,
     cancellation_event=None,
+    worker_command_filter=None,
 ):
     """Run one task and treat download/upload/process errors as task failures."""
     transfer_workspace = None
     execution_workspace = None
     try:
+        if worker_command_filter:
+            agent.update_task_stage(task_id, "preparing_source", "Preparing local source before worker command filter.")
         (
             prepared_source,
             prepared_delivery,
@@ -1949,6 +2100,22 @@ def _run_task_with_transfer_handling(
             and hasattr(agent, "task_registry")
             and module_name not in built_in_tasks()
         )
+        if worker_command_filter:
+            agent.update_task_stage(task_id, "preflight_running", "Running worker command filter locally on this farm computer.")
+        command_filter_outcome = _evaluate_worker_command_filter(
+            worker_command_filter,
+            module_name,
+            prepared_source,
+            prepared_delivery,
+            cancellation_event,
+        )
+        if command_filter_outcome is not None:
+            if command_filter_outcome.skipped:
+                agent.update_task_stage(task_id, "preflight_skipped", command_filter_outcome.message)
+            return command_filter_outcome
+        if worker_command_filter:
+            agent.update_task_stage(task_id, "processing", "Worker command filter passed; running the real task.")
+
         global _ACTIVE_TRANSFER_AUTH
         _ACTIVE_TRANSFER_AUTH = dict(transfer_auth or {})
         try:
@@ -2288,6 +2455,18 @@ class FarmAgent:
         }
         return self.post_to_server(payload)
 
+    def update_task_stage(self, task_id, stage, message=""):
+        """Best-effort update for dashboard stage text; task correctness does not depend on it."""
+        payload = {
+            "action": "task_stage",
+            "version": VERSION,
+            "pc_id": PC_ID,
+            "task_id": task_id,
+            "stage": str(stage or ""),
+            "message": str(message or ""),
+        }
+        return self.post_to_server(payload)
+
     def report_quarantine_location(self, location):
         """Tell the master where an overwrite quarantine folder exists."""
         payload = {
@@ -2298,14 +2477,15 @@ class FarmAgent:
         }
         return self.post_to_server(payload)
 
-    def report_task_done(self, task_id, success, error_msg=""):
+    def report_task_done(self, task_id, success, error_msg="", status=None):
         """Step 5 & 6: Report status and wait for server's cleanup greenlight."""
+        final_status = status or ("success" if success else "failed")
         payload = {
             "action": "report_done",
             "version": VERSION,
             "pc_id": PC_ID,
             "task_id": task_id,
-            "status": "success" if success else "failed",
+            "status": final_status,
             "error": error_msg,
         }
         return self.post_to_server(payload)
@@ -2482,6 +2662,7 @@ class FarmAgent:
                 transfer_auth,
                 use_transfer_server_for_plain_paths,
                 heartbeat.cancel_event,
+                task.get("worker_command_filter"),
             )
         error_message = task_outcome.message
         if heartbeat.cancel_event.is_set() or task_outcome.relinquished:
@@ -2493,7 +2674,10 @@ class FarmAgent:
             return True
 
         # 5 & 6. Report done & get server final confirmation
-        server_response = self.report_task_done(task_id, task_outcome.success, error_message)
+        if task_outcome.skipped:
+            server_response = self.report_task_done(task_id, True, error_message, "skipped")
+        else:
+            server_response = self.report_task_done(task_id, task_outcome.success, error_message)
         server_confirmed = bool(server_response and server_response.get("status") == "confirmed_by_server")
 
         # 7. Clean up files if the server acknowledged the wrap-up

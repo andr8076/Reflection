@@ -128,6 +128,33 @@ $pathTaskPlaceholderErrors = $automationStore->validateRule($automationStore->no
 ]), ['dummy_task' => 'dummy']);
 assertSameValue(true, strpos(implode(' ', $pathTaskPlaceholderErrors), '{task_file}') !== false, 'Path templates should still reject command-only placeholders like {task_file}.');
 
+file_put_contents($scanDir . DIRECTORY_SEPARATOR . 'candidate.cmd', 'candidate');
+touch($scanDir . DIRECTORY_SEPARATOR . 'candidate.cmd', time() - 3600);
+$workerFilterRule = $automationStore->saveRule([
+    'name' => 'Worker preflight candidates',
+    'enabled' => false,
+    'module' => 'dummy_task',
+    'scan_roots' => $scanDir . DIRECTORY_SEPARATOR . 'candidate.cmd',
+    'recursive' => false,
+    'source_template' => '{path}',
+    'extensions' => 'cmd',
+    'require_unchanged_seconds' => 0,
+    'max_files_per_scan' => 10,
+    'max_jobs_per_scan' => 10,
+    'command_filter_mode' => 'exit_zero',
+    'command_filter_command' => 'python3 {task_file} --preflight {path}',
+    'command_timeout_seconds' => 900,
+], ['dummy_task' => 'dummy']);
+$workerFilterDryRun = $automationStore->runRule($workerFilterRule, $farmStore, true);
+assertSameValue('would_queue_candidate', $workerFilterDryRun['rows'][0]['status'] ?? '', 'Dry run should show worker-filtered items as queued candidates, without running the command on the master.');
+$workerFilterRun = $automationStore->runRule($workerFilterRule, $farmStore, false);
+assertSameValue(1, $workerFilterRun['queued'], 'Worker command filters should queue candidate jobs for farms to evaluate.');
+$data = $farmStore->read();
+$candidateJob = end($data['jobs']);
+assertSameValue(true, is_array($candidateJob['worker_command_filter'] ?? null), 'Candidate job should carry the worker command filter payload.');
+assertSameValue(true, !empty($candidateJob['candidate_job']), 'Candidate job should be marked as a candidate instead of a separate filter-test job.');
+assertSameValue('pending', $candidateJob['worker_preflight_status'] ?? '', 'Candidate jobs should wait for worker-side preflight.');
+
 
 $mappedRule = $automationStore->saveRule([
     'name' => 'Mapped worker paths',
@@ -166,7 +193,7 @@ $rule = $automationStore->saveRule(array_merge($rule, ['requeue_unchanged' => tr
 $result = $automationStore->runRule($rule, $farmStore, false);
 assertSameValue(1, $result['queued'], 'Requeue override should queue an unchanged file even while an equivalent job is already open.');
 $data = $farmStore->read();
-assertSameValue(2, count($data['jobs']), 'Requeue override should allow concurrent duplicate jobs.');
+assertSameValue(3, count($data['jobs']), 'Requeue override should allow concurrent duplicate jobs without disturbing candidate jobs.');
 
 $due = $automationStore->runDueRules($farmStore, true);
 assertSameValue(0, count($due), 'Recently scanned rule should not be due yet.');

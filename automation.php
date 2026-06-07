@@ -165,7 +165,7 @@ try {
                 throw new InvalidArgumentException(implode(' ', $errors));
             }
             $testResult = $automationStore->testRule($editingRule, (string) ($_POST['sample_paths'] ?? ''), 80);
-            $message = 'Filter test complete.';
+            $message = 'Filter test complete. Worker command filters were not executed by the webserver.';
         } elseif ($action === 'dry_run_rule') {
             $editingRule = reflection_rule_from_post($automationStore);
             $errors = $automationStore->validateRule($editingRule, $config['allowed_tasks'], $storageServerIds);
@@ -173,7 +173,7 @@ try {
                 throw new InvalidArgumentException(implode(' ', $errors));
             }
             $runResult = $automationStore->runRule($editingRule, $farmStore, true);
-            $message = 'Dry run complete. No jobs were queued.';
+            $message = 'Dry run complete. No jobs were queued and worker command filters were not executed.';
         } elseif ($action === 'run_rule') {
             $id = (string) ($_POST['rule_id'] ?? '');
             $rule = $automationStore->rule($id);
@@ -570,8 +570,8 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                 </details>
 
                 <details class="form-block collapsible-form-block" data-section-key="command-filter">
-                    <summary class="form-section-header"><span class="section-number">5</span><div><h3>Optional command filter</h3><p>Run a custom check per file, such as ffprobe, before the file is queued.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
-                    <p class="api-note">Use this for custom checks while keeping the automation system universal. The command runs per candidate file; the selected mode decides whether its exit code or output includes/skips the file.</p>
+                    <summary class="form-section-header"><span class="section-number">5</span><div><h3>Optional worker command filter</h3><p>Run a custom preflight on a farm computer before the real task starts.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
+                    <p class="api-note">The webserver never executes this command. Automation can queue a candidate queue item. When a farm computer receives that normal task, it downloads/prepares the source and runs this command locally. If it does not pass, the job is marked skipped instead of failed.</p>
                     <div class="settings-grid">
                         <label>
                             Command mode
@@ -594,7 +594,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                     <label>
                         Command
                         <input id="command-template-input" class="template-input" data-template-label="Command template" name="command_filter_command" value="<?= reflection_h($editingRule['command_filter_command'] ?? '') ?>" placeholder="ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 {path}">
-                        <small>Placeholders are shell-escaped before being inserted.</small>
+                        <small>Placeholders are shell-escaped by the worker before being inserted. <code>{path}</code> is the worker-local prepared source path.</small>
                         <output class="inline-template-preview" id="command-template-preview">—</output>
                         <div class="field-status" id="command-template-status"></div>
                     </label>
@@ -604,15 +604,17 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                     </label>
                     <details class="example-box">
                         <summary>H.265 task preflight examples</summary>
-                        <p>The <code>h265_encode</code> task owns its preflight helper, but it only runs when this Optional command filter calls it. Use command mode <code>Include if command exits 0</code> and leave the regex field blank.</p>
+                        <p>The <code>h265_encode</code> task owns its preflight helper, but it only runs when this worker command filter calls it. Use command mode <code>Include if command exits 0</code> and leave the regex field blank.</p>
                         <p>Default profile:</p>
                         <pre>python3 {task_file} --preflight {path}</pre>
                         <p>More conservative profile, requiring at least 30% sample saving:</p>
                         <pre>python3 {task_file} --preflight {path} --min-saving-percent 30</pre>
-                        <p>4K-only profile, skipping anything below 4K:</p>
-                        <pre>python3 {task_file} --preflight {path} --only-4k --min-saving-percent 30</pre>
+                        <p>4K-only profile, skipping anything below 4K and testing with the task's 4K encoder profile:</p>
+                        <pre>python3 {task_file} --preflight {path} --only-4k --encode-profile 4k --min-saving-percent 30</pre>
+                        <p>High-quality 4K profile:</p>
+                        <pre>python3 {task_file} --preflight {path} --only-4k --encode-profile 4k_quality --min-saving-percent 25</pre>
                         <p>Advanced JSON profile override:</p>
-                        <pre>python3 {task_file} --preflight {path} --profile '{"min_saving_percent":30,"sample_seconds":30,"quality_metric":"auto"}'</pre>
+                        <pre>python3 {task_file} --preflight {path} --profile '{"min_saving_percent":30,"sample_seconds":30,"quality_metric":"auto","encode_profile":"auto"}'</pre>
                     </details>
                 </details>
 
@@ -700,7 +702,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                     <tbody>
                         <?php foreach (($runResult['rows'] ?? []) as $row): ?>
                             <tr>
-                                <td><span class="badge <?= in_array(($row['status'] ?? ''), ['queued', 'would_queue'], true) ? 'success' : (($row['status'] ?? '') === 'error' ? 'failed' : 'configured') ?>"><?= reflection_h($row['status'] ?? '') ?></span></td>
+                                <td><span class="badge <?= in_array(($row['status'] ?? ''), ['queued', 'would_queue', 'would_queue_candidate'], true) ? 'success' : (($row['status'] ?? '') === 'error' ? 'failed' : 'configured') ?>"><?= reflection_h($row['status'] ?? '') ?></span></td>
                                 <td class="path-cell"><code><?= reflection_h(reflection_short_auto_value($row['path'] ?? '', 130)) ?></code></td>
                                 <td><?= reflection_h($row['reason'] ?? '') ?></td>
                                 <td class="path-cell"><code><?= reflection_h(reflection_short_auto_value($row['source'] ?? '', 90)) ?></code></td>

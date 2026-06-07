@@ -514,6 +514,7 @@ dd {
 }
 
 .badge.queued,
+.badge.candidate,
 .badge.configured,
 .badge.unknown {
     background: var(--accent-soft);
@@ -527,6 +528,7 @@ dd {
 }
 
 .badge.success,
+.badge.skipped,
 .badge.idle {
     background: var(--success-soft);
     color: var(--success);
@@ -2497,4 +2499,13 @@ pre {
     .worker-row .worker-polls-cell {
         grid-column: 1 / -1;
     }
+}
+
+
+.job-stage-note {
+    color: var(--muted);
+    display: block;
+    font-size: 0.76rem;
+    margin-top: 0.25rem;
+    max-width: 18rem;
 }

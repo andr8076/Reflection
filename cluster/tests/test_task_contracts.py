@@ -37,6 +37,8 @@ class TaskContractTest(unittest.TestCase):
         self.assertTrue(registry["h265_encode"].spec["output"]["preserve_metadata"])
         self.assertTrue(registry["h265_encode"].spec["output"]["preserve_attachments"])
         self.assertEqual(registry["h265_encode"].spec["output"]["encoded_streams"], ["video:0"])
+        self.assertEqual(registry["h265_encode"].spec["encode_profiles"]["default"], "auto")
+        self.assertIn("4k", registry["h265_encode"].spec["encode_profiles"])
 
     def test_compress_archive_writes_zip_and_rejects_wrong_extension(self):
         module = load_task("compress_archive")
@@ -81,6 +83,32 @@ class TaskContractTest(unittest.TestCase):
                  mock.patch.object(module, "_encode_file"):
                 with self.assertRaisesRegex(ValueError, "must end with .mkv"):
                     module.run(str(source_file), str(bad_delivery), True)
+
+    def test_h265_encode_auto_profile_selects_4k_settings(self):
+        module = load_task("h265_encode")
+
+        standard_profile, standard_args, standard_pix_fmt = module._encoder_for_analysis({}, {"codec": "h264", "width": 1920, "height": 1080})
+        four_k_profile, four_k_args, four_k_pix_fmt = module._encoder_for_analysis({}, {"codec": "h264", "width": 3840, "height": 2160})
+
+        self.assertEqual(standard_profile, "standard")
+        self.assertEqual(four_k_profile, "4k")
+        self.assertIn("20", standard_args)
+        self.assertIn("22", four_k_args)
+        self.assertEqual(standard_pix_fmt, module.PIXEL_FORMAT_ARGS)
+        self.assertEqual(four_k_pix_fmt, module.PIXEL_FORMAT_ARGS)
+
+    def test_h265_encode_source_json_can_override_profile(self):
+        module = load_task("h265_encode")
+
+        profile_name, encoder_args, pixel_format_args = module._encoder_for_analysis(
+            {"encode_profile": "4k_quality", "crf": "18", "preset": "slower", "pix_fmt": "none"},
+            {"codec": "h264", "width": 3840, "height": 2160},
+        )
+
+        self.assertEqual(profile_name, "4k_quality")
+        self.assertIn("18", encoder_args)
+        self.assertIn("slower", encoder_args)
+        self.assertEqual(pixel_format_args, [])
 
     def test_h265_encode_command_preserves_movie_streams(self):
         module = load_task("h265_encode")

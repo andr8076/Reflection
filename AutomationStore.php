@@ -358,24 +358,34 @@ final class AutomationStore
 
             if ($dryRun) {
                 $summary['queued']++;
-                $this->appendRunRow($summary, $candidate, array_merge($evaluation, ['source' => $source, 'delivery' => $delivery]), 'would_queue');
+                $dryRunStatus = !empty($evaluation['worker_command_filter_pending']) ? 'would_queue_candidate' : 'would_queue';
+                $this->appendRunRow($summary, $candidate, array_merge($evaluation, ['source' => $source, 'delivery' => $delivery]), $dryRunStatus);
                 continue;
             }
 
             try {
+                $jobExtra = array_filter([
+                    'automation_rule_id' => (string) ($rule['id'] ?? ''),
+                    'automation_rule_name' => (string) ($rule['name'] ?? ''),
+                    'automation_fingerprint' => $fingerprint,
+                    'transfer_server_id' => trim((string) ($rule['transfer_server_id'] ?? '')),
+                ], static function ($value): bool {
+                    return $value !== '' && $value !== null;
+                });
+                $workerCommandFilter = $this->workerCommandFilterPayload($rule);
+                if ($workerCommandFilter !== null) {
+                    $jobExtra['worker_command_filter'] = $workerCommandFilter;
+                    $jobExtra['candidate_job'] = true;
+                    $jobExtra['worker_preflight_status'] = 'pending';
+                    $jobExtra['worker_preflight_note'] = 'Queued as a candidate. A farm computer will run the worker command filter before processing.';
+                }
+
                 $job = $farmStore->createJob(
                     (string) ($rule['module'] ?? ''),
                     $source,
                     $delivery,
                     !empty($rule['overwrite_allowed']),
-                    array_filter([
-                        'automation_rule_id' => (string) ($rule['id'] ?? ''),
-                        'automation_rule_name' => (string) ($rule['name'] ?? ''),
-                        'automation_fingerprint' => $fingerprint,
-                        'transfer_server_id' => trim((string) ($rule['transfer_server_id'] ?? '')),
-                    ], static function ($value): bool {
-                        return $value !== '';
-                    })
+                    $jobExtra
                 );
                 $this->recordQueuedState($rule, $candidate, $source, $delivery, $fingerprint, $job);
                 $summary['queued']++;
@@ -742,58 +752,34 @@ final class AutomationStore
             return ['include' => false, 'reason' => 'Matched exclude regex.'];
         }
 
-        $commandResult = $this->evaluateCommandFilter($rule, $candidate);
-        if (!$commandResult['include']) {
-            return $commandResult;
+        $commandFilter = $this->workerCommandFilterPayload($rule);
+        if ($commandFilter !== null) {
+            return [
+                'include' => true,
+                'reason' => 'Matched server-side filters; worker command filter will run on the farm computer before the task starts.',
+                'worker_command_filter_pending' => true,
+            ];
         }
 
         return ['include' => true, 'reason' => 'Matched all filters.'];
     }
 
-    private function evaluateCommandFilter(array $rule, array $candidate): array
+    private function workerCommandFilterPayload(array $rule): ?array
     {
         $mode = (string) ($rule['command_filter_mode'] ?? 'disabled');
         $command = trim((string) ($rule['command_filter_command'] ?? ''));
         if ($mode === 'disabled' || $command === '') {
-            return ['include' => true, 'reason' => 'Command filter disabled.'];
+            return null;
         }
 
-        $builtCommand = $this->applyCommandTemplate($command, $candidate, (string) ($rule['module'] ?? ''));
-        $result = $this->runCommand($builtCommand, (int) ($rule['command_timeout_seconds'] ?? 20));
-        $output = trim((string) ($result['output'] ?? ''));
-        $exitCode = (int) ($result['exit_code'] ?? 1);
+        $payload = [
+            'mode' => $mode,
+            'command' => $command,
+            'regex' => trim((string) ($rule['command_filter_regex'] ?? '')),
+            'timeout_seconds' => max(1, (int) ($rule['command_timeout_seconds'] ?? 20)),
+        ];
 
-        if (!empty($result['timed_out'])) {
-            return ['include' => false, 'reason' => 'Command filter timed out.', 'command_output' => $output];
-        }
-
-        if ($mode === 'exit_zero') {
-            return [
-                'include' => $exitCode === 0,
-                'reason' => $exitCode === 0 ? 'Command exited with 0.' : 'Command exited with ' . $exitCode . '.',
-                'command_output' => $output,
-            ];
-        }
-
-        if ($exitCode !== 0) {
-            return ['include' => false, 'reason' => 'Command exited with ' . $exitCode . '.', 'command_output' => $output];
-        }
-
-        $regex = trim((string) ($rule['command_filter_regex'] ?? ''));
-        if ($regex === '' || !$this->regexIsValid($regex)) {
-            return ['include' => false, 'reason' => 'Command output regex is invalid or blank.', 'command_output' => $output];
-        }
-
-        $matches = @preg_match($regex, $output) === 1;
-        if ($mode === 'output_matches') {
-            return ['include' => $matches, 'reason' => $matches ? 'Command output matched.' : 'Command output did not match.', 'command_output' => $output];
-        }
-
-        if ($mode === 'output_not_matches') {
-            return ['include' => !$matches, 'reason' => !$matches ? 'Command output did not match.' : 'Command output matched excluded output.', 'command_output' => $output];
-        }
-
-        return ['include' => false, 'reason' => 'Unknown command filter mode.', 'command_output' => $output];
+        return $payload;
     }
 
     private function shouldQueue(array $rule, array $candidate, string $source, FarmStore $farmStore, string $fingerprint, ?string &$reason): bool
