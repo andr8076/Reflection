@@ -2509,3 +2509,165 @@ pre {
     margin-top: 0.25rem;
     max-width: 18rem;
 }
+
+/* v25 dashboard layout: worker status uses vertical tiles instead of wide rows. */
+.dashboard-status-grid {
+    align-items: start;
+    grid-template-columns: minmax(0, 1.35fr) minmax(18rem, 0.65fr);
+}
+
+.dashboard-workers-panel .computer-grid {
+    align-items: start;
+    display: grid;
+    gap: 0.85rem;
+    grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+}
+
+.worker-tile {
+    background: var(--panel-soft);
+    border: 1px solid var(--line);
+    border-left: 5px solid var(--line-strong);
+    border-radius: 18px;
+    min-width: 0;
+    padding: 0.9rem 1rem;
+}
+
+.worker-tile.running {
+    border-left-color: var(--warning);
+}
+
+.worker-tile.idle {
+    border-left-color: var(--success);
+}
+
+.worker-tile.offline {
+    border-left-color: var(--muted);
+}
+
+.worker-tile.stale {
+    border-left-color: var(--error);
+}
+
+.worker-tile-head {
+    align-items: center;
+    display: flex;
+    gap: 0.75rem;
+    justify-content: space-between;
+    margin-bottom: 0.6rem;
+    min-width: 0;
+}
+
+.worker-tile-head > div {
+    align-items: center;
+    display: flex;
+    gap: 0.55rem;
+    min-width: 0;
+}
+
+.worker-tile-head strong {
+    font-size: 1rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.worker-tile-details {
+    display: grid;
+    gap: 0;
+    margin: 0;
+}
+
+.worker-tile-details div {
+    align-items: baseline;
+    border-top: 1px solid var(--line);
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: 7.25rem minmax(0, 1fr);
+    padding: 0.45rem 0;
+}
+
+.worker-tile-details dt {
+    color: var(--muted);
+    font-size: 0.68rem;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.worker-tile-details dd {
+    font-size: 0.92rem;
+    font-weight: 800;
+    line-height: 1.25;
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.worker-tile-details code {
+    max-width: 100%;
+}
+
+.worker-tile-note {
+    background: #eef2f7;
+    border-radius: 12px;
+    color: var(--muted);
+    font-size: 0.85rem;
+    font-weight: 800;
+    margin: 0.65rem 0 0;
+    overflow-wrap: anywhere;
+    padding: 0.5rem 0.6rem;
+}
+
+.worker-tile-action {
+    margin-top: 0.65rem;
+}
+
+.dashboard-status-grid .simplified-power-summary {
+    grid-template-columns: 1fr;
+}
+
+.power-panel .power-head {
+    align-items: stretch;
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: 1fr;
+}
+
+.power-panel .secondary-button {
+    width: 100%;
+}
+
+@media (max-width: 1350px) {
+    .dashboard-status-grid {
+        grid-template-columns: minmax(0, 1.2fr) minmax(17rem, 0.8fr);
+    }
+
+    .dashboard-workers-panel .computer-grid {
+        grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+    }
+}
+
+@media (max-width: 1100px) {
+    .dashboard-status-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .dashboard-status-grid .side-stack {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 760px) {
+    .dashboard-status-grid .side-stack {
+        grid-template-columns: 1fr;
+    }
+
+    .dashboard-workers-panel .computer-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .worker-tile-details div {
+        grid-template-columns: 1fr;
+        gap: 0.2rem;
+    }
+}

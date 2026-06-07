@@ -478,38 +478,45 @@ function reflection_render_worker_cards_html(array $workerCards): string
         $mac = trim((string) ($card['mac'] ?? ''));
         $powerTitle = trim($wakeLabel . ($mac !== '' ? ' · ' . $mac : '') . ' · minimum ESS SOC ' . $minSoc . ' · shutdown layer ' . $layer);
         ?>
-        <article class="worker-row <?= reflection_h($stateClass) ?>">
-            <div class="worker-row-main">
-                <strong><?= reflection_h($card['pc_id'] ?? 'unknown') ?></strong>
-                <span class="badge <?= reflection_h($stateClass) ?>"><?= reflection_h($state) ?></span>
-            </div>
-            <div class="worker-row-cell worker-job-cell">
-                <span>Job</span>
-                <strong><code title="<?= reflection_h($currentJobDisplay) ?>"><?= reflection_h(reflection_short_value($currentJobDisplay, 30)) ?></code></strong>
-            </div>
-            <div class="worker-row-cell">
-                <span>Seen</span>
-                <strong title="<?= reflection_h($lastCheckIn ?? '') ?>"><?= reflection_h(reflection_relative_time($lastCheckIn)) ?></strong>
-            </div>
-            <div class="worker-row-cell">
-                <span>Version</span>
-                <strong><code title="<?= reflection_h($versionDisplay) ?>"><?= reflection_h(reflection_short_value($versionDisplay, 14)) ?></code></strong>
-            </div>
-            <div class="worker-row-cell worker-power-cell">
-                <span>Power rule</span>
-                <strong title="<?= reflection_h($powerTitle) ?>">SOC <?= reflection_h($minSoc) ?> · L<?= $layer ?> · <?= reflection_h($wakeLabel) ?></strong>
-            </div>
-            <div class="worker-row-cell worker-polls-cell">
-                <span>No-job</span>
-                <strong><?= (int) ($card['idle_no_job_checkins'] ?? 0) ?></strong>
-            </div>
-            <?php if (!empty($card['expected_offline'])): ?>
-                <div class="worker-row-note" title="<?= reflection_h($card['expected_offline_at'] ?? '') ?>">
-                    Expected offline <?= reflection_h(reflection_relative_time($card['expected_offline_at'] ?? null)) ?><?= ($card['expected_offline_reason'] ?? '') !== '' ? ' · ' . reflection_h($card['expected_offline_reason']) : '' ?>
+        <article class="worker-tile <?= reflection_h($stateClass) ?>">
+            <div class="worker-tile-head">
+                <div>
+                    <strong><?= reflection_h($card['pc_id'] ?? 'unknown') ?></strong>
+                    <span class="badge <?= reflection_h($stateClass) ?>"><?= reflection_h($state) ?></span>
                 </div>
+                <span class="soft-label">L<?= $layer ?></span>
+            </div>
+
+            <dl class="worker-tile-details">
+                <div class="worker-job-detail">
+                    <dt>Current job</dt>
+                    <dd><code title="<?= reflection_h($currentJobDisplay) ?>"><?= reflection_h(reflection_short_value($currentJobDisplay, 36)) ?></code></dd>
+                </div>
+                <div>
+                    <dt>Seen</dt>
+                    <dd title="<?= reflection_h($lastCheckIn ?? '') ?>"><?= reflection_h(reflection_relative_time($lastCheckIn)) ?></dd>
+                </div>
+                <div>
+                    <dt>Version</dt>
+                    <dd><code title="<?= reflection_h($versionDisplay) ?>"><?= reflection_h(reflection_short_value($versionDisplay, 14)) ?></code></dd>
+                </div>
+                <div>
+                    <dt>Power</dt>
+                    <dd title="<?= reflection_h($powerTitle) ?>">SOC <?= reflection_h($minSoc) ?> · <?= reflection_h($wakeLabel) ?></dd>
+                </div>
+                <div>
+                    <dt>No-job polls</dt>
+                    <dd><?= (int) ($card['idle_no_job_checkins'] ?? 0) ?></dd>
+                </div>
+            </dl>
+
+            <?php if (!empty($card['expected_offline'])): ?>
+                <p class="worker-tile-note" title="<?= reflection_h($card['expected_offline_at'] ?? '') ?>">
+                    Expected offline <?= reflection_h(reflection_relative_time($card['expected_offline_at'] ?? null)) ?><?= ($card['expected_offline_reason'] ?? '') !== '' ? ' · ' . reflection_h($card['expected_offline_reason']) : '' ?>
+                </p>
             <?php endif; ?>
             <?php if ($state === 'stale'): ?>
-                <form method="post" class="worker-row-action" data-confirm="Remove this stale worker check-in from the board?">
+                <form method="post" class="worker-tile-action" data-confirm="Remove this stale worker check-in from the board?">
                     <input type="hidden" name="form_action" value="worker_action">
                     <input type="hidden" name="worker_action" value="remove_stale">
                     <input type="hidden" name="pc_id" value="<?= reflection_h($card['pc_id'] ?? '') ?>">
