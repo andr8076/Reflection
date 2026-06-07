@@ -603,11 +603,16 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                         <input name="command_filter_regex" value="<?= reflection_h($editingRule['command_filter_regex'] ?? '') ?>" placeholder="/^hevc$/i">
                     </label>
                     <details class="example-box">
-                        <summary>H.265 example filter</summary>
-                        <p>For a movie conversion rule, set task <code>h265_encode</code>, choose the Video extension preset, set delivery target to <code>Same as source location</code>, enable overwrite, command mode <code>Include if output does not match regex</code>, command:</p>
-                        <pre>ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 {path}</pre>
-                        <p>and regex:</p>
-                        <pre>/^hevc$/i</pre>
+                        <summary>H.265 task preflight examples</summary>
+                        <p>The <code>h265_encode</code> task owns its preflight helper, but it only runs when this Optional command filter calls it. Use command mode <code>Include if command exits 0</code> and leave the regex field blank.</p>
+                        <p>Default profile:</p>
+                        <pre>python3 {task_file} --preflight {path}</pre>
+                        <p>More conservative profile, requiring at least 30% sample saving:</p>
+                        <pre>python3 {task_file} --preflight {path} --min-saving-percent 30</pre>
+                        <p>4K-only profile, skipping anything below 4K:</p>
+                        <pre>python3 {task_file} --preflight {path} --only-4k --min-saving-percent 30</pre>
+                        <p>Advanced JSON profile override:</p>
+                        <pre>python3 {task_file} --preflight {path} --profile '{"min_saving_percent":30,"sample_seconds":30,"quality_metric":"auto"}'</pre>
                     </details>
                 </details>
 

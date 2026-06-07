@@ -21,7 +21,10 @@
         worker_basename: { label: 'Worker filename', description: 'The mapped filename including the extension.' },
         worker_name: { label: 'Worker name only', description: 'The mapped filename without the final extension.' },
         worker_ext: { label: 'Worker extension', description: 'The mapped final extension without the dot.' },
-        worker_dot_ext: { label: 'Worker dot extension', description: 'The mapped final extension including the dot.' }
+        worker_dot_ext: { label: 'Worker dot extension', description: 'The mapped final extension including the dot.' },
+        farm_root: { label: 'Farm root', description: 'The folder where the master website is installed.' },
+        task_dir: { label: 'Task folder', description: 'The folder containing worker task modules.' },
+        task_file: { label: 'Selected task file', description: 'The Python task module for the selected task. Useful for task-owned optional command filters.' }
     };
 
     function byId(id) {
@@ -110,7 +113,10 @@
             '{worker_basename}': base,
             '{worker_name}': parts.name || base,
             '{worker_ext}': parts.ext,
-            '{worker_dot_ext}': parts.ext ? '.' + parts.ext : ''
+            '{worker_dot_ext}': parts.ext ? '.' + parts.ext : '',
+            '{farm_root}': '/volume1/web/api/farm',
+            '{task_dir}': '/volume1/web/api/farm/cluster/tasks',
+            '{task_file}': '/volume1/web/api/farm/cluster/tasks/' + selectedModule() + '.py'
         };
     }
 
@@ -286,7 +292,10 @@
             '{worker_basename}': workerBase,
             '{worker_name}': workerParts.name,
             '{worker_ext}': workerParts.ext,
-            '{worker_dot_ext}': workerParts.ext ? '.' + workerParts.ext : ''
+            '{worker_dot_ext}': workerParts.ext ? '.' + workerParts.ext : '',
+            '{farm_root}': '/volume1/web/api/farm',
+            '{task_dir}': '/volume1/web/api/farm/cluster/tasks',
+            '{task_file}': '/volume1/web/api/farm/cluster/tasks/' + selectedModule() + '.py'
         };
     }
 
@@ -519,6 +528,9 @@
         }
         if (extension) {
             summaryText += ' · required output ' + extension;
+        }
+        if (selectedTaskSpec().preflight && selectedTaskSpec().preflight.command) {
+            summaryText += ' · optional preflight available';
         }
         if (contractSummary) {
             contractSummary.textContent = summaryText;

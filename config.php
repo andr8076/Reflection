@@ -291,6 +291,7 @@ function reflection_normalize_task_spec(string $name, array $spec, ?string $fall
     $source = is_array($spec['source'] ?? null) ? $spec['source'] : [];
     $delivery = is_array($spec['delivery'] ?? null) ? $spec['delivery'] : [];
     $output = is_array($spec['output'] ?? null) ? $spec['output'] : [];
+    $preflight = is_array($spec['preflight'] ?? null) ? $spec['preflight'] : [];
 
     $sourceMode = strtolower((string) ($source['mode'] ?? 'required'));
     if (!in_array($sourceMode, ['required', 'optional', 'none'], true)) {
@@ -323,6 +324,7 @@ function reflection_normalize_task_spec(string $name, array $spec, ?string $fall
             'extension' => $extension,
         ],
         'output' => $output,
+        'preflight' => $preflight,
     ];
 
     if ($normalized['delivery']['mode'] === 'auto' && $normalized['delivery']['template'] === '') {

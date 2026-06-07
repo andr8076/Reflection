@@ -542,7 +542,7 @@ final class AutomationStore
         $rule['command_filter_mode'] = (string) ($rule['command_filter_mode'] ?? 'disabled');
         $rule['command_filter_command'] = trim((string) ($rule['command_filter_command'] ?? ''));
         $rule['command_filter_regex'] = trim((string) ($rule['command_filter_regex'] ?? ''));
-        $rule['command_timeout_seconds'] = max(1, min(600, (int) ($rule['command_timeout_seconds'] ?? 20)));
+        $rule['command_timeout_seconds'] = max(1, min(3600, (int) ($rule['command_timeout_seconds'] ?? 20)));
         $rule['max_files_per_scan'] = max(1, min(100000, (int) ($rule['max_files_per_scan'] ?? 500)));
         $rule['max_jobs_per_scan'] = max(0, min(10000, (int) ($rule['max_jobs_per_scan'] ?? 25)));
         $rule['scan_interval_minutes'] = max(1, min(10080, (int) ($rule['scan_interval_minutes'] ?? 60)));
@@ -757,7 +757,7 @@ final class AutomationStore
             return ['include' => true, 'reason' => 'Command filter disabled.'];
         }
 
-        $builtCommand = $this->applyCommandTemplate($command, $candidate);
+        $builtCommand = $this->applyCommandTemplate($command, $candidate, (string) ($rule['module'] ?? ''));
         $result = $this->runCommand($builtCommand, (int) ($rule['command_timeout_seconds'] ?? 20));
         $output = trim((string) ($result['output'] ?? ''));
         $exitCode = (int) ($result['exit_code'] ?? 1);
@@ -1171,8 +1171,12 @@ final class AutomationStore
         ]);
     }
 
-    private function applyCommandTemplate(string $template, array $candidate): string
+    private function applyCommandTemplate(string $template, array $candidate, string $module = ''): string
     {
+        $farmRoot = __DIR__;
+        $taskDir = $farmRoot . DIRECTORY_SEPARATOR . 'cluster' . DIRECTORY_SEPARATOR . 'tasks';
+        $taskFile = $module !== '' ? $taskDir . DIRECTORY_SEPARATOR . basename($module) . '.py' : '';
+
         return strtr($template, [
             '{source}' => escapeshellarg((string) ($candidate['source'] ?? ($candidate['path'] ?? ''))),
             '{path}' => escapeshellarg((string) ($candidate['path'] ?? '')),
@@ -1194,6 +1198,9 @@ final class AutomationStore
             '{worker_name}' => escapeshellarg((string) ($candidate['worker_name'] ?? ($candidate['name'] ?? ''))),
             '{worker_ext}' => escapeshellarg((string) ($candidate['worker_ext'] ?? ($candidate['ext'] ?? ''))),
             '{worker_dot_ext}' => escapeshellarg((string) (($candidate['worker_ext'] ?? ($candidate['ext'] ?? '')) !== '' ? '.' . ($candidate['worker_ext'] ?? ($candidate['ext'] ?? '')) : '')),
+            '{farm_root}' => escapeshellarg($farmRoot),
+            '{task_dir}' => escapeshellarg($taskDir),
+            '{task_file}' => escapeshellarg($taskFile),
         ]);
     }
 
