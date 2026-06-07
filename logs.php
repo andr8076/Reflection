@@ -627,7 +627,7 @@ foreach ($validJobFilters as $filter) {
         <p>Dashboard log panels show only the last 5 items. Use this page for detailed review and cleanup.</p>
         <p><a href="index.php">Back to dashboard</a></p>
     </footer>
-    <script src="common.js"></script>
-    <script src="logs.js"></script>
+    <script src="<?= reflection_h(reflection_asset_url('common.js')) ?>"></script>
+    <script src="<?= reflection_h(reflection_asset_url('logs.js')) ?>"></script>
 </body>
 </html>

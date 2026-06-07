@@ -742,12 +742,12 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
         <?php endif; ?>
     </section>
 
-    <script src="automation.js"></script>
+    <script src="<?= reflection_h(reflection_asset_url('automation.js')) ?>"></script>
 
     <footer>
         <p>Automation state lives in <code>data/automation_rules.json</code>, <code>data/automation_state.json</code>, and <code>data/automation_runs.jsonl</code>.</p>
         <p><a href="index.php">Back to dashboard</a></p>
     </footer>
-    <script src="common.js"></script>
+    <script src="<?= reflection_h(reflection_asset_url('common.js')) ?>"></script>
 </body>
 </html>

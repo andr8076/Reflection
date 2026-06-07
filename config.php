@@ -95,6 +95,32 @@ function reflection_read_deployed_version(string $appRoot): ?string
         ?? reflection_read_commit_file($appRoot);
 }
 
+
+function reflection_asset_url(string $asset): string
+{
+    $asset = ltrim($asset, '/');
+    $path = __DIR__ . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $asset);
+    $version = null;
+
+    if (is_file($path)) {
+        $mtime = @filemtime($path);
+        $size = @filesize($path);
+        if ($mtime !== false) {
+            $version = (string) $mtime;
+            if ($size !== false) {
+                $version .= '-' . (string) $size;
+            }
+        }
+    }
+
+    if ($version === null || $version === '') {
+        $deployed = reflection_read_deployed_version(__DIR__);
+        $version = $deployed !== null ? substr($deployed, 0, 12) : (string) time();
+    }
+
+    return $asset . '?v=' . rawurlencode($version);
+}
+
 function reflection_resolve_git_directory(string $appRoot): ?string
 {
     $gitPath = $appRoot . DIRECTORY_SEPARATOR . '.git';
