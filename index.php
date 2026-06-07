@@ -478,51 +478,63 @@ function reflection_render_worker_cards_html(array $workerCards): string
         $mac = trim((string) ($card['mac'] ?? ''));
         $powerTitle = trim($wakeLabel . ($mac !== '' ? ' · ' . $mac : '') . ' · minimum ESS SOC ' . $minSoc . ' · shutdown layer ' . $layer);
         ?>
-        <article class="worker-tile <?= reflection_h($stateClass) ?>">
-            <div class="worker-tile-head">
-                <div>
-                    <strong><?= reflection_h($card['pc_id'] ?? 'unknown') ?></strong>
-                    <span class="badge <?= reflection_h($stateClass) ?>"><?= reflection_h($state) ?></span>
+        <article class="worker-wide-card <?= reflection_h($stateClass) ?>">
+            <div class="worker-wide-main">
+                <div class="worker-wide-title">
+                    <span class="worker-dot <?= reflection_h($stateClass) ?>" aria-hidden="true"></span>
+                    <div>
+                        <strong><?= reflection_h($card['pc_id'] ?? 'unknown') ?></strong>
+                        <span class="badge <?= reflection_h($stateClass) ?>"><?= reflection_h($state) ?></span>
+                    </div>
                 </div>
-                <span class="soft-label">L<?= $layer ?></span>
+                <div class="worker-wide-focus">
+                    <span>Current job</span>
+                    <code title="<?= reflection_h($currentJobDisplay) ?>"><?= reflection_h(reflection_short_value($currentJobDisplay, 40)) ?></code>
+                </div>
+                <div class="worker-wide-focus compact-focus">
+                    <span>Seen</span>
+                    <strong title="<?= reflection_h($lastCheckIn ?? '') ?>"><?= reflection_h(reflection_relative_time($lastCheckIn)) ?></strong>
+                </div>
+                <div class="worker-wide-layer soft-label">Layer <?= $layer ?></div>
             </div>
 
-            <dl class="worker-tile-details">
-                <div class="worker-job-detail">
-                    <dt>Current job</dt>
-                    <dd><code title="<?= reflection_h($currentJobDisplay) ?>"><?= reflection_h(reflection_short_value($currentJobDisplay, 36)) ?></code></dd>
-                </div>
-                <div>
-                    <dt>Seen</dt>
-                    <dd title="<?= reflection_h($lastCheckIn ?? '') ?>"><?= reflection_h(reflection_relative_time($lastCheckIn)) ?></dd>
-                </div>
-                <div>
+            <dl class="worker-wide-details">
+                <div class="worker-info-box version-box">
                     <dt>Version</dt>
                     <dd><code title="<?= reflection_h($versionDisplay) ?>"><?= reflection_h(reflection_short_value($versionDisplay, 14)) ?></code></dd>
                 </div>
-                <div>
-                    <dt>Power</dt>
-                    <dd title="<?= reflection_h($powerTitle) ?>">SOC <?= reflection_h($minSoc) ?> · <?= reflection_h($wakeLabel) ?></dd>
+                <div class="worker-info-box power-box">
+                    <dt>Minimum ESS SOC</dt>
+                    <dd><?= reflection_h($minSoc) ?></dd>
                 </div>
-                <div>
+                <div class="worker-info-box wake-box">
+                    <dt>Wake</dt>
+                    <dd title="<?= reflection_h($powerTitle) ?>"><?= reflection_h($wakeLabel) ?><?= $mac !== '' ? ' · ' . reflection_h(reflection_short_value($mac, 20)) : '' ?></dd>
+                </div>
+                <div class="worker-info-box polls-box">
                     <dt>No-job polls</dt>
                     <dd><?= (int) ($card['idle_no_job_checkins'] ?? 0) ?></dd>
                 </div>
+                <?php if (!empty($card['expected_offline'])): ?>
+                    <div class="worker-info-box expected-box" title="<?= reflection_h($card['expected_offline_at'] ?? '') ?>">
+                        <dt>Expected offline</dt>
+                        <dd><?= reflection_h(reflection_relative_time($card['expected_offline_at'] ?? null)) ?><?= ($card['expected_offline_reason'] ?? '') !== '' ? ' · ' . reflection_h($card['expected_offline_reason']) : '' ?></dd>
+                    </div>
+                <?php endif; ?>
+                <?php if ($state === 'stale'): ?>
+                    <div class="worker-info-box action-box">
+                        <dt>Action</dt>
+                        <dd>
+                            <form method="post" class="worker-wide-action" data-confirm="Remove this stale worker check-in from the board?">
+                                <input type="hidden" name="form_action" value="worker_action">
+                                <input type="hidden" name="worker_action" value="remove_stale">
+                                <input type="hidden" name="pc_id" value="<?= reflection_h($card['pc_id'] ?? '') ?>">
+                                <button type="submit" class="danger-button small-button">Remove stale</button>
+                            </form>
+                        </dd>
+                    </div>
+                <?php endif; ?>
             </dl>
-
-            <?php if (!empty($card['expected_offline'])): ?>
-                <p class="worker-tile-note" title="<?= reflection_h($card['expected_offline_at'] ?? '') ?>">
-                    Expected offline <?= reflection_h(reflection_relative_time($card['expected_offline_at'] ?? null)) ?><?= ($card['expected_offline_reason'] ?? '') !== '' ? ' · ' . reflection_h($card['expected_offline_reason']) : '' ?>
-                </p>
-            <?php endif; ?>
-            <?php if ($state === 'stale'): ?>
-                <form method="post" class="worker-tile-action" data-confirm="Remove this stale worker check-in from the board?">
-                    <input type="hidden" name="form_action" value="worker_action">
-                    <input type="hidden" name="worker_action" value="remove_stale">
-                    <input type="hidden" name="pc_id" value="<?= reflection_h($card['pc_id'] ?? '') ?>">
-                    <button type="submit" class="danger-button small-button">Remove stale</button>
-                </form>
-            <?php endif; ?>
         </article>
         <?php
     endforeach;
