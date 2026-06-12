@@ -199,8 +199,39 @@ function reflection_short_value($value, int $limit = 96): string
 
 function reflection_status_class($status): string
 {
-    $status = preg_replace('/[^a-z0-9_-]/i', '', (string) $status);
-    return $status !== '' ? strtolower($status) : 'unknown';
+    $status = strtolower((string) preg_replace('/[^a-z0-9_-]/i', '', (string) $status));
+    $classes = [
+        'candidate' => 'text-bg-info',
+        'completed' => 'text-bg-success',
+        'configured' => 'text-bg-primary',
+        'deleted' => 'text-bg-secondary',
+        'failed' => 'text-bg-danger',
+        'held' => 'text-bg-warning',
+        'idle' => 'text-bg-success',
+        'offline' => 'text-bg-secondary',
+        'queued' => 'text-bg-primary',
+        'running' => 'text-bg-warning',
+        'skipped' => 'text-bg-secondary',
+        'stale' => 'text-bg-danger',
+        'success' => 'text-bg-success',
+    ];
+
+    return $classes[$status] ?? 'text-bg-secondary';
+}
+
+
+function reflection_status_dot_class($status): string
+{
+    $status = strtolower((string) preg_replace('/[^a-z0-9_-]/i', '', (string) $status));
+    $classes = [
+        'configured' => 'bg-primary',
+        'idle' => 'bg-success',
+        'offline' => 'bg-secondary',
+        'running' => 'bg-warning',
+        'stale' => 'bg-danger',
+    ];
+
+    return $classes[$status] ?? 'bg-secondary';
 }
 
 function reflection_ess_soc_is_ignored(array $settings): bool

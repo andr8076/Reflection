@@ -97,25 +97,25 @@ if ($editingServer === null) {
     <title>Storage servers · Reflection Farm Master</title>
     <?= reflection_stylesheet_links() ?>
 </head>
-<body class="automation-page storage-page">
-    <header class="hero compact-hero">
-        <div class="hero-main">
-            <p class="eyebrow">Reflection farm master</p>
+<body class="automation-page bg-light text-dark container-fluid px-3 px-md-4 py-4 storage-page">
+    <header class="hero row g-3 align-items-stretch mb-4 compact-hero">
+        <div class="hero-main col-12 col-lg bg-white border rounded-4 shadow-sm p-4">
+            <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Reflection farm master</p>
             <h1>Storage servers</h1>
-            <p class="lede">Add FTP, FTPS, or SFTP servers that jobs and automation rules can point workers at. Worker usernames and passwords still stay on the worker computers.</p>
-            <div class="hero-pills">
+            <p class="lede text-secondary fs-5 mb-3">Add FTP, FTPS, or SFTP servers that jobs and automation rules can point workers at. Worker usernames and passwords still stay on the worker computers.</p>
+            <div class="hero-pills d-flex flex-wrap gap-2">
                 <span>Servers <code><?= count($servers) ?></code></span>
                 <span>Credentials <code>worker-side</code></span>
             </div>
-            <nav class="top-nav">
-                <a href="index.php">Dashboard</a>
-                <a href="automation.php">Automation</a>
-                <a class="active" href="storage_servers.php">Storage servers</a>
-                <a href="blocked_jobs.php">Blocked jobs</a>
-                <a href="system_checks.php">System checks</a><a href="logs.php">Logs</a><a href="settings.php">Settings</a>
+            <nav class="top-nav nav nav-pills flex-wrap gap-2 mt-3">
+                <a class="nav-link" href="index.php">Dashboard</a>
+                <a class="nav-link" href="automation.php">Automation</a>
+                <a class="nav-link active" href="storage_servers.php">Storage servers</a>
+                <a class="nav-link" href="blocked_jobs.php">Blocked jobs</a>
+                <a class="nav-link" href="system_checks.php">System checks</a><a class="nav-link" href="logs.php">Logs</a><a class="nav-link" href="settings.php">Settings</a>
             </nav>
         </div>
-        <div class="version-card storage-help-card">
+        <div class="version-card col-12 col-lg-4 bg-white border rounded-4 shadow-sm p-4 d-flex flex-column gap-2 storage-help-card">
             <span>What goes here?</span>
             <strong>Server address only</strong>
             <small>The master sends protocol, host, port, and root. Each worker uses its own login from <code>cluster/reflection_config.json</code>.</small>
@@ -123,24 +123,24 @@ if ($editingServer === null) {
     </header>
 
     <?php if ($message !== null): ?>
-        <div class="alert success"><?= reflection_h($message) ?></div>
+        <div class="alert success text-bg-success"><?= reflection_h($message) ?></div>
     <?php endif; ?>
     <?php if ($error !== null): ?>
-        <div class="alert error"><?= reflection_h($error) ?></div>
+        <div class="alert error alert-danger text-bg-danger"><?= reflection_h($error) ?></div>
     <?php endif; ?>
 
-    <main class="automation-layout storage-layout">
-        <aside class="panel automation-sidebar">
-            <div class="panel-head">
+    <main class="automation-layout row g-4 align-items-start storage-layout">
+        <aside class="panel bg-white border rounded-4 shadow-sm p-4 mb-4 automation-sidebar col-12 col-xl-4">
+            <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
                 <div>
-                    <p class="eyebrow">Configured</p>
+                    <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Configured</p>
                     <h2>Storage CRUD</h2>
                 </div>
-                <a class="ghost-button small-button" href="storage_servers.php?new=1">New server</a>
+                <a class="ghost-button btn btn-outline-primary small-button btn-sm" href="storage_servers.php?new=1">New server</a>
             </div>
-            <div class="rule-list">
+            <div class="rule-list list-group">
                 <?php if ($servers === []): ?>
-                    <p class="empty">No storage servers configured yet.</p>
+                    <p class="empty text-secondary text-center py-4">No storage servers configured yet.</p>
                 <?php endif; ?>
                 <?php foreach ($servers as $server): ?>
                     <?php $selected = ($editingServer['id'] ?? '') !== '' && ($editingServer['id'] ?? '') === ($server['id'] ?? ''); ?>
@@ -150,50 +150,50 @@ if ($editingServer === null) {
                             <small><?= reflection_h(reflection_server_endpoint($server)) ?></small>
                             <small><?= !empty($server['enabled']) ? 'enabled' : 'disabled' ?><?= !empty($server['is_legacy']) ? ' · from farm_settings.local.php' : '' ?></small>
                         </div>
-                        <div class="rule-actions">
-                            <a class="text-link" href="storage_servers.php?edit=<?= reflection_h($server['id'] ?? '') ?>">Edit</a>
+                        <div class="rule-actions d-flex flex-wrap gap-2">
+                            <a class="text-link link-primary" href="storage_servers.php?edit=<?= reflection_h($server['id'] ?? '') ?>">Edit</a>
                         </div>
                     </article>
                 <?php endforeach; ?>
             </div>
         </aside>
 
-        <section class="panel automation-editor">
-            <div class="panel-head wrap-head">
+        <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4 automation-editor col-12 col-xl-8">
+            <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3 wrap-head">
                 <div>
-                    <p class="eyebrow">Server editor</p>
+                    <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Server editor</p>
                     <h2><?= ($editingServer['id'] ?? '') === '' || !empty($editingServer['is_legacy']) ? 'Create server' : 'Edit server' ?></h2>
-                    <p class="api-note">Do not put FTP usernames or passwords here. This page only stores the server endpoint that jobs should use.</p>
+                    <p class="api-note text-secondary small">Do not put FTP usernames or passwords here. This page only stores the server endpoint that jobs should use.</p>
                 </div>
                 <?php if (($editingServer['id'] ?? '') !== '' && empty($editingServer['is_legacy'])): ?>
                     <form method="post" data-confirm="Delete this storage server? Existing queued jobs that reference it may fall back to the default server.">
                         <input type="hidden" name="storage_action" value="delete_server">
                         <input type="hidden" name="server_id" value="<?= reflection_h($editingServer['id'] ?? '') ?>">
-                        <button type="submit" class="danger-button">Delete</button>
+                        <button type="submit" class="danger-button btn btn-outline-danger">Delete</button>
                     </form>
                 <?php endif; ?>
             </div>
 
             <?php if (!empty($editingServer['is_legacy'])): ?>
-                <div class="alert muted">This is the legacy/default server from <code>farm_settings.local.php</code>. Saving it here will create an editable dashboard-managed copy.</div>
+                <div class="alert muted alert-secondary text-bg-secondary">This is the legacy/default server from <code>farm_settings.local.php</code>. Saving it here will create an editable dashboard-managed copy.</div>
             <?php endif; ?>
 
-            <form method="post" class="automation-form rf-form">
+            <form method="post" class="automation-form d-grid gap-3 rf-form">
                 <input type="hidden" name="storage_action" value="save_server">
                 <input type="hidden" name="server_id" value="<?= empty($editingServer['is_legacy']) ? reflection_h($editingServer['id'] ?? '') : '' ?>">
                 <input type="hidden" name="created_at" value="<?= reflection_h($editingServer['created_at'] ?? '') ?>">
                 <input type="hidden" name="updated_at" value="<?= reflection_h($editingServer['updated_at'] ?? '') ?>">
 
-                <div class="form-block boxed-form-block">
+                <div class="form-block d-grid gap-2 mb-3 boxed-form-block bg-light border rounded-3 p-3">
                     <div class="form-section-header static-section-header"><span class="section-number">1</span><div><h3>Server details</h3><p>These details are sent with jobs. Credentials are not.</p></div></div>
-                    <div class="settings-grid">
+                    <div class="settings-grid row g-3">
                         <label>
                             Server name
-                            <input name="name" required value="<?= reflection_h($editingServer['name'] ?? '') ?>" placeholder="Main Synology FTP">
+                            <input name="name" required value="<?= reflection_h($editingServer['name'] ?? '') ?>" class="form-control" placeholder="Main Synology FTP">
                         </label>
                         <label>
                             Protocol
-                            <select name="scheme">
+                            <select class="form-select" name="scheme">
                                 <?php foreach (['ftp' => 'FTP', 'ftps' => 'FTPS', 'sftp' => 'SFTP'] as $scheme => $label): ?>
                                     <option value="<?= reflection_h($scheme) ?>" <?= ($editingServer['scheme'] ?? 'ftp') === $scheme ? 'selected' : '' ?>><?= reflection_h($label) ?></option>
                                 <?php endforeach; ?>
@@ -201,18 +201,18 @@ if ($editingServer === null) {
                         </label>
                         <label>
                             Host
-                            <input name="host" required value="<?= reflection_h($editingServer['host'] ?? '') ?>" placeholder="192.168.1.10">
+                            <input name="host" required value="<?= reflection_h($editingServer['host'] ?? '') ?>" class="form-control" placeholder="192.168.1.10">
                         </label>
                         <label>
                             Port
-                            <input name="port" inputmode="numeric" value="<?= (int) ($editingServer['port'] ?? 21) ?>">
+                            <input name="port" inputmode="numeric" value="<?= (int) ($editingServer['port'] ?? 21) ?>" class="form-control">
                         </label>
                         <label>
                             Remote root
-                            <input name="root" value="<?= reflection_h($editingServer['root'] ?? '') ?>" placeholder="/ or /volume1">
+                            <input name="root" value="<?= reflection_h($editingServer['root'] ?? '') ?>" class="form-control" placeholder="/ or /volume1">
                             <small>Optional. Leave blank if paths like <code>/movies/file.mkv</code> are already correct after FTP login.</small>
                         </label>
-                        <label class="check-row top-check option-card">
+                        <label class="check-row form-check d-flex gap-2 align-items-center top-check col bg-light border rounded-3 p-3 option-card">
                             <input type="checkbox" name="enabled" value="1" <?= !array_key_exists('enabled', $editingServer) || !empty($editingServer['enabled']) ? 'checked' : '' ?>>
                             Enabled
                             <small>Disabled servers stay saved but are hidden from new job/rule selection.</small>
@@ -220,39 +220,39 @@ if ($editingServer === null) {
                     </div>
                     <label>
                         Notes
-                        <textarea name="notes" rows="3" placeholder="Example: workers log in as their own FTP users; paths start at /System."><?= reflection_h($editingServer['notes'] ?? '') ?></textarea>
+                        <textarea class="form-control" name="notes" rows="3" placeholder="Example: workers log in as their own FTP users; paths start at /System."><?= reflection_h($editingServer['notes'] ?? '') ?></textarea>
                     </label>
                 </div>
 
-                <div class="form-block boxed-form-block">
+                <div class="form-block d-grid gap-2 mb-3 boxed-form-block bg-light border rounded-3 p-3">
                     <div class="form-section-header static-section-header"><span class="section-number">2</span><div><h3>How this is used</h3><p>The job receives this server and the source/delivery paths from the queue or automation rule.</p></div></div>
-                    <div class="template-preview-grid">
-                        <div class="template-preview-card">
+                    <div class="template-preview-grid row row-cols-1 row-cols-md-2 g-3">
+                        <div class="template-preview-card col bg-light border rounded-3 p-3">
                             <span>Server sent to worker</span>
                             <code><?= reflection_h(reflection_server_endpoint($editingServer)) ?></code>
                         </div>
-                        <div class="template-preview-card">
+                        <div class="template-preview-card col bg-light border rounded-3 p-3">
                             <span>Credentials</span>
                             <code>read locally by worker</code>
                         </div>
-                        <div class="template-preview-card">
+                        <div class="template-preview-card col bg-light border rounded-3 p-3">
                             <span>Example worker config</span>
                             <code>transfer_auth.username/password</code>
                         </div>
                     </div>
                 </div>
 
-                <div class="button-row sticky-actions">
-                    <button type="submit">Save server</button>
-                    <a class="ghost-button" href="automation.php">Back to Automation</a>
+                <div class="button-row d-flex flex-wrap gap-2 sticky-actions bg-white border rounded-3 p-3 sticky-bottom">
+                    <button class="btn btn-primary" type="submit">Save server</button>
+                    <a class="ghost-button btn btn-outline-primary" href="automation.php">Back to Automation</a>
                 </div>
             </form>
 
             <?php if (($editingServer['id'] ?? '') !== ''): ?>
-                <form method="post" class="button-row">
+                <form method="post" class="button-row d-flex flex-wrap gap-2">
                     <input type="hidden" name="storage_action" value="test_server">
                     <input type="hidden" name="server_id" value="<?= reflection_h($editingServer['id'] ?? '') ?>">
-                    <button type="submit" class="ghost-button">Queue worker storage test</button>
+                    <button type="submit" class="ghost-button btn btn-outline-primary">Queue worker storage test</button>
                     <small>The test uses an online worker's local FTP/SFTP login and verifies create/read/rename/delete access.</small>
                 </form>
             <?php endif; ?>

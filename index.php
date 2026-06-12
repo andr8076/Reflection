@@ -460,7 +460,7 @@ function reflection_render_worker_cards_html(array $workerCards): string
     ob_start();
     if ($workerCards === []):
         ?>
-        <p class="empty">No configured computers or worker check-ins yet.</p>
+        <p class="empty text-secondary text-center py-4">No configured computers or worker check-ins yet.</p>
         <?php
     endif;
 
@@ -478,58 +478,58 @@ function reflection_render_worker_cards_html(array $workerCards): string
         $mac = trim((string) ($card['mac'] ?? ''));
         $powerTitle = trim($wakeLabel . ($mac !== '' ? ' · ' . $mac : '') . ' · minimum ESS SOC ' . $minSoc . ' · shutdown layer ' . $layer);
         ?>
-        <article class="worker-wide-card <?= reflection_h($stateClass) ?>">
-            <div class="worker-wide-main">
-                <div class="worker-wide-title">
-                    <span class="worker-dot <?= reflection_h($stateClass) ?>" aria-hidden="true"></span>
+        <article class="worker-wide-card col-12 bg-light border rounded-4 p-3">
+            <div class="worker-wide-main row g-3 align-items-center">
+                <div class="worker-wide-title col-12 col-lg-3 d-flex align-items-center gap-2">
+                    <span class="worker-dot rounded-circle d-inline-block p-2 <?= reflection_h(reflection_status_dot_class($state)) ?>" aria-hidden="true"></span>
                     <div>
                         <strong><?= reflection_h($card['pc_id'] ?? 'unknown') ?></strong>
                         <span class="badge <?= reflection_h($stateClass) ?>"><?= reflection_h($state) ?></span>
                     </div>
                 </div>
-                <div class="worker-wide-focus">
+                <div class="worker-wide-focus col-12 col-lg bg-white border rounded-3 p-2">
                     <span>Current job</span>
                     <code title="<?= reflection_h($currentJobDisplay) ?>"><?= reflection_h(reflection_short_value($currentJobDisplay, 40)) ?></code>
                 </div>
-                <div class="worker-wide-focus compact-focus">
+                <div class="worker-wide-focus col-12 col-lg bg-white border rounded-3 p-2 compact-focus col-lg-2">
                     <span>Seen</span>
                     <strong title="<?= reflection_h($lastCheckIn ?? '') ?>"><?= reflection_h(reflection_relative_time($lastCheckIn)) ?></strong>
                 </div>
-                <div class="worker-wide-layer soft-label">Layer <?= $layer ?></div>
+                <div class="worker-wide-layer col-12 col-lg-auto badge text-bg-light border text-dark soft-label text-secondary">Layer <?= $layer ?></div>
             </div>
 
-            <dl class="worker-wide-details">
-                <div class="worker-info-box version-box">
+            <dl class="worker-wide-details row row-cols-1 row-cols-md-2 row-cols-xl-4 g-2 mt-1">
+                <div class="worker-info-box col bg-white border rounded-3 p-2 version-box">
                     <dt>Version</dt>
                     <dd><code title="<?= reflection_h($versionDisplay) ?>"><?= reflection_h(reflection_short_value($versionDisplay, 14)) ?></code></dd>
                 </div>
-                <div class="worker-info-box power-box">
+                <div class="worker-info-box col bg-white border rounded-3 p-2 power-box">
                     <dt>Minimum ESS SOC</dt>
                     <dd><?= reflection_h($minSoc) ?></dd>
                 </div>
-                <div class="worker-info-box wake-box">
+                <div class="worker-info-box col bg-white border rounded-3 p-2 wake-box">
                     <dt>Wake</dt>
                     <dd title="<?= reflection_h($powerTitle) ?>"><?= reflection_h($wakeLabel) ?><?= $mac !== '' ? ' · ' . reflection_h(reflection_short_value($mac, 20)) : '' ?></dd>
                 </div>
-                <div class="worker-info-box polls-box">
+                <div class="worker-info-box col bg-white border rounded-3 p-2 polls-box">
                     <dt>No-job polls</dt>
                     <dd><?= (int) ($card['idle_no_job_checkins'] ?? 0) ?></dd>
                 </div>
                 <?php if (!empty($card['expected_offline'])): ?>
-                    <div class="worker-info-box expected-box" title="<?= reflection_h($card['expected_offline_at'] ?? '') ?>">
+                    <div class="worker-info-box col bg-white border rounded-3 p-2 expected-box col-12 col-md-6" title="<?= reflection_h($card['expected_offline_at'] ?? '') ?>">
                         <dt>Expected offline</dt>
                         <dd><?= reflection_h(reflection_relative_time($card['expected_offline_at'] ?? null)) ?><?= ($card['expected_offline_reason'] ?? '') !== '' ? ' · ' . reflection_h($card['expected_offline_reason']) : '' ?></dd>
                     </div>
                 <?php endif; ?>
                 <?php if ($state === 'stale'): ?>
-                    <div class="worker-info-box action-box">
+                    <div class="worker-info-box col bg-white border rounded-3 p-2 action-box col-12 col-md-6">
                         <dt>Action</dt>
                         <dd>
-                            <form method="post" class="worker-wide-action" data-confirm="Remove this stale worker check-in from the board?">
+                            <form method="post" class="worker-wide-action m-0" data-confirm="Remove this stale worker check-in from the board?">
                                 <input type="hidden" name="form_action" value="worker_action">
                                 <input type="hidden" name="worker_action" value="remove_stale">
                                 <input type="hidden" name="pc_id" value="<?= reflection_h($card['pc_id'] ?? '') ?>">
-                                <button type="submit" class="danger-button small-button">Remove stale</button>
+                                <button type="submit" class="danger-button btn btn-outline-danger small-button btn-sm">Remove stale</button>
                             </form>
                         </dd>
                     </div>
@@ -564,41 +564,41 @@ function reflection_render_power_panel_html(array $context): string
     $demandEnabled = !empty($demandWakePlan['enabled']);
     ob_start();
     ?>
-    <section class="panel compact-panel power-panel" id="power-panel">
-        <div class="panel-head power-head">
+    <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4 compact-panel power-panel" id="power-panel">
+        <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3 power-head">
             <div>
-                <p class="eyebrow">Power</p>
+                <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Power</p>
                 <h2>Wake status</h2>
                 <small>Manual wake shows eligible offline PCs. Automatic demand wake is conservative for preflight-candidate queues.</small>
             </div>
-            <form method="post" class="bare-form">
+            <form method="post" class="bare-form m-0">
                 <input type="hidden" name="form_action" value="wake_farm">
-                <button type="submit" class="secondary-button" <?= $wakeButtonDisabled ? 'disabled' : '' ?>>Manual wake <?= (int) $wakeTargetCount ?> PC<?= $wakeTargetCount === 1 ? '' : 's' ?></button>
+                <button type="submit" class="secondary-button btn btn-secondary" <?= $wakeButtonDisabled ? 'disabled' : '' ?>>Manual wake <?= (int) $wakeTargetCount ?> PC<?= $wakeTargetCount === 1 ? '' : 's' ?></button>
             </form>
         </div>
 
-        <div class="power-summary simplified-power-summary">
-            <div class="power-summary-item">
+        <div class="power-summary row row-cols-1 row-cols-sm-2 g-2 simplified-power-summary row-cols-lg-2">
+            <div class="power-summary-item col bg-light border rounded-3 p-2">
                 <span>Manual wake candidates</span>
                 <strong><?= (int) $wakeTargetCount ?> / <?= (int) $wakeEnabledMachineCount ?></strong>
                 <small>offline · WOL enabled · allowed now</small>
             </div>
-            <div class="power-summary-item">
+            <div class="power-summary-item col bg-light border rounded-3 p-2">
                 <span>Auto demand wake</span>
                 <strong><?= $demandEnabled ? (int) $needed : 'off' ?></strong>
                 <small>extra PCs needed now</small>
             </div>
-            <div class="power-summary-item">
+            <div class="power-summary-item col bg-light border rounded-3 p-2">
                 <span>Queue coverage</span>
                 <strong><?= (int) $effectiveQueuedWork ?> / <?= (int) $idleOnlineWorkers ?></strong>
                 <small>effective work / idle online workers</small>
             </div>
-            <div class="power-summary-item">
+            <div class="power-summary-item col bg-light border rounded-3 p-2">
                 <span>Candidate queue</span>
                 <strong><?= (int) $queuedCandidateWork ?></strong>
                 <small>worker preflight pending</small>
             </div>
-            <div class="power-summary-item">
+            <div class="power-summary-item col bg-light border rounded-3 p-2">
                 <span>SOC rules</span>
                 <strong><?= reflection_h($workerLimitDisplay) ?></strong>
                 <small><?= reflection_h($workerLimitHelp) ?></small>
@@ -606,25 +606,25 @@ function reflection_render_power_panel_html(array $context): string
         </div>
 
         <?php if ($wakeEnabledMachineCount === 0): ?>
-            <p class="api-note panel-warning-note">No Wake-on-LAN targets are configured. Add machines in Settings to use farm wake control.</p>
+            <p class="api-note text-secondary small panel-warning-note alert alert-warning">No Wake-on-LAN targets are configured. Add machines in Settings to use farm wake control.</p>
         <?php elseif ($essSocIgnored): ?>
-            <p class="api-note panel-warning-note">ESS SOC is <?= reflection_h(reflection_ess_status_label($settings)) ?>. SOC limiting is paused, so every configured wake target is eligible until valid SOC data returns.</p>
+            <p class="api-note text-secondary small panel-warning-note alert alert-warning">ESS SOC is <?= reflection_h(reflection_ess_status_label($settings)) ?>. SOC limiting is paused, so every configured wake target is eligible until valid SOC data returns.</p>
         <?php elseif ($wakeTargetCount === 0): ?>
-            <p class="api-note panel-warning-note">No offline wake-enabled PC is currently eligible for manual wake. This can mean all eligible machines are already online, blocked by SOC, or inside wake cooldown.</p>
+            <p class="api-note text-secondary small panel-warning-note alert alert-warning">No offline wake-enabled PC is currently eligible for manual wake. This can mean all eligible machines are already online, blocked by SOC, or inside wake cooldown.</p>
         <?php elseif ($essChargingOverrideActive): ?>
-            <p class="api-note">ESS reports charging and charging override is enabled. Minimum SOC rules are bypassed, so eligible offline wake targets may be woken.</p>
+            <p class="api-note text-secondary small">ESS reports charging and charging override is enabled. Minimum SOC rules are bypassed, so eligible offline wake targets may be woken.</p>
         <?php elseif ($allowedActiveWorkers === PHP_INT_MAX): ?>
-            <p class="api-note">SOC is not currently capping workers. Manual wake can target any configured offline WOL machine.</p>
+            <p class="api-note text-secondary small">SOC is not currently capping workers. Manual wake can target any configured offline WOL machine.</p>
         <?php else: ?>
-            <p class="api-note">Current SOC allows <?= (int) $allowedActiveWorkers ?> configured worker<?= $allowedActiveWorkers === 1 ? '' : 's' ?> by minimum ESS SOC. <?= (int) $wakeTargetCount ?> offline WOL target<?= $wakeTargetCount === 1 ? '' : 's' ?> are currently eligible.</p>
+            <p class="api-note text-secondary small">Current SOC allows <?= (int) $allowedActiveWorkers ?> configured worker<?= $allowedActiveWorkers === 1 ? '' : 's' ?> by minimum ESS SOC. <?= (int) $wakeTargetCount ?> offline WOL target<?= $wakeTargetCount === 1 ? '' : 's' ?> are currently eligible.</p>
         <?php endif; ?>
 
         <?php if (!$demandEnabled): ?>
-            <p class="api-note">Automatic demand wake is off. Jobs can still be queued, but machines wake only when you press the manual button or by another external schedule.</p>
+            <p class="api-note text-secondary small">Automatic demand wake is off. Jobs can still be queued, but machines wake only when you press the manual button or by another external schedule.</p>
         <?php elseif ($needed > 0): ?>
-            <p class="api-note">Automatic demand wake wants <?= (int) $needed ?> more PC<?= $needed === 1 ? '' : 's' ?> for queued work. <?= (int) $readyTargets ?> eligible target<?= $readyTargets === 1 ? '' : 's' ?> are ready after cooldown. Worker-preflight candidates are counted conservatively so the farm does not wake every PC just to discover many files should be skipped. Lower shutdown layers are woken first.</p>
+            <p class="api-note text-secondary small">Automatic demand wake wants <?= (int) $needed ?> more PC<?= $needed === 1 ? '' : 's' ?> for queued work. <?= (int) $readyTargets ?> eligible target<?= $readyTargets === 1 ? '' : 's' ?> are ready after cooldown. Worker-preflight candidates are counted conservatively so the farm does not wake every PC just to discover many files should be skipped. Lower shutdown layers are woken first.</p>
         <?php else: ?>
-            <p class="api-note">Automatic demand wake is satisfied. There are no queued jobs that need another worker right now. Candidate jobs remain in the queue until a farm computer tests and either processes or skips them.</p>
+            <p class="api-note text-secondary small">Automatic demand wake is satisfied. There are no queued jobs that need another worker right now. Candidate jobs remain in the queue until a farm computer tests and either processes or skips them.</p>
         <?php endif; ?>
     </section>
     <?php
@@ -635,23 +635,23 @@ function reflection_render_storage_history_panel_html(array $settings, array $ar
 {
     ob_start();
     ?>
-    <section class="panel compact-panel history-panel">
-        <div class="panel-head">
+    <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4 compact-panel history-panel">
+        <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
             <div>
-                <p class="eyebrow">Storage</p>
+                <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Storage</p>
                 <h2>History cleanup</h2>
                 <small>Maintenance archives old completed jobs and trims dashboard history. It does not wake workers or delete source files.</small>
             </div>
         </div>
-        <dl class="detail-list">
+        <dl class="detail-list list-unstyled mb-0">
             <div><dt>Completed jobs kept</dt><dd><?= (int) ($settings['job_history_keep_completed'] ?? 500) ?></dd></div>
             <div><dt>Event lines kept</dt><dd><?= (int) ($settings['event_log_keep_lines'] ?? 1000) ?></dd></div>
             <div><dt>File-history paths kept</dt><dd><?= (int) ($settings['file_history_keep_paths'] ?? 500) ?></dd></div>
             <div><dt>Archive file</dt><dd><?= reflection_h(reflection_format_bytes((int) $archiveInfo['size_bytes'])) ?></dd></div>
         </dl>
-        <form method="post" class="maintenance-form">
+        <form method="post" class="maintenance-form mt-3">
             <input type="hidden" name="form_action" value="maintenance">
-            <button type="submit" class="ghost-button">Clean history now</button>
+            <button type="submit" class="ghost-button btn btn-outline-primary">Clean history now</button>
         </form>
     </section>
     <?php
@@ -1044,7 +1044,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
     // Render overview metrics section
     ob_start();
     ?>
-    <article class="metric primary">
+    <article class="metric col bg-white border rounded-4 shadow-sm p-3 primary border-primary bg-primary-subtle">
         <span>Active jobs</span>
         <strong><?= $activeCount ?></strong>
         <small><?= (int) ($statusCounts['queued'] ?? 0) ?> queued · <?= (int) ($statusCounts['running'] ?? 0) ?> running · <?= (int) ($statusCounts['held'] ?? 0) ?> held</small>
@@ -1064,12 +1064,12 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
         <strong><?= reflection_h($workerLimitDisplay) ?></strong>
         <small><?= reflection_h($workerLimitHelp) ?> · <?= (int) $wakeTargetCount ?>/<?= (int) $wakeEnabledMachineCount ?> eligible offline WOL</small>
     </article>
-    <article class="metric">
+    <article class="metric col bg-white border rounded-4 shadow-sm p-3">
         <span>Completed kept</span>
         <strong><?= $completedInStore ?></strong>
         <small><?= (int) $archiveInfo['jobs'] ?> archived · <?= reflection_h(reflection_format_bytes((int) $archiveInfo['size_bytes'])) ?></small>
     </article>
-    <article class="metric">
+    <article class="metric col bg-white border rounded-4 shadow-sm p-3">
         <span>Workers</span>
         <strong><?= count($workerCards) ?></strong>
         <small><?= (int) ($workerStateCounts['running'] ?? 0) ?> running · <?= (int) ($workerStateCounts['idle'] ?? 0) ?> idle</small>
@@ -1086,7 +1086,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
     ob_start();
     ?>
     <?php if ($jobs === []): ?>
-        <tr><td colspan="8" class="empty">No jobs match this filter.</td></tr>
+        <tr><td colspan="8" class="empty text-secondary text-center py-4">No jobs match this filter.</td></tr>
     <?php endif; ?>
     <?php foreach ($jobs as $job): ?>
         <?php $jobStatusValue = (string) ($job['status'] ?? 'unknown'); $jobDisplay = reflection_job_display_status($job); ?>
@@ -1095,12 +1095,12 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
             <td><?= reflection_h($job['module'] ?? '—') ?></td>
             <td>
                 <span class="badge <?= reflection_h(reflection_status_class($jobDisplay['class'])) ?>"><?= reflection_h($jobDisplay['label']) ?></span>
-                <?php if ($jobDisplay['detail'] !== ''): ?><small class="job-stage-note"><?= reflection_h(reflection_short_value($jobDisplay['detail'], 120)) ?></small><?php endif; ?>
+                <?php if ($jobDisplay['detail'] !== ''): ?><small class="job-stage-note text-secondary small d-block"><?= reflection_h(reflection_short_value($jobDisplay['detail'], 120)) ?></small><?php endif; ?>
             </td>
             <td><?= reflection_h($job['worker'] ?? '—') ?></td>
-            <td class="path-cell">
-                <div><span class="subtle-label">Source</span> <code title="<?= reflection_h($job['source'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['source'] ?? '—')) ?></code></div>
-                <div><span class="subtle-label">Delivery<?= !empty($job['delivery_auto_generated']) ? ' auto' : '' ?></span> <code title="<?= reflection_h($job['delivery'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['delivery'] ?? '—')) ?></code></div>
+            <td class="path-cell text-break">
+                <div><span class="subtle-label text-secondary text-uppercase fw-bold small">Source</span> <code title="<?= reflection_h($job['source'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['source'] ?? '—')) ?></code></div>
+                <div><span class="subtle-label text-secondary text-uppercase fw-bold small">Delivery<?= !empty($job['delivery_auto_generated']) ? ' auto' : '' ?></span> <code title="<?= reflection_h($job['delivery'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['delivery'] ?? '—')) ?></code></div>
                 <?php if (!empty($job['task_contract'])): ?>
                     <small><?= reflection_h($job['task_contract']) ?></small>
                 <?php endif; ?>
@@ -1112,19 +1112,19 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
             </td>
             <td><?= reflection_h(reflection_short_value($job['error'] ?? '', 140)) ?></td>
             <td>
-                <div class="button-row table-actions">
+                <div class="button-row d-flex flex-wrap gap-2 table-actions align-items-center">
                     <?php if ($jobStatusValue === 'queued'): ?>
                         <form method="post" style="display: inline;">
                             <input type="hidden" name="form_action" value="job_action">
                             <input type="hidden" name="job_action" value="move_earlier">
                             <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
-                            <button class="ghost-button small-button" type="submit">Sooner</button>
+                            <button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit">Sooner</button>
                         </form>
                         <form method="post" style="display: inline;">
                             <input type="hidden" name="form_action" value="job_action">
                             <input type="hidden" name="job_action" value="move_later">
                             <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
-                            <button class="ghost-button small-button" type="submit">Later</button>
+                            <button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit">Later</button>
                         </form>
                     <?php endif; ?>
                     <?php if (in_array($jobStatusValue, ['queued', 'running'], true)): ?>
@@ -1132,14 +1132,14 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                             <input type="hidden" name="form_action" value="job_action">
                             <input type="hidden" name="job_action" value="hold">
                             <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
-                            <button class="ghost-button small-button" type="submit">Hold</button>
+                            <button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit">Hold</button>
                         </form>
                     <?php elseif ($jobStatusValue === 'held'): ?>
                         <form method="post" style="display: inline;">
                             <input type="hidden" name="form_action" value="job_action">
                             <input type="hidden" name="job_action" value="release">
                             <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
-                            <button class="ghost-button small-button" type="submit">Release</button>
+                            <button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit">Release</button>
                         </form>
                     <?php endif; ?>
                     <?php if (in_array($jobStatusValue, ['failed', 'stale', 'blocked'], true)): ?>
@@ -1147,7 +1147,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                             <input type="hidden" name="form_action" value="job_action">
                             <input type="hidden" name="job_action" value="retry">
                             <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
-                            <button class="ghost-button small-button" type="submit">Retry</button>
+                            <button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit">Retry</button>
                         </form>
                     <?php endif; ?>
                     <?php if ($jobStatusValue !== 'running'): ?>
@@ -1155,10 +1155,10 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                             <input type="hidden" name="form_action" value="job_action">
                             <input type="hidden" name="job_action" value="delete">
                             <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
-                            <button class="danger-button small-button" type="submit">Delete</button>
+                            <button class="danger-button btn btn-outline-danger small-button btn-sm" type="submit">Delete</button>
                         </form>
                     <?php else: ?>
-                        <span class="api-note">Hold a running job before deleting it.</span>
+                        <span class="api-note text-secondary small">Hold a running job before deleting it.</span>
                     <?php endif; ?>
                 </div>
             </td>
@@ -1182,7 +1182,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                 $tabCount = (int) ($statusCounts[$filter] ?? 0);
             }
         ?>
-        <button type="button" class="<?= $jobStatus === $filter ? 'active' : '' ?>" data-job-status-filter="<?= reflection_h($filter) ?>"><?= reflection_h($filter) ?> <span><?= $tabCount ?></span></button>
+        <button type="button" class="nav-link <?= $jobStatus === $filter ? 'active' : '' ?>" data-job-status-filter="<?= reflection_h($filter) ?>"><?= reflection_h($filter) ?> <span><?= $tabCount ?></span></button>
     <?php endforeach; ?>
     <?php
     $jobTabsHtml = ob_get_clean();
@@ -1201,7 +1201,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
     ob_start();
     ?>
     <?php if ($events === []): ?>
-        <tr><td colspan="5" class="empty">No log entries yet.</td></tr>
+        <tr><td colspan="5" class="empty text-secondary text-center py-4">No log entries yet.</td></tr>
     <?php endif; ?>
     <?php foreach ($events as $event): ?>
         <tr>
@@ -1219,12 +1219,12 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
     ob_start();
     ?>
     <?php if ($fileHistory === []): ?>
-        <tr><td colspan="3" class="empty">No file or URI history yet.</td></tr>
+        <tr><td colspan="3" class="empty text-secondary text-center py-4">No file or URI history yet.</td></tr>
     <?php endif; ?>
     <?php foreach ($fileHistory as $path => $touches): ?>
         <?php $recentTouches = array_slice(array_reverse($touches), 0, 3); ?>
         <tr>
-            <td class="path-cell"><code title="<?= reflection_h($path) ?>"><?= reflection_h(reflection_short_value($path, 80)) ?></code></td>
+            <td class="path-cell text-break"><code title="<?= reflection_h($path) ?>"><?= reflection_h(reflection_short_value($path, 80)) ?></code></td>
             <td title="<?= reflection_h($recentTouches[0]['timestamp'] ?? '') ?>"><?= reflection_h(reflection_relative_time($recentTouches[0]['timestamp'] ?? null)) ?></td>
             <td>
                 <?php foreach ($recentTouches as $touch): ?>
@@ -1262,41 +1262,41 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
     <title>Reflection Farm Master</title>
     <?= reflection_stylesheet_links() ?>
 </head>
-<body>
-    <header class="hero">
-        <div class="hero-main">
-            <p class="eyebrow">Reflection farm master</p>
+<body class="bg-light text-dark container-fluid px-3 px-md-4 py-4">
+    <header class="hero row g-3 align-items-stretch mb-4">
+        <div class="hero-main col-12 col-lg bg-white border rounded-4 shadow-sm p-4">
+            <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Reflection farm master</p>
             <h1><?= reflection_h($config['farm_name'] ?? 'Farm Master') ?></h1>
-            <p class="lede">Queue cluster work, watch active machines, and keep the master store small enough to stay quick.</p>
-            <div class="hero-pills">
+            <p class="lede text-secondary fs-5 mb-3">Queue cluster work, watch active machines, and keep the master store small enough to stay quick.</p>
+            <div class="hero-pills d-flex flex-wrap gap-2">
                 <span>Farm <code><?= reflection_h($config['farm_id'] ?? 'default') ?></code></span>
                 <span>Master version <code><?= reflection_h((string) ($config['required_version'] ?? 'unknown')) ?></code></span>
                 <span>Version enforcement <strong><?= !empty($settings['enforce_version']) ? 'on' : 'off' ?></strong></span>
             </div>
-            <nav class="top-nav">
-                <a class="active" href="index.php">Dashboard</a>
-                <a href="automation.php">Automation</a>
-                <a href="storage_servers.php">Storage servers</a>
-                <a href="blocked_jobs.php">Blocked jobs</a>
-                <a href="system_checks.php">System checks</a>
-                <a href="logs.php">Logs</a>
-                <a href="settings.php">Settings</a>
+            <nav class="top-nav nav nav-pills flex-wrap gap-2 mt-3">
+                <a class="nav-link active" href="index.php">Dashboard</a>
+                <a class="nav-link" href="automation.php">Automation</a>
+                <a class="nav-link" href="storage_servers.php">Storage servers</a>
+                <a class="nav-link" href="blocked_jobs.php">Blocked jobs</a>
+                <a class="nav-link" href="system_checks.php">System checks</a>
+                <a class="nav-link" href="logs.php">Logs</a>
+                <a class="nav-link" href="settings.php">Settings</a>
             </nav>
         </div>
-        <aside class="version-card active-work-card">
-            <div class="panel-head">
+        <aside class="version-card col-12 col-lg-4 bg-white border rounded-4 shadow-sm p-4 d-flex flex-column gap-2 active-work-card">
+            <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
                 <div>
-                    <p class="eyebrow">Now</p>
+                    <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Now</p>
                     <h2>Active work</h2>
                 </div>
-                <a class="text-link" href="<?= reflection_h(reflection_url_with(['job_status' => 'active', 'job_page' => 1])) ?>">View active</a>
+                <a class="text-link link-primary" href="<?= reflection_h(reflection_url_with(['job_status' => 'active', 'job_page' => 1])) ?>">View active</a>
             </div>
             <?php if ($activeJobsPreview === []): ?>
-                <p class="empty">No queued or running jobs.</p>
+                <p class="empty text-secondary text-center py-4">No queued or running jobs.</p>
             <?php endif; ?>
-            <div class="mini-list active-work-preview-list">
+            <div class="mini-list list-group list-group-flush active-work-preview-list">
                 <?php foreach ($activeJobsPreview as $job): ?>
-                    <article class="mini-row">
+                    <article class="mini-row list-group-item d-flex gap-3 align-items-start px-0">
                         <?php $jobDisplay = reflection_job_display_status($job); ?>
                         <span class="badge <?= reflection_h(reflection_status_class($jobDisplay['class'])) ?>"><?= reflection_h($jobDisplay['label']) ?></span>
                         <div>
@@ -1308,11 +1308,11 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                 <?php endforeach; ?>
             </div>
             <?php if ($activeJobsMore !== []): ?>
-                <details class="active-work-more" id="active-work-more">
+                <details class="active-work-more mt-3" id="active-work-more">
                     <summary>Show remaining <?= (int) count($activeJobsMore) ?> active job<?= count($activeJobsMore) === 1 ? '' : 's' ?></summary>
-                    <div class="mini-list active-work-expanded-list">
+                    <div class="mini-list list-group list-group-flush active-work-expanded-list">
                         <?php foreach ($activeJobsMore as $job): ?>
-                            <article class="mini-row">
+                            <article class="mini-row list-group-item d-flex gap-3 align-items-start px-0">
                                 <?php $jobDisplay = reflection_job_display_status($job); ?>
                                 <span class="badge <?= reflection_h(reflection_status_class($jobDisplay['class'])) ?>"><?= reflection_h($jobDisplay['label']) ?></span>
                                 <div>
@@ -1324,7 +1324,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                         <?php endforeach; ?>
                     </div>
                     <?php if ($activeCount > $activeJobsShownLimit): ?>
-                        <p class="api-note active-work-overflow">Showing the first <?= (int) $activeJobsShownLimit ?> active jobs here. Use <a href="<?= reflection_h(reflection_url_with(['job_status' => 'active', 'job_page' => 1])) ?>">View active</a> for the full table.</p>
+                        <p class="api-note text-secondary small active-work-overflow mt-2">Showing the first <?= (int) $activeJobsShownLimit ?> active jobs here. Use <a href="<?= reflection_h(reflection_url_with(['job_status' => 'active', 'job_page' => 1])) ?>">View active</a> for the full table.</p>
                     <?php endif; ?>
                 </details>
             <?php endif; ?>
@@ -1332,28 +1332,28 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
     </header>
 
     <?php if ($message !== null): ?>
-        <div class="alert success"><?= reflection_h($message) ?></div>
+        <div class="alert success text-bg-success"><?= reflection_h($message) ?></div>
     <?php endif; ?>
     <?php if ($error !== null): ?>
-        <div class="alert error"><?= reflection_h($error) ?></div>
+        <div class="alert error alert-danger text-bg-danger"><?= reflection_h($error) ?></div>
     <?php endif; ?>
     <?php if (!empty($config['storage_warning'])): ?>
-        <div class="alert warning"><?= reflection_h($config['storage_warning']) ?></div>
+        <div class="alert warning alert-warning text-bg-warning"><?= reflection_h($config['storage_warning']) ?></div>
     <?php endif; ?>
     <?php if ($essSocIgnored): ?>
-        <div class="alert warning">ESS SOC <?= reflection_h(reflection_ess_status_label($settings)) ?>. SOC-based worker limits are being ignored until the endpoint returns a valid SOC value again. <?= reflection_h($settings['ess_soc_error'] ?? '') ?></div>
+        <div class="alert warning alert-warning text-bg-warning">ESS SOC <?= reflection_h(reflection_ess_status_label($settings)) ?>. SOC-based worker limits are being ignored until the endpoint returns a valid SOC value again. <?= reflection_h($settings['ess_soc_error'] ?? '') ?></div>
     <?php elseif ($essChargingOverrideActive): ?>
-        <div class="alert muted">ESS reports charging. Minimum SOC limits are being bypassed while the charging override option is enabled.</div>
+        <div class="alert muted alert-secondary text-bg-secondary">ESS reports charging. Minimum SOC limits are being bypassed while the charging override option is enabled.</div>
     <?php endif; ?>
     <?php if ($staleCount > 0): ?>
-        <div class="alert warning"><?= reflection_h($staleCount) ?> lost/blocked job(s) were marked for operator review.</div>
+        <div class="alert warning alert-warning text-bg-warning"><?= reflection_h($staleCount) ?> lost/blocked job(s) were marked for operator review.</div>
     <?php endif; ?>
     <?php if ($maintenanceChanged): ?>
-        <div class="alert muted">Automatic maintenance archived <?= (int) $automaticMaintenance['archived_jobs'] ?> old job(s), trimmed <?= (int) $automaticMaintenance['trimmed_events'] ?> event(s), compacted <?= (int) $automaticMaintenance['trimmed_file_history'] ?> file-history item(s), and trimmed <?= (int) $automaticMaintenance['trimmed_job_archive'] ?> archived job line(s).</div>
+        <div class="alert muted alert-secondary text-bg-secondary">Automatic maintenance archived <?= (int) $automaticMaintenance['archived_jobs'] ?> old job(s), trimmed <?= (int) $automaticMaintenance['trimmed_events'] ?> event(s), compacted <?= (int) $automaticMaintenance['trimmed_file_history'] ?> file-history item(s), and trimmed <?= (int) $automaticMaintenance['trimmed_job_archive'] ?> archived job line(s).</div>
     <?php endif; ?>
 
-    <section class="overview-grid" id="metrics-section">
-        <article class="metric primary">
+    <section class="overview-grid row row-cols-1 row-cols-sm-2 row-cols-xl-5 g-3 mb-4" id="metrics-section">
+        <article class="metric col bg-white border rounded-4 shadow-sm p-3 primary border-primary bg-primary-subtle">
             <span>Active jobs</span>
             <strong><?= $activeCount ?></strong>
             <small><?= (int) ($statusCounts['queued'] ?? 0) ?> queued · <?= (int) ($statusCounts['running'] ?? 0) ?> running · <?= (int) ($statusCounts['held'] ?? 0) ?> held</small>
@@ -1373,52 +1373,52 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
             <strong><?= reflection_h($workerLimitDisplay) ?></strong>
             <small><?= reflection_h($workerLimitHelp) ?> · <?= (int) $wakeTargetCount ?>/<?= (int) $wakeEnabledMachineCount ?> eligible offline WOL</small>
         </article>
-        <article class="metric">
+        <article class="metric col bg-white border rounded-4 shadow-sm p-3">
             <span>Completed kept</span>
             <strong><?= $completedInStore ?></strong>
             <small><?= (int) $archiveInfo['jobs'] ?> archived · <?= reflection_h(reflection_format_bytes((int) $archiveInfo['size_bytes'])) ?></small>
         </article>
-        <article class="metric">
+        <article class="metric col bg-white border rounded-4 shadow-sm p-3">
             <span>Workers</span>
             <strong><?= count($workerCards) ?></strong>
             <small><?= (int) ($workerStateCounts['running'] ?? 0) ?> running · <?= (int) ($workerStateCounts['idle'] ?? 0) ?> idle</small>
         </article>
     </section>
 
-    <main class="dashboard-grid dashboard-status-grid">
-        <section class="panel workers-panel dashboard-workers-panel">
-            <div class="panel-head">
+    <main class="dashboard-grid row g-4 dashboard-status-grid align-items-start">
+        <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4 workers-panel dashboard-workers-panel col-12 col-xl-8">
+            <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
                 <div>
-                    <p class="eyebrow">Cluster</p>
+                    <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Cluster</p>
                     <h2>Farm computers</h2>
                 </div>
-                <div class="worker-summary" id="worker-summary">
+                <div class="worker-summary d-flex flex-wrap gap-2" id="worker-summary">
                     <?= reflection_render_worker_summary($workerStateCounts) ?>
                 </div>
             </div>
-            <div class="computer-grid" id="workers-grid">
+            <div class="computer-grid row g-3" id="workers-grid">
                 <?= reflection_render_worker_cards_html($workerCards) ?>
             </div>
         </section>
 
-        <aside class="side-stack">
+        <aside class="side-stack col-12 col-xl-4 d-grid gap-3">
             <?= reflection_render_power_panel_html($powerPanelContext) ?>
             <?= reflection_render_storage_history_panel_html($settings, $archiveInfo) ?>
         </aside>
     </main>
 
-    <section class="panel queue-panel create-jobs-panel">
-        <div class="panel-head">
+    <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4 queue-panel create-jobs-panel">
+        <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
             <div>
-                <p class="eyebrow">Queue</p>
+                <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Queue</p>
                 <h2>Create jobs</h2>
             </div>
-            <span class="soft-label">Single or bulk</span>
+            <span class="soft-label badge text-bg-light border text-secondary">Single or bulk</span>
         </div>
         <form method="post" enctype="multipart/form-data" id="job-form">
             <label>
                 Submit mode
-                <select name="form_action" id="submit-mode">
+                <select class="form-select" name="form_action" id="submit-mode">
                     <option value="single">Single job</option>
                     <option value="bulk">Bulk import</option>
                 </select>
@@ -1426,7 +1426,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
             </label>
             <label>
                 Task
-                <select name="module" id="task-module" required>
+                <select class="form-select" name="module" id="task-module" required>
                     <?php foreach ($config['allowed_tasks'] as $taskName => $description): ?>
                         <?php $selectDescription = reflection_task_select_description((string) $taskName, (string) $description, $taskSpecs); ?>
                         <option value="<?= reflection_h($taskName) ?>"><?= reflection_h($taskName) ?> — <?= reflection_h($selectDescription) ?></option>
@@ -1440,7 +1440,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
             </section>
             <label id="storage-server-field">
                 Storage server
-                <select name="transfer_server_id">
+                <select class="form-select" name="transfer_server_id">
                     <option value="">Use first available/default server</option>
                     <?php foreach ($storageServers as $server): ?>
                         <option value="<?= reflection_h($server['id'] ?? '') ?>"><?= reflection_h(reflection_storage_server_label($server)) ?></option>
@@ -1448,54 +1448,54 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                 </select>
                 <small>Choose which FTP/SFTP server plain source/delivery paths belong to. Worker usernames/passwords stay on each worker. <a href="storage_servers.php">Add or edit storage servers</a>.</small>
             </label>
-            <div class="mode-fields mode-single">
+            <div class="mode-fields d-grid gap-3 mode-single">
                 <label id="single-source-field">
                     <span id="single-source-label">Source path or URI</span>
-                    <input name="single_source" id="single-source-input" placeholder="ftp://farm.local/incoming/source.dat">
+                    <input name="single_source" id="single-source-input" placeholder="ftp://farm.local/incoming/source.dat" class="form-control">
                     <small id="single-source-help">Use an FTP URL or any path the worker can read. Control tasks can leave this blank.</small>
                 </label>
                 <label id="single-delivery-field">
                     <span id="single-delivery-label">Delivery path or URI</span>
-                    <input name="single_delivery" id="single-delivery-input" placeholder="ftp://farm.local/outputs/result.txt">
+                    <input name="single_delivery" id="single-delivery-input" placeholder="ftp://farm.local/outputs/result.txt" class="form-control">
                     <small id="single-delivery-help">Optional. The master passes this value through; workers do the writing.</small>
                 </label>
-                <p class="api-note" id="single-delivery-preview"></p>
+                <p class="api-note text-secondary small" id="single-delivery-preview"></p>
             </div>
-            <div class="mode-fields mode-bulk" hidden>
+            <div class="mode-fields d-grid gap-3 mode-bulk" hidden>
                 <label id="bulk-source-field">
                     <span id="bulk-source-label">Source list</span>
-                    <textarea name="source_list" id="bulk-source-input" rows="8" placeholder="ftp://farm.local/incoming/img001.png&#10;ftp://farm.local/incoming/img002.png"></textarea>
+                    <textarea class="form-control" name="source_list" id="bulk-source-input" rows="8" placeholder="ftp://farm.local/incoming/img001.png&#10;ftp://farm.local/incoming/img002.png"></textarea>
                     <small id="bulk-source-help">One source per line, or paste a JSON array.</small>
                 </label>
                 <label id="bulk-upload-field">
                     Upload list file
-                    <input type="file" name="source_file" accept=".txt,.list,.json,text/plain,application/json">
+                    <input type="file" name="source_file" accept=".txt,.list,.json,text/plain,application/json" class="form-control">
                 </label>
                 <label id="bulk-delivery-field">
                     <span id="bulk-delivery-label">Delivery template</span>
-                    <input name="bulk_delivery" id="bulk-delivery-input" placeholder="ftp://farm.local/outputs/{name}.out">
+                    <input name="bulk_delivery" id="bulk-delivery-input" placeholder="ftp://farm.local/outputs/{name}.out" class="form-control">
                     <small id="bulk-delivery-help">Supports <code>{source}</code>, <code>{dir}</code>, <code>{basename}</code>, <code>{name}</code>, <code>{ext}</code>, and <code>{dot_ext}</code>.</small>
                 </label>
             </div>
-            <label class="check-row">
+            <label class="check-row form-check d-flex gap-2 align-items-center">
                 <input type="checkbox" name="overwrite_allowed" value="1">
                 Allow worker to overwrite existing delivery output
             </label>
-            <button type="submit" id="submit-button">Queue job</button>
+            <button class="btn btn-primary" type="submit" id="submit-button">Queue job</button>
         </form>
     </section>
 
-    <section class="panel jobs-panel">
-        <div class="panel-head wrap-head">
+    <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4 jobs-panel">
+        <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3 wrap-head">
             <div>
-                <p class="eyebrow">Queue store</p>
+                <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Queue store</p>
                 <h2>Jobs</h2>
-                <p class="api-note" id="jobs-summary">Showing <?= count($jobs) ?> of <?= (int) $jobPageData['total'] ?> job(s). Choose a filter or press Apply filters; the table updates without a full page reload. Queued jobs can be moved earlier or later in the worker pick-up order.</p>
+                <p class="api-note text-secondary small" id="jobs-summary">Showing <?= count($jobs) ?> of <?= (int) $jobPageData['total'] ?> job(s). Choose a filter or press Apply filters; the table updates without a full page reload. Queued jobs can be moved earlier or later in the worker pick-up order.</p>
             </div>
-            <form method="get" class="toolbar" id="job-filter-form">
+            <form method="get" class="toolbar d-flex flex-wrap gap-2 align-items-end mb-3" id="job-filter-form">
                 <label>
                     Status
-                    <select name="job_status" id="job-status-select">
+                    <select class="form-select" name="job_status" id="job-status-select">
                         <?php foreach ($validJobFilters as $filter): ?>
                             <option value="<?= reflection_h($filter) ?>" <?= $jobStatus === $filter ? 'selected' : '' ?>><?= reflection_h($filter) ?></option>
                         <?php endforeach; ?>
@@ -1503,16 +1503,16 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                 </label>
                 <label>
                     Per page
-                    <select name="job_per_page">
+                    <select class="form-select" name="job_per_page">
                         <?php foreach ([25, 50, 100, 200] as $size): ?>
                             <option value="<?= $size ?>" <?= (int) $jobPageData['per_page'] === $size ? 'selected' : '' ?>><?= $size ?></option>
                         <?php endforeach; ?>
                     </select>
                 </label>
-                <button type="submit" class="secondary-button">Apply filters</button>
+                <button type="submit" class="secondary-button btn btn-secondary">Apply filters</button>
             </form>
         </div>
-        <nav class="status-tabs" aria-label="Job status filters" data-job-status-tabs id="job-status-tabs">
+        <nav class="status-tabs nav nav-pills flex-wrap gap-2 mb-3" aria-label="Job status filters" data-job-status-tabs id="job-status-tabs">
             <?php foreach (['all', 'active', 'queued', 'running', 'held', 'success', 'skipped', 'failed', 'stale', 'blocked', 'ignored', 'finished'] as $filter): ?>
                 <?php
                     if ($filter === 'all') {
@@ -1525,11 +1525,11 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                         $tabCount = (int) ($statusCounts[$filter] ?? 0);
                     }
                 ?>
-                <button type="button" class="<?= $jobStatus === $filter ? 'active' : '' ?>" data-job-status-filter="<?= reflection_h($filter) ?>"><?= reflection_h($filter) ?> <span><?= $tabCount ?></span></button>
+                <button type="button" class="nav-link <?= $jobStatus === $filter ? 'active' : '' ?>" data-job-status-filter="<?= reflection_h($filter) ?>"><?= reflection_h($filter) ?> <span><?= $tabCount ?></span></button>
             <?php endforeach; ?>
         </nav>
-        <div class="table-wrap">
-            <table>
+        <div class="table-wrap table-responsive">
+            <table class="table table-sm table-hover align-middle mb-0">
                 <thead>
                     <tr>
                         <th>Job</th>
@@ -1544,7 +1544,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                 </thead>
                 <tbody id="jobs-tbody">
                 <?php if ($jobs === []): ?>
-                    <tr><td colspan="8" class="empty">No jobs match this filter.</td></tr>
+                    <tr><td colspan="8" class="empty text-secondary text-center py-4">No jobs match this filter.</td></tr>
                 <?php endif; ?>
                 <?php foreach ($jobs as $job): ?>
                     <?php $jobStatusValue = (string) ($job['status'] ?? 'unknown'); $jobDisplay = reflection_job_display_status($job); ?>
@@ -1553,12 +1553,12 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                         <td><?= reflection_h($job['module'] ?? '—') ?></td>
                         <td>
                             <span class="badge <?= reflection_h(reflection_status_class($jobDisplay['class'])) ?>"><?= reflection_h($jobDisplay['label']) ?></span>
-                            <?php if ($jobDisplay['detail'] !== ''): ?><small class="job-stage-note"><?= reflection_h(reflection_short_value($jobDisplay['detail'], 120)) ?></small><?php endif; ?>
+                            <?php if ($jobDisplay['detail'] !== ''): ?><small class="job-stage-note text-secondary small d-block"><?= reflection_h(reflection_short_value($jobDisplay['detail'], 120)) ?></small><?php endif; ?>
                         </td>
                         <td><?= reflection_h($job['worker'] ?? '—') ?></td>
-                        <td class="path-cell">
-                <div><span class="subtle-label">Source</span> <code title="<?= reflection_h($job['source'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['source'] ?? '—')) ?></code></div>
-                <div><span class="subtle-label">Delivery<?= !empty($job['delivery_auto_generated']) ? ' auto' : '' ?></span> <code title="<?= reflection_h($job['delivery'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['delivery'] ?? '—')) ?></code></div>
+                        <td class="path-cell text-break">
+                <div><span class="subtle-label text-secondary text-uppercase fw-bold small">Source</span> <code title="<?= reflection_h($job['source'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['source'] ?? '—')) ?></code></div>
+                <div><span class="subtle-label text-secondary text-uppercase fw-bold small">Delivery<?= !empty($job['delivery_auto_generated']) ? ' auto' : '' ?></span> <code title="<?= reflection_h($job['delivery'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['delivery'] ?? '—')) ?></code></div>
                 <?php if (!empty($job['task_contract'])): ?>
                     <small><?= reflection_h($job['task_contract']) ?></small>
                 <?php endif; ?>
@@ -1570,19 +1570,19 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                         </td>
                         <td><?= reflection_h(reflection_short_value($job['error'] ?? '', 140)) ?></td>
                         <td>
-                            <div class="button-row table-actions">
+                            <div class="button-row d-flex flex-wrap gap-2 table-actions align-items-center">
                                 <?php if ($jobStatusValue === 'queued'): ?>
                                     <form method="post">
                                         <input type="hidden" name="form_action" value="job_action">
                                         <input type="hidden" name="job_action" value="move_earlier">
                                         <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
-                                        <button class="ghost-button small-button" type="submit">Sooner</button>
+                                        <button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit">Sooner</button>
                                     </form>
                                     <form method="post">
                                         <input type="hidden" name="form_action" value="job_action">
                                         <input type="hidden" name="job_action" value="move_later">
                                         <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
-                                        <button class="ghost-button small-button" type="submit">Later</button>
+                                        <button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit">Later</button>
                                     </form>
                                 <?php endif; ?>
                                 <?php if (in_array($jobStatusValue, ['queued', 'running'], true)): ?>
@@ -1590,14 +1590,14 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                                         <input type="hidden" name="form_action" value="job_action">
                                         <input type="hidden" name="job_action" value="hold">
                                         <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
-                                        <button class="ghost-button small-button" type="submit">Hold</button>
+                                        <button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit">Hold</button>
                                     </form>
                                 <?php elseif ($jobStatusValue === 'held'): ?>
                                     <form method="post">
                                         <input type="hidden" name="form_action" value="job_action">
                                         <input type="hidden" name="job_action" value="release">
                                         <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
-                                        <button class="ghost-button small-button" type="submit">Release</button>
+                                        <button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit">Release</button>
                                     </form>
                                 <?php endif; ?>
                                 <?php if (in_array($jobStatusValue, ['failed', 'stale', 'blocked'], true)): ?>
@@ -1605,7 +1605,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                                         <input type="hidden" name="form_action" value="job_action">
                                         <input type="hidden" name="job_action" value="retry">
                                         <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
-                                        <button class="ghost-button small-button" type="submit">Retry</button>
+                                        <button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit">Retry</button>
                                     </form>
                                 <?php endif; ?>
                                 <?php if ($jobStatusValue !== 'running'): ?>
@@ -1613,10 +1613,10 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                                         <input type="hidden" name="form_action" value="job_action">
                                         <input type="hidden" name="job_action" value="delete">
                                         <input type="hidden" name="task_id" value="<?= reflection_h($job['task_id'] ?? '') ?>">
-                                        <button class="danger-button small-button" type="submit">Delete</button>
+                                        <button class="danger-button btn btn-outline-danger small-button btn-sm" type="submit">Delete</button>
                                     </form>
                                 <?php else: ?>
-                                    <span class="api-note">Hold a running job before deleting it.</span>
+                                    <span class="api-note text-secondary small">Hold a running job before deleting it.</span>
                                 <?php endif; ?>
                             </div>
                         </td>
@@ -1625,24 +1625,24 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                 </tbody>
             </table>
         </div>
-        <div class="pagination" id="jobs-pagination">
+        <div class="pagination d-flex flex-wrap justify-content-center align-items-center gap-2 my-3" id="jobs-pagination">
             <a class="<?= (int) $jobPageData['page'] <= 1 ? 'disabled' : '' ?>" href="<?= reflection_h(reflection_url_with(['job_page' => max(1, (int) $jobPageData['page'] - 1)])) ?>">Previous</a>
             <span>Page <?= (int) $jobPageData['page'] ?> of <?= (int) $jobPageData['pages'] ?></span>
             <a class="<?= (int) $jobPageData['page'] >= (int) $jobPageData['pages'] ? 'disabled' : '' ?>" href="<?= reflection_h(reflection_url_with(['job_page' => min((int) $jobPageData['pages'], (int) $jobPageData['page'] + 1)])) ?>">Next</a>
         </div>
     </section>
 
-    <section class="two-column">
-        <section class="panel">
-            <div class="panel-head">
+    <section class="two-column row g-4">
+        <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4">
+            <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
                 <div>
-                    <p class="eyebrow">Log</p>
+                    <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Log</p>
                     <h2>Recent events</h2>
                 </div>
-                <a class="ghost-button small-button" href="logs.php?log=events">View all logs</a>
+                <a class="ghost-button btn btn-outline-primary small-button btn-sm" href="logs.php?log=events">View all logs</a>
             </div>
-            <div class="table-wrap compact-table">
-                <table>
+            <div class="table-wrap table-responsive compact-table">
+                <table class="table table-sm table-hover align-middle mb-0">
                     <thead>
                         <tr>
                             <th>Time</th>
@@ -1654,7 +1654,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                     </thead>
                     <tbody id="events-tbody">
                     <?php if ($events === []): ?>
-                        <tr><td colspan="5" class="empty">No log entries yet.</td></tr>
+                        <tr><td colspan="5" class="empty text-secondary text-center py-4">No log entries yet.</td></tr>
                     <?php endif; ?>
                     <?php foreach ($events as $event): ?>
                         <tr>
@@ -1670,16 +1670,16 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
             </div>
         </section>
 
-        <section class="panel">
-            <div class="panel-head">
+        <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4">
+            <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
                 <div>
-                    <p class="eyebrow">Files</p>
+                    <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Files</p>
                     <h2>Recent paths / URIs</h2>
                 </div>
-                <a class="ghost-button small-button" href="logs.php?log=files">View all logs</a>
+                <a class="ghost-button btn btn-outline-primary small-button btn-sm" href="logs.php?log=files">View all logs</a>
             </div>
-            <div class="table-wrap compact-table">
-                <table>
+            <div class="table-wrap table-responsive compact-table">
+                <table class="table table-sm table-hover align-middle mb-0">
                     <thead>
                         <tr>
                             <th>Path or URI</th>
@@ -1689,12 +1689,12 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                     </thead>
                     <tbody id="files-tbody">
                     <?php if ($fileHistory === []): ?>
-                        <tr><td colspan="3" class="empty">No file or URI history yet.</td></tr>
+                        <tr><td colspan="3" class="empty text-secondary text-center py-4">No file or URI history yet.</td></tr>
                     <?php endif; ?>
                     <?php foreach ($fileHistory as $path => $touches): ?>
                         <?php $recentTouches = array_slice(array_reverse($touches), 0, 3); ?>
                         <tr>
-                            <td class="path-cell"><code title="<?= reflection_h($path) ?>"><?= reflection_h(reflection_short_value($path, 80)) ?></code></td>
+                            <td class="path-cell text-break"><code title="<?= reflection_h($path) ?>"><?= reflection_h(reflection_short_value($path, 80)) ?></code></td>
                             <td title="<?= reflection_h($recentTouches[0]['timestamp'] ?? '') ?>"><?= reflection_h(reflection_relative_time($recentTouches[0]['timestamp'] ?? null)) ?></td>
                             <td>
                                 <?php foreach ($recentTouches as $touch): ?>

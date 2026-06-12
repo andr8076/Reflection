@@ -261,26 +261,26 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
     <title>Automation · Reflection Farm Master</title>
     <?= reflection_stylesheet_links() ?>
 </head>
-<body class="automation-page">
-    <header class="hero compact-hero">
-        <div class="hero-main">
-            <p class="eyebrow">Reflection farm master</p>
+<body class="automation-page bg-light text-dark container-fluid px-3 px-md-4 py-4">
+    <header class="hero row g-3 align-items-stretch mb-4 compact-hero">
+        <div class="hero-main col-12 col-lg bg-white border rounded-4 shadow-sm p-4">
+            <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Reflection farm master</p>
             <h1>Automation</h1>
-            <p class="lede">Build scan rules with live previews, validation, and safe job creation for any worker task.</p>
-            <div class="hero-pills">
+            <p class="lede text-secondary fs-5 mb-3">Build scan rules with live previews, validation, and safe job creation for any worker task.</p>
+            <div class="hero-pills d-flex flex-wrap gap-2">
                 <span>Rules <code><?= count($rules) ?></code></span>
                 <span>Storage servers <code><?= count($storageServers) ?></code></span>
                 <span>Tick endpoint <code><?= reflection_h($tickPath) ?></code></span>
             </div>
-            <nav class="top-nav">
-                <a href="index.php">Dashboard</a>
-                <a class="active" href="automation.php">Automation</a>
-                <a href="storage_servers.php">Storage servers</a>
-                <a href="blocked_jobs.php">Blocked jobs</a>
-                <a href="system_checks.php">System checks</a><a href="logs.php">Logs</a><a href="settings.php">Settings</a>
+            <nav class="top-nav nav nav-pills flex-wrap gap-2 mt-3">
+                <a class="nav-link" href="index.php">Dashboard</a>
+                <a class="nav-link active" href="automation.php">Automation</a>
+                <a class="nav-link" href="storage_servers.php">Storage servers</a>
+                <a class="nav-link" href="blocked_jobs.php">Blocked jobs</a>
+                <a class="nav-link" href="system_checks.php">System checks</a><a class="nav-link" href="logs.php">Logs</a><a class="nav-link" href="settings.php">Settings</a>
             </nav>
         </div>
-        <div class="version-card">
+        <div class="version-card col-12 col-lg-4 bg-white border rounded-4 shadow-sm p-4 d-flex flex-column gap-2">
             <span>Automatic scans</span>
             <strong>universal rules</strong>
             <small>Use cron or a scheduled request to run <code><?= reflection_h($tickPath) ?></code>.</small>
@@ -288,28 +288,28 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
     </header>
 
     <?php if ($message !== null): ?>
-        <div class="alert success"><?= reflection_h($message) ?></div>
+        <div class="alert success text-bg-success"><?= reflection_h($message) ?></div>
     <?php endif; ?>
     <?php if ($error !== null): ?>
-        <div class="alert error"><?= reflection_h($error) ?></div>
+        <div class="alert error alert-danger text-bg-danger"><?= reflection_h($error) ?></div>
     <?php endif; ?>
 
-    <main class="automation-layout">
-        <aside class="panel automation-sidebar">
-            <div class="panel-head">
+    <main class="automation-layout row g-4 align-items-start">
+        <aside class="panel bg-white border rounded-4 shadow-sm p-4 mb-4 automation-sidebar col-12 col-xl-4">
+            <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
                 <div>
-                    <p class="eyebrow">Rules</p>
+                    <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Rules</p>
                     <h2>Automation CRUD</h2>
                 </div>
-                <a class="ghost-button small-button" href="automation.php?new=1">New rule</a>
+                <a class="ghost-button btn btn-outline-primary small-button btn-sm" href="automation.php?new=1">New rule</a>
             </div>
-            <form method="post" class="inline-button-form">
+            <form method="post" class="inline-button-form d-inline">
                 <input type="hidden" name="automation_action" value="run_due">
-                <button type="submit" class="secondary-button">Run due rules now</button>
+                <button type="submit" class="secondary-button btn btn-secondary">Run due rules now</button>
             </form>
-            <div class="rule-list">
+            <div class="rule-list list-group">
                 <?php if ($rules === []): ?>
-                    <p class="empty">No automation rules yet.</p>
+                    <p class="empty text-secondary text-center py-4">No automation rules yet.</p>
                 <?php endif; ?>
                 <?php foreach ($rules as $rule): ?>
                     <?php $ruleSelected = ($editingRule['id'] ?? '') !== '' && ($editingRule['id'] ?? '') === ($rule['id'] ?? ''); ?>
@@ -321,18 +321,18 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                                 <small><?= reflection_h(reflection_auto_summary($rule['last_scan_summary'])) ?></small>
                             <?php endif; ?>
                         </div>
-                        <div class="rule-actions">
-                            <a class="text-link" href="automation.php?edit=<?= reflection_h($rule['id'] ?? '') ?>">Edit</a>
-                            <form method="post" class="inline-button-form">
+                        <div class="rule-actions d-flex flex-wrap gap-2">
+                            <a class="text-link link-primary" href="automation.php?edit=<?= reflection_h($rule['id'] ?? '') ?>">Edit</a>
+                            <form method="post" class="inline-button-form d-inline">
                                 <input type="hidden" name="automation_action" value="duplicate_rule">
                                 <input type="hidden" name="rule_id" value="<?= reflection_h($rule['id'] ?? '') ?>">
-                                <button type="submit" class="mini-button">Duplicate</button>
+                                <button type="submit" class="mini-button btn btn-sm btn-outline-secondary">Duplicate</button>
                             </form>
-                            <form method="post" class="inline-button-form">
+                            <form method="post" class="inline-button-form d-inline">
                                 <input type="hidden" name="automation_action" value="toggle_rule">
                                 <input type="hidden" name="rule_id" value="<?= reflection_h($rule['id'] ?? '') ?>">
                                 <input type="hidden" name="enabled" value="<?= !empty($rule['enabled']) ? '0' : '1' ?>">
-                                <button type="submit" class="mini-button"><?= !empty($rule['enabled']) ? 'Disable' : 'Enable' ?></button>
+                                <button type="submit" class="mini-button btn btn-sm btn-outline-secondary"><?= !empty($rule['enabled']) ? 'Disable' : 'Enable' ?></button>
                             </form>
                         </div>
                     </article>
@@ -340,61 +340,61 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
             </div>
         </aside>
 
-        <section class="panel automation-editor">
-            <div class="panel-head wrap-head">
+        <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4 automation-editor col-12 col-xl-8">
+            <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3 wrap-head">
                 <div>
-                    <p class="eyebrow">Rule editor</p>
+                    <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Rule editor</p>
                     <h2><?= ($editingRule['id'] ?? '') === '' ? 'Create rule' : 'Edit rule' ?></h2>
-                    <p class="api-note">A rule scans roots, filters files, applies source/delivery templates, and queues jobs for the selected worker task.</p>
+                    <p class="api-note text-secondary small">A rule scans roots, filters files, applies source/delivery templates, and queues jobs for the selected worker task.</p>
                 </div>
                 <?php if (($editingRule['id'] ?? '') !== ''): ?>
-                    <div class="button-row compact-button-row">
-                        <form method="post" class="inline-button-form">
+                    <div class="button-row d-flex flex-wrap gap-2 compact-button-row">
+                        <form method="post" class="inline-button-form d-inline">
                             <input type="hidden" name="automation_action" value="duplicate_rule">
                             <input type="hidden" name="rule_id" value="<?= reflection_h($editingRule['id'] ?? '') ?>">
-                            <button type="submit" class="secondary-button">Duplicate</button>
+                            <button type="submit" class="secondary-button btn btn-secondary">Duplicate</button>
                         </form>
                         <form method="post" data-confirm="Delete this automation rule and its tracked state?">
                             <input type="hidden" name="automation_action" value="delete_rule">
                             <input type="hidden" name="rule_id" value="<?= reflection_h($editingRule['id'] ?? '') ?>">
-                            <button type="submit" class="danger-button">Delete</button>
+                            <button type="submit" class="danger-button btn btn-outline-danger">Delete</button>
                         </form>
                     </div>
                 <?php endif; ?>
             </div>
 
-            <div class="automation-section-toolbar" aria-label="Automation editor section controls">
+            <div class="automation-section-toolbar d-flex justify-content-between align-items-center gap-3 flex-wrap" aria-label="Automation editor section controls">
                 <span>Editor sections</span>
-                <button type="button" class="mini-button" id="open-all-sections">Open all</button>
-                <button type="button" class="mini-button" id="close-all-sections">Minimize all</button>
+                <button type="button" class="mini-button btn btn-sm btn-outline-secondary" id="open-all-sections">Open all</button>
+                <button type="button" class="mini-button btn btn-sm btn-outline-secondary" id="close-all-sections">Minimize all</button>
             </div>
 
-            <form method="post" class="automation-form rf-form" id="automation-rule-form" novalidate>
+            <form method="post" class="automation-form d-grid gap-3 rf-form" id="automation-rule-form" novalidate>
                 <input type="hidden" name="rule_id" value="<?= reflection_h($editingRule['id'] ?? '') ?>">
                 <input type="hidden" name="last_scan_at" value="<?= reflection_h($editingRule['last_scan_at'] ?? '') ?>">
                 <input type="hidden" name="created_at" value="<?= reflection_h($editingRule['created_at'] ?? '') ?>">
                 <input type="hidden" name="updated_at" value="<?= reflection_h($editingRule['updated_at'] ?? '') ?>">
 
-                <details class="form-block collapsible-form-block" data-section-key="identity" open>
+                <details class="form-block d-grid gap-2 mb-3 collapsible-form-block" data-section-key="identity" open>
                     <summary class="form-section-header"><span class="section-number">1</span><div><h3>Identity and task</h3><p>Name the rule, choose the worker task, and decide whether scheduled scans may run it.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
-                    <div class="settings-grid">
+                    <div class="settings-grid row g-3">
                         <label>
                             Rule name
-                            <input name="name" required value="<?= reflection_h($editingRule['name'] ?? '') ?>" placeholder="Convert movies to H.265">
+                            <input name="name" required value="<?= reflection_h($editingRule['name'] ?? '') ?>" class="form-control" placeholder="Convert movies to H.265">
                         </label>
                         <label>
                             Worker task
-                            <select id="automation-module-input" name="module" required>
+                            <select class="form-select" id="automation-module-input" name="module" required>
                                 <?php foreach ($config['allowed_tasks'] as $taskName => $description): ?>
                                     <option value="<?= reflection_h($taskName) ?>" <?= ($editingRule['module'] ?? '') === $taskName ? 'selected' : '' ?>><?= reflection_h($taskName) ?> — <?= reflection_h($description) ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </label>
                         <div id="automation-task-contract-data" data-task-specs="<?= reflection_h(json_encode($taskSpecs, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?>"></div>
-                        <div class="api-note" id="automation-task-contract-summary">The selected task declares source and delivery behavior.</div>
+                        <div class="api-note text-secondary small" id="automation-task-contract-summary">The selected task declares source and delivery behavior.</div>
                         <label>
                             Storage server
-                            <select name="transfer_server_id">
+                            <select class="form-select" name="transfer_server_id">
                                 <option value="">Use first available/default server</option>
                                 <?php foreach ($storageServers as $server): ?>
                                     <option value="<?= reflection_h($server['id'] ?? '') ?>" <?= ($editingRule['transfer_server_id'] ?? '') === ($server['id'] ?? '') ? 'selected' : '' ?>><?= reflection_h(reflection_storage_server_label($server)) ?></option>
@@ -402,7 +402,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                             </select>
                             <small>This chooses which FTP/SFTP server the worker should use for jobs created by this rule. Credentials still live on each worker. <a href="storage_servers.php">Add or edit storage servers</a>.</small>
                         </label>
-                        <label class="check-row top-check">
+                        <label class="check-row form-check d-flex gap-2 align-items-center top-check col bg-light border rounded-3 p-3">
                             <input type="checkbox" name="enabled" value="1" <?= !empty($editingRule['enabled']) ? 'checked' : '' ?>>
                             Enabled for automatic scheduled scans
                             <small>Only enabled rules are run by <code>automation_tick.php</code> or “Run due rules now”. Manual test/dry-run buttons still work while disabled.</small>
@@ -410,117 +410,117 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                     </div>
                 </details>
 
-                <details class="form-block collapsible-form-block" data-section-key="locations" open>
+                <details class="form-block d-grid gap-2 mb-3 collapsible-form-block" data-section-key="locations" open>
                     <summary class="form-section-header"><span class="section-number">2</span><div><h3>Locations</h3><p>Choose where the master scans and which common file types should be considered.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
                     <label>
                         Scan roots
-                        <textarea id="scan-roots-input" name="scan_roots" rows="4" placeholder="/volume1/video/Movies"><?= reflection_h(implode(PHP_EOL, $editingRule['scan_roots'] ?? [])) ?></textarea>
+                        <textarea class="form-control" id="scan-roots-input" name="scan_roots" rows="4" placeholder="/volume1/video/Movies"><?= reflection_h(implode(PHP_EOL, $editingRule['scan_roots'] ?? [])) ?></textarea>
                         <small>One path per line. These are paths the master website can read.</small>
                     </label>
                     <label>
                         Worker path mappings
-                        <textarea id="worker-path-mappings-input" name="worker_path_mappings" rows="3" placeholder="/volume1/video => /video&#10;/volume1/movies => /movies"><?= reflection_h($editingRule['worker_path_mappings'] ?? '') ?></textarea>
+                        <textarea class="form-control" id="worker-path-mappings-input" name="worker_path_mappings" rows="3" placeholder="/volume1/video => /video&#10;/volume1/movies => /movies"><?= reflection_h($editingRule['worker_path_mappings'] ?? '') ?></textarea>
                         <small>Optional. Translate master/NAS scan paths into the paths workers see through FTP. Format: <code>/master/path =&gt; /worker/path</code>. Longest matching path wins.</small>
                     </label>
-                    <div class="settings-grid">
-                        <label class="check-row top-check">
+                    <div class="settings-grid row g-3">
+                        <label class="check-row form-check d-flex gap-2 align-items-center top-check col bg-light border rounded-3 p-3">
                             <input type="checkbox" name="recursive" value="1" <?= !empty($editingRule['recursive']) ? 'checked' : '' ?>>
                             Scan subfolders
                         </label>
                         <label>
                             File extensions
-                            <input id="extensions-input" name="extensions" value="<?= reflection_h($editingRule['extensions'] ?? '') ?>" placeholder="mkv, mp4, avi">
+                            <input id="extensions-input" name="extensions" value="<?= reflection_h($editingRule['extensions'] ?? '') ?>" class="form-control" placeholder="mkv, mp4, avi">
                             <small>Blank means any file extension. Use a preset below, then edit it if needed.</small>
                         </label>
                     </div>
-                    <div class="preset-row" aria-label="Common file-extension presets">
+                    <div class="preset-row d-flex flex-wrap gap-2" aria-label="Common file-extension presets">
                         <?php foreach ($extensionPresets as $presetName => $presetExtensions): ?>
-                            <button type="button" class="preset-chip" data-extensions="<?= reflection_h($presetExtensions) ?>"><?= reflection_h($presetName) ?></button>
+                            <button type="button" class="preset-chip badge text-bg-light border text-dark" data-extensions="<?= reflection_h($presetExtensions) ?>"><?= reflection_h($presetName) ?></button>
                         <?php endforeach; ?>
                     </div>
                 </details>
 
-                <details class="form-block collapsible-form-block" data-section-key="job-templates" open>
+                <details class="form-block d-grid gap-2 mb-3 collapsible-form-block" data-section-key="job-templates" open>
                     <summary class="form-section-header"><span class="section-number">3</span><div><h3>Job templates</h3><p>Define source mapping. Task modules may take over delivery generation when their contract declares automatic output.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
-                    <div class="template-config-grid">
-                        <label class="template-field-card">
-                            <span class="template-field-title">Source template</span>
-                            <input id="source-template-input" class="template-input" data-template-label="Source template" name="source_template" value="<?= reflection_h($editingRule['source_template'] ?? '{path}') ?>">
+                    <div class="template-config-grid row g-3">
+                        <label class="template-field-card bg-light border rounded-3 p-3">
+                            <span class="template-field-title fw-bold">Source template</span>
+                            <input id="source-template-input" class="template-input form-control" data-template-label="Source template" name="source_template" value="<?= reflection_h($editingRule['source_template'] ?? '{path}') ?>">
                             <small>What the worker receives as the source. Usually <code>{worker_path}</code> when workers access files through FTP.</small>
-                            <output class="inline-template-preview" id="source-template-preview">—</output>
-                            <div class="field-status" id="source-template-status"></div>
+                            <output class="inline-template-preview text-secondary small" id="source-template-preview">—</output>
+                            <div class="field-status text-secondary small" id="source-template-status"></div>
                         </label>
-                        <label class="template-field-card">
-                            <span class="template-field-title">Delivery target</span>
-                            <select id="delivery-mode-input" name="delivery_mode">
+                        <label class="template-field-card bg-light border rounded-3 p-3">
+                            <span class="template-field-title fw-bold">Delivery target</span>
+                            <select class="form-select" id="delivery-mode-input" name="delivery_mode">
                                 <option value="template" <?= ($editingRule['delivery_mode'] ?? 'template') === 'template' ? 'selected' : '' ?>>Use custom delivery template</option>
                                 <option value="same_as_source" <?= ($editingRule['delivery_mode'] ?? 'template') === 'same_as_source' ? 'selected' : '' ?>>Same as source location</option>
                             </select>
                             <small>Same as source means overwrite the original when overwrite is enabled, or create a sibling file with the suffix below when overwrite is disabled.</small>
                         </label>
-                        <label class="template-field-card">
-                            <span class="template-field-title">Delivery template</span>
-                            <input id="delivery-template-input" class="template-input" data-template-label="Delivery template" name="delivery_template" value="<?= reflection_h($editingRule['delivery_template'] ?? '') ?>" placeholder="/output/{relative}">
+                        <label class="template-field-card bg-light border rounded-3 p-3">
+                            <span class="template-field-title fw-bold">Delivery template</span>
+                            <input id="delivery-template-input" class="template-input form-control" data-template-label="Delivery template" name="delivery_template" value="<?= reflection_h($editingRule['delivery_template'] ?? '') ?>" placeholder="/output/{relative}">
                             <small>Used only when the delivery target is custom.</small>
-                            <output class="inline-template-preview" id="delivery-template-preview">—</output>
-                            <div class="field-status" id="delivery-template-status"></div>
+                            <output class="inline-template-preview text-secondary small" id="delivery-template-preview">—</output>
+                            <div class="field-status text-secondary small" id="delivery-template-status"></div>
                         </label>
-                        <label class="template-field-card">
-                            <span class="template-field-title">Output suffix when not overwriting</span>
-                            <input id="output-suffix-input" name="output_suffix" value="<?= reflection_h($editingRule['output_suffix'] ?? '_processed') ?>" placeholder="_processed">
+                        <label class="template-field-card bg-light border rounded-3 p-3">
+                            <span class="template-field-title fw-bold">Output suffix when not overwriting</span>
+                            <input id="output-suffix-input" name="output_suffix" value="<?= reflection_h($editingRule['output_suffix'] ?? '_processed') ?>" class="form-control" placeholder="_processed">
                             <small>Example: <code>Movie.mkv</code> becomes <code>Movie_processed.mkv</code>.</small>
-                            <output class="inline-template-preview" id="suffix-template-preview">—</output>
+                            <output class="inline-template-preview text-secondary small" id="suffix-template-preview">—</output>
                         </label>
                     </div>
-                    <div class="template-validation-summary template-validation-standalone" id="template-validation-summary">All active templates look valid.</div>
-                    <div class="api-note" id="task-delivery-contract-note"></div>
-                    <div class="live-template-panel" aria-live="polite">
-                        <div class="live-template-head">
+                    <div class="template-validation-summary alert alert-info template-validation-standalone" id="template-validation-summary">All active templates look valid.</div>
+                    <div class="api-note text-secondary small" id="task-delivery-contract-note"></div>
+                    <div class="live-template-panel bg-light border rounded-3 p-3" aria-live="polite">
+                        <div class="live-template-head d-flex justify-content-between align-items-start gap-3 flex-wrap">
                             <div>
                                 <strong>Live template preview</strong>
                                 <small>Change this example path to see how every template field will be expanded before a real job is queued.</small>
                             </div>
-                            <label class="preview-path-label">
+                            <label class="preview-path-label text-secondary small">
                                 Example file path
-                                <input id="template-sample-path" type="text" value="/volume1/video/Movies/Example Movie (2024)/Example Movie.mkv">
+                                <input id="template-sample-path" type="text" value="/volume1/video/Movies/Example Movie (2024)/Example Movie.mkv" class="form-control">
                             </label>
                         </div>
-                        <div class="template-preview-grid">
-                            <div class="template-preview-card">
+                        <div class="template-preview-grid row row-cols-1 row-cols-md-2 g-3">
+                            <div class="template-preview-card col bg-light border rounded-3 p-3">
                                 <span>Detected root</span>
                                 <code id="preview-root">—</code>
                             </div>
-                            <div class="template-preview-card">
+                            <div class="template-preview-card col bg-light border rounded-3 p-3">
                                 <span>Relative path</span>
                                 <code id="preview-relative">—</code>
                             </div>
-                            <div class="template-preview-card">
+                            <div class="template-preview-card col bg-light border rounded-3 p-3">
                                 <span>Worker-visible path</span>
                                 <code id="preview-worker-path">—</code>
                             </div>
-                            <div class="template-preview-card">
+                            <div class="template-preview-card col bg-light border rounded-3 p-3">
                                 <span>Source sent to worker</span>
                                 <code id="preview-source">—</code>
                             </div>
-                            <div class="template-preview-card">
+                            <div class="template-preview-card col bg-light border rounded-3 p-3">
                                 <span>Delivery/result target</span>
                                 <code id="preview-delivery">—</code>
                             </div>
                         </div>
-                        <details class="placeholder-preview-details" open>
+                        <details class="placeholder-preview-details mt-2" open>
                             <summary>Placeholder values for the example file</summary>
-                            <p class="placeholder-preview-note">These are the actual example values used in the live preview above. Change the example path to update every placeholder.</p>
-                            <div class="placeholder-chip-row placeholder-chip-row-inside" id="placeholder-chip-row" aria-label="Available template placeholders"></div>
-                            <div class="placeholder-preview-grid" id="placeholder-preview-grid"></div>
+                            <p class="placeholder-preview-note text-secondary small">These are the actual example values used in the live preview above. Change the example path to update every placeholder.</p>
+                            <div class="placeholder-chip-row d-flex flex-wrap gap-2 placeholder-chip-row-inside" id="placeholder-chip-row" aria-label="Available template placeholders"></div>
+                            <div class="placeholder-preview-grid row g-2" id="placeholder-preview-grid"></div>
                         </details>
                     </div>
-                    <div class="settings-grid option-box-grid">
-                        <label class="check-row top-check option-card warning-check">
+                    <div class="settings-grid row g-3 option-box-grid">
+                        <label class="check-row form-check d-flex gap-2 align-items-center top-check col bg-light border rounded-3 p-3 option-card warning-check alert alert-warning">
                             <input id="overwrite-allowed-input" type="checkbox" name="overwrite_allowed" value="1" <?= !empty($editingRule['overwrite_allowed']) ? 'checked' : '' ?>>
                             Allow worker overwrite/replacement
                             <small>For same-as-source delivery, this means the result replaces the original path after the task succeeds.</small>
                         </label>
-                        <label class="check-row top-check option-card warning-check">
+                        <label class="check-row form-check d-flex gap-2 align-items-center top-check col bg-light border rounded-3 p-3 option-card warning-check alert alert-warning">
                             <input type="checkbox" name="requeue_unchanged" value="1" <?= !empty($editingRule['requeue_unchanged']) ? 'checked' : '' ?>>
                             Requeue even if already handled
                             <small>Normally off. When enabled, every matching scan can create another job for the same file, even if an equivalent job is already queued, running, or crash-blocked.</small>
@@ -528,54 +528,54 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                     </div>
                 </details>
 
-                <details class="form-block collapsible-form-block" data-section-key="filters">
+                <details class="form-block d-grid gap-2 mb-3 collapsible-form-block" data-section-key="filters">
                     <summary class="form-section-header"><span class="section-number">4</span><div><h3>Filter</h3><p>Use globs, regex, size limits, and age checks to keep rules precise.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
-                    <div class="settings-grid">
+                    <div class="settings-grid row g-3">
                         <label>
                             Include globs
-                            <textarea name="include_globs" rows="4" placeholder="*.mkv&#10;Movies/*"><?= reflection_h($editingRule['include_globs'] ?? '') ?></textarea>
+                            <textarea class="form-control" name="include_globs" rows="4" placeholder="*.mkv&#10;Movies/*"><?= reflection_h($editingRule['include_globs'] ?? '') ?></textarea>
                         </label>
                         <label>
                             Exclude globs
-                            <textarea name="exclude_globs" rows="4" placeholder="@eaDir&#10;#recycle&#10;*.part"><?= reflection_h($editingRule['exclude_globs'] ?? '') ?></textarea>
+                            <textarea class="form-control" name="exclude_globs" rows="4" placeholder="@eaDir&#10;#recycle&#10;*.part"><?= reflection_h($editingRule['exclude_globs'] ?? '') ?></textarea>
                         </label>
                     </div>
-                    <div class="settings-grid">
+                    <div class="settings-grid row g-3">
                         <label>
                             Include regex
-                            <input name="include_regex" value="<?= reflection_h($editingRule['include_regex'] ?? '') ?>" placeholder="/Movies/i">
+                            <input name="include_regex" value="<?= reflection_h($editingRule['include_regex'] ?? '') ?>" class="form-control" placeholder="/Movies/i">
                         </label>
                         <label>
                             Exclude regex
-                            <input name="exclude_regex" value="<?= reflection_h($editingRule['exclude_regex'] ?? '') ?>" placeholder="/(sample|trailer)/i">
+                            <input name="exclude_regex" value="<?= reflection_h($editingRule['exclude_regex'] ?? '') ?>" class="form-control" placeholder="/(sample|trailer)/i">
                         </label>
                     </div>
-                    <div class="settings-grid">
+                    <div class="settings-grid row g-3">
                         <label>
                             Minimum size MB
-                            <input name="min_size_mb" value="<?= reflection_h($editingRule['min_size_mb'] ?? '') ?>" inputmode="decimal">
+                            <input name="min_size_mb" value="<?= reflection_h($editingRule['min_size_mb'] ?? '') ?>" class="form-control" inputmode="decimal">
                             <small>Optional. Skip files smaller than this, for example tiny samples or thumbnails.</small>
                         </label>
                         <label>
                             Maximum size MB
-                            <input name="max_size_mb" value="<?= reflection_h($editingRule['max_size_mb'] ?? '') ?>" inputmode="decimal">
+                            <input name="max_size_mb" value="<?= reflection_h($editingRule['max_size_mb'] ?? '') ?>" class="form-control" inputmode="decimal">
                             <small>Optional. Skip files larger than this if a task should not touch very large files.</small>
                         </label>
                         <label>
                             Require unchanged seconds
-                            <input name="require_unchanged_seconds" value="<?= (int) ($editingRule['require_unchanged_seconds'] ?? 0) ?>" inputmode="numeric">
+                            <input name="require_unchanged_seconds" value="<?= (int) ($editingRule['require_unchanged_seconds'] ?? 0) ?>" class="form-control" inputmode="numeric">
                             <small>Optional safety delay. A file must not have changed for this many seconds before it can be queued.</small>
                         </label>
                     </div>
                 </details>
 
-                <details class="form-block collapsible-form-block" data-section-key="command-filter">
+                <details class="form-block d-grid gap-2 mb-3 collapsible-form-block" data-section-key="command-filter">
                     <summary class="form-section-header"><span class="section-number">5</span><div><h3>Optional worker command filter</h3><p>Run a custom preflight on a farm computer before the real task starts.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
-                    <p class="api-note">The webserver never executes this command. Automation can queue a candidate queue item. When a farm computer receives that normal task, it downloads/prepares the source and runs this command locally. If it does not pass, the job is marked skipped instead of failed.</p>
-                    <div class="settings-grid">
+                    <p class="api-note text-secondary small">The webserver never executes this command. Automation can queue a candidate queue item. When a farm computer receives that normal task, it downloads/prepares the source and runs this command locally. If it does not pass, the job is marked skipped instead of failed.</p>
+                    <div class="settings-grid row g-3">
                         <label>
                             Command mode
-                            <select id="command-mode-input" name="command_filter_mode">
+                            <select class="form-select" id="command-mode-input" name="command_filter_mode">
                                 <?php foreach ([
                                     'disabled' => 'Disabled',
                                     'exit_zero' => 'Include if command exits 0',
@@ -588,21 +588,21 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                         </label>
                         <label>
                             Timeout seconds
-                            <input name="command_timeout_seconds" value="<?= (int) ($editingRule['command_timeout_seconds'] ?? 20) ?>" inputmode="numeric">
+                            <input name="command_timeout_seconds" value="<?= (int) ($editingRule['command_timeout_seconds'] ?? 20) ?>" class="form-control" inputmode="numeric">
                         </label>
                     </div>
                     <label>
                         Command
-                        <input id="command-template-input" class="template-input" data-template-label="Command template" name="command_filter_command" value="<?= reflection_h($editingRule['command_filter_command'] ?? '') ?>" placeholder="ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 {path}">
+                        <input id="command-template-input" class="template-input form-control" data-template-label="Command template" name="command_filter_command" value="<?= reflection_h($editingRule['command_filter_command'] ?? '') ?>" placeholder="ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 {path}">
                         <small>Placeholders are shell-escaped by the worker before being inserted. <code>{path}</code> is the worker-local prepared source path.</small>
-                        <output class="inline-template-preview" id="command-template-preview">—</output>
-                        <div class="field-status" id="command-template-status"></div>
+                        <output class="inline-template-preview text-secondary small" id="command-template-preview">—</output>
+                        <div class="field-status text-secondary small" id="command-template-status"></div>
                     </label>
                     <label>
                         Command output regex
-                        <input name="command_filter_regex" value="<?= reflection_h($editingRule['command_filter_regex'] ?? '') ?>" placeholder="/^hevc$/i">
+                        <input name="command_filter_regex" value="<?= reflection_h($editingRule['command_filter_regex'] ?? '') ?>" class="form-control" placeholder="/^hevc$/i">
                     </label>
-                    <details class="example-box">
+                    <details class="example-box bg-light border rounded-3 p-3">
                         <summary>H.265 task preflight examples</summary>
                         <p>The <code>h265_encode</code> task owns its preflight helper, but it only runs when this worker command filter calls it. Use command mode <code>Include if command exits 0</code> and leave the regex field blank.</p>
                         <p>Default profile:</p>
@@ -618,67 +618,67 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                     </details>
                 </details>
 
-                <details class="form-block collapsible-form-block" data-section-key="limits-schedule">
+                <details class="form-block d-grid gap-2 mb-3 collapsible-form-block" data-section-key="limits-schedule">
                     <summary class="form-section-header"><span class="section-number">6</span><div><h3>Limits and schedule</h3><p>Control how much work a scan can create and how often scheduled scans are due.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
-                    <div class="settings-grid">
+                    <div class="settings-grid row g-3">
                         <label>
                             Max files checked per scan
-                            <input name="max_files_per_scan" value="<?= (int) ($editingRule['max_files_per_scan'] ?? 500) ?>" inputmode="numeric">
+                            <input name="max_files_per_scan" value="<?= (int) ($editingRule['max_files_per_scan'] ?? 500) ?>" class="form-control" inputmode="numeric">
                         </label>
                         <label>
                             Max jobs created per scan
-                            <input name="max_jobs_per_scan" value="<?= (int) ($editingRule['max_jobs_per_scan'] ?? 25) ?>" inputmode="numeric">
+                            <input name="max_jobs_per_scan" value="<?= (int) ($editingRule['max_jobs_per_scan'] ?? 25) ?>" class="form-control" inputmode="numeric">
                         </label>
                         <label>
                             Scan interval minutes
-                            <input name="scan_interval_minutes" value="<?= (int) ($editingRule['scan_interval_minutes'] ?? 60) ?>" inputmode="numeric">
+                            <input name="scan_interval_minutes" value="<?= (int) ($editingRule['scan_interval_minutes'] ?? 60) ?>" class="form-control" inputmode="numeric">
                             <small>Used only by scheduled/due scans. Manual runs ignore this.</small>
                         </label>
                         <label>
                             Handled-file entries kept
-                            <input name="state_keep_paths" value="<?= (int) ($editingRule['state_keep_paths'] ?? 10000) ?>" inputmode="numeric">
+                            <input name="state_keep_paths" value="<?= (int) ($editingRule['state_keep_paths'] ?? 10000) ?>" class="form-control" inputmode="numeric">
                             <small>Used for duplicate protection so old handled files do not fill the live state forever.</small>
                         </label>
                     </div>
                 </details>
 
-                <details class="form-block collapsible-form-block" data-section-key="test-filter">
+                <details class="form-block d-grid gap-2 mb-3 collapsible-form-block" data-section-key="test-filter">
                     <summary class="form-section-header"><span class="section-number">7</span><div><h3>Test filter</h3><p>Paste examples or scan the configured roots before creating real jobs.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
                     <label>
                         Optional sample paths
-                        <textarea name="sample_paths" rows="5" placeholder="Leave blank to test by scanning the configured roots. Or paste a few paths here, one per line."><?= reflection_h((string) ($_POST['sample_paths'] ?? '')) ?></textarea>
+                        <textarea class="form-control" name="sample_paths" rows="5" placeholder="Leave blank to test by scanning the configured roots. Or paste a few paths here, one per line."><?= reflection_h((string) ($_POST['sample_paths'] ?? '')) ?></textarea>
                     </label>
                 </details>
 
-                <div class="button-row sticky-actions" id="automation-action-bar">
-                    <button type="submit" name="automation_action" value="save_rule">Save rule</button>
-                    <button type="submit" name="automation_action" value="test_filter" class="ghost-button">Test filter</button>
-                    <button type="submit" name="automation_action" value="dry_run_rule" class="ghost-button">Dry run</button>
-                    <button type="submit" name="automation_action" value="run_rule" class="secondary-button" <?= ($editingRule['id'] ?? '') === '' ? 'disabled' : '' ?>>Run and create jobs</button>
+                <div class="button-row d-flex flex-wrap gap-2 sticky-actions bg-white border rounded-3 p-3 sticky-bottom" id="automation-action-bar">
+                    <button class="btn btn-primary" type="submit" name="automation_action" value="save_rule">Save rule</button>
+                    <button type="submit" name="automation_action" value="test_filter" class="ghost-button btn btn-outline-primary">Test filter</button>
+                    <button type="submit" name="automation_action" value="dry_run_rule" class="ghost-button btn btn-outline-primary">Dry run</button>
+                    <button type="submit" name="automation_action" value="run_rule" class="secondary-button btn btn-secondary" <?= ($editingRule['id'] ?? '') === '' ? 'disabled' : '' ?>>Run and create jobs</button>
                 </div>
             </form>
         </section>
     </main>
 
     <?php if ($testResult !== null): ?>
-        <section class="panel result-panel">
-            <div class="panel-head">
+        <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4 result-panel bg-light rounded-3 p-3">
+            <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
                 <div>
-                    <p class="eyebrow">Filter test</p>
+                    <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Filter test</p>
                     <h2><?= (int) $testResult['matched'] ?> matched of <?= (int) $testResult['scanned'] ?> checked</h2>
                 </div>
             </div>
-            <div class="table-wrap compact-table">
-                <table>
+            <div class="table-wrap table-responsive compact-table">
+                <table class="table table-sm table-hover align-middle mb-0">
                     <thead><tr><th>Result</th><th>Path</th><th>Reason</th><th>Source</th><th>Delivery</th><th>Command output</th></tr></thead>
                     <tbody>
                         <?php foreach ($testResult['rows'] as $row): ?>
                             <tr>
-                                <td><span class="badge <?= !empty($row['include']) ? 'success' : 'failed' ?>"><?= !empty($row['include']) ? 'match' : 'skip' ?></span></td>
-                                <td class="path-cell"><code><?= reflection_h(reflection_short_auto_value($row['path'] ?? '', 130)) ?></code></td>
+                                <td><span class="badge <?= reflection_h(reflection_status_class(!empty($row['include']) ? 'success' : 'failed')) ?>"><?= !empty($row['include']) ? 'match' : 'skip' ?></span></td>
+                                <td class="path-cell text-break"><code><?= reflection_h(reflection_short_auto_value($row['path'] ?? '', 130)) ?></code></td>
                                 <td><?= reflection_h($row['reason'] ?? '') ?></td>
-                                <td class="path-cell"><code><?= reflection_h(reflection_short_auto_value($row['source'] ?? '', 90)) ?></code></td>
-                                <td class="path-cell"><code><?= reflection_h(reflection_short_auto_value($row['delivery'] ?? '', 90)) ?></code></td>
+                                <td class="path-cell text-break"><code><?= reflection_h(reflection_short_auto_value($row['source'] ?? '', 90)) ?></code></td>
+                                <td class="path-cell text-break"><code><?= reflection_h(reflection_short_auto_value($row['delivery'] ?? '', 90)) ?></code></td>
                                 <td><?= reflection_h(reflection_short_auto_value($row['command_output'] ?? '', 120)) ?></td>
                             </tr>
                         <?php endforeach; ?>
@@ -689,24 +689,24 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
     <?php endif; ?>
 
     <?php if ($runResult !== null): ?>
-        <section class="panel result-panel">
-            <div class="panel-head">
+        <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4 result-panel bg-light rounded-3 p-3">
+            <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
                 <div>
-                    <p class="eyebrow">Scan result</p>
+                    <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Scan result</p>
                     <h2><?= reflection_h(reflection_auto_summary($runResult)) ?></h2>
                 </div>
             </div>
-            <div class="table-wrap compact-table">
-                <table>
+            <div class="table-wrap table-responsive compact-table">
+                <table class="table table-sm table-hover align-middle mb-0">
                     <thead><tr><th>Status</th><th>Path</th><th>Reason</th><th>Source</th><th>Delivery</th><th>Job</th></tr></thead>
                     <tbody>
                         <?php foreach (($runResult['rows'] ?? []) as $row): ?>
                             <tr>
-                                <td><span class="badge <?= in_array(($row['status'] ?? ''), ['queued', 'would_queue', 'would_queue_candidate'], true) ? 'success' : (($row['status'] ?? '') === 'error' ? 'failed' : 'configured') ?>"><?= reflection_h($row['status'] ?? '') ?></span></td>
-                                <td class="path-cell"><code><?= reflection_h(reflection_short_auto_value($row['path'] ?? '', 130)) ?></code></td>
+                                <td><span class="badge <?= reflection_h(reflection_status_class(in_array(($row['status'] ?? ''), ['queued', 'would_queue', 'would_queue_candidate'], true) ? 'success' : (($row['status'] ?? '') === 'error' ? 'failed' : 'configured'))) ?>"><?= reflection_h($row['status'] ?? '') ?></span></td>
+                                <td class="path-cell text-break"><code><?= reflection_h(reflection_short_auto_value($row['path'] ?? '', 130)) ?></code></td>
                                 <td><?= reflection_h($row['reason'] ?? '') ?></td>
-                                <td class="path-cell"><code><?= reflection_h(reflection_short_auto_value($row['source'] ?? '', 90)) ?></code></td>
-                                <td class="path-cell"><code><?= reflection_h(reflection_short_auto_value($row['delivery'] ?? '', 90)) ?></code></td>
+                                <td class="path-cell text-break"><code><?= reflection_h(reflection_short_auto_value($row['source'] ?? '', 90)) ?></code></td>
+                                <td class="path-cell text-break"><code><?= reflection_h(reflection_short_auto_value($row['delivery'] ?? '', 90)) ?></code></td>
                                 <td><code><?= reflection_h($row['task_id'] ?? '') ?></code></td>
                             </tr>
                         <?php endforeach; ?>
@@ -716,18 +716,18 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
         </section>
     <?php endif; ?>
 
-    <section class="panel result-panel">
-        <div class="panel-head">
+    <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4 result-panel bg-light rounded-3 p-3">
+        <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
             <div>
-                <p class="eyebrow">History</p>
+                <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">History</p>
                 <h2>Recent automation scans</h2>
             </div>
         </div>
         <?php if ($recentRuns === []): ?>
-            <p class="empty">No automation scans have run yet.</p>
+            <p class="empty text-secondary text-center py-4">No automation scans have run yet.</p>
         <?php else: ?>
-            <div class="table-wrap compact-table">
-                <table>
+            <div class="table-wrap table-responsive compact-table">
+                <table class="table table-sm table-hover align-middle mb-0">
                     <thead><tr><th>Finished</th><th>Rule</th><th>Mode</th><th>Summary</th></tr></thead>
                     <tbody>
                         <?php foreach ($recentRuns as $run): ?>
