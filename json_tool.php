@@ -135,67 +135,67 @@ $presets = [
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Reflection JSON Tool</title>
-    <link rel="stylesheet" href="styles.css">
+    <?= reflection_stylesheet_links() ?>
 </head>
-<body>
+<body class="bg-light text-dark container-fluid px-3 px-md-4 py-4">
     <header>
         <div>
-            <p class="eyebrow">Reflection</p>
+            <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Reflection</p>
             <h1>JSON Tool</h1>
-            <p class="lede">Send editable JSON requests to <?= reflection_tool_h($config['farm_name'] ?? 'the farm master') ?> so you can manually act like a worker and inspect each response.</p>
+            <p class="lede text-secondary fs-5 mb-3">Send editable JSON requests to <?= reflection_tool_h($config['farm_name'] ?? 'the farm master') ?> so you can manually act like a worker and inspect each response.</p>
         </div>
-        <div class="version-card">
+        <div class="version-card col-12 col-lg-4 bg-white border rounded-4 shadow-sm p-4 d-flex flex-column gap-2">
             <span>Default endpoint</span>
             <strong><?= reflection_tool_h($defaultEndpoint) ?></strong>
         </div>
     </header>
 
     <?php if ($error !== null): ?>
-        <div class="alert error"><?= reflection_tool_h($error) ?></div>
+        <div class="alert error alert-danger text-bg-danger"><?= reflection_tool_h($error) ?></div>
     <?php endif; ?>
 
     <main>
-        <section class="panel submit-panel">
+        <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4 submit-panel">
             <h2>Request</h2>
             <form method="post">
                 <label>
                     Endpoint
-                    <input name="endpoint" value="<?= reflection_tool_h($endpoint) ?>" placeholder="<?= reflection_tool_h($defaultEndpoint) ?>">
+                    <input name="endpoint" value="<?= reflection_tool_h($endpoint) ?>" class="form-control" placeholder="<?= reflection_tool_h($defaultEndpoint) ?>">
                     <small>Use the default master API or paste another full URL.</small>
                 </label>
-                <div class="preset-row">
+                <div class="preset-row d-flex flex-wrap gap-2">
                     <?php foreach ($presets as $name => $preset): ?>
-                        <button type="button" data-preset="<?= reflection_tool_h(json_encode($preset, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)) ?>"><?= reflection_tool_h($name) ?></button>
+                        <button class="btn btn-primary" type="button" data-preset="<?= reflection_tool_h(json_encode($preset, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)) ?>"><?= reflection_tool_h($name) ?></button>
                     <?php endforeach; ?>
                 </div>
                 <label>
                     Editable JSON payload
-                    <textarea name="request_json" id="request-json" rows="16"><?= reflection_tool_h($requestJson) ?></textarea>
+                    <textarea class="form-control" name="request_json" id="request-json" rows="16"><?= reflection_tool_h($requestJson) ?></textarea>
                 </label>
-                <button type="submit">Send JSON</button>
+                <button class="btn btn-primary" type="submit">Send JSON</button>
             </form>
         </section>
 
-        <section class="panel stats-panel">
+        <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4 stats-panel">
             <h2>How to simulate a worker</h2>
             <ol class="steps">
                 <li>Send <code>request_task</code> to see whether a job is available.</li>
                 <li>Copy the returned <code>task_id</code> into <code>confirm_taken</code>.</li>
                 <li>Finish with <code>report_done</code> using <code>success</code> or <code>failed</code>.</li>
             </ol>
-            <p class="api-note"><a href="index.php">Back to dashboard</a></p>
+            <p class="api-note text-secondary small"><a href="index.php">Back to dashboard</a></p>
         </section>
     </main>
 
-    <section class="panel">
+    <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4">
         <h2>Response<?= $responseStatus !== null ? ' — ' . reflection_tool_h($responseStatus) : '' ?></h2>
         <?php if ($responseBody === null): ?>
-            <p class="empty">No response yet.</p>
+            <p class="empty text-secondary text-center py-4">No response yet.</p>
         <?php else: ?>
             <pre class="json-viewer"><code><?= reflection_tool_h($responseBody) ?></code></pre>
         <?php endif; ?>
     </section>
 
-    <script src="<?= reflection_h(reflection_asset_url('json_tool.js')) ?>"></script>
-</body>
+    <script src="<?= reflection_h(reflection_asset_url('assets/js/json_tool.js')) ?>"></script>
+<?= reflection_script_links() ?></body>
 </html>

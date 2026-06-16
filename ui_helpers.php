@@ -7,6 +7,24 @@ function reflection_send_security_headers(): void
     header("Content-Security-Policy: script-src 'self'; object-src 'none'; base-uri 'self'");
 }
 
+function reflection_stylesheet_links(): string
+{
+    $links = [
+        '<link href="' . reflection_h(reflection_asset_url('assets/vendor/bootstrap/bootstrap.min.css')) . '" rel="stylesheet">',
+    ];
+
+    return implode(PHP_EOL . '    ', $links) . PHP_EOL;
+}
+
+function reflection_script_links(): string
+{
+    $scripts = [
+        '<script src="' . reflection_h(reflection_asset_url('assets/vendor/bootstrap/bootstrap.min.js')) . '"></script>',
+    ];
+
+    return implode(PHP_EOL . '    ', $scripts) . PHP_EOL;
+}
+
 function reflection_h($value): string
 {
     return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
@@ -187,8 +205,39 @@ function reflection_short_value($value, int $limit = 96): string
 
 function reflection_status_class($status): string
 {
-    $status = preg_replace('/[^a-z0-9_-]/i', '', (string) $status);
-    return $status !== '' ? strtolower($status) : 'unknown';
+    $status = strtolower((string) preg_replace('/[^a-z0-9_-]/i', '', (string) $status));
+    $classes = [
+        'candidate' => 'text-bg-info',
+        'completed' => 'text-bg-success',
+        'configured' => 'text-bg-primary',
+        'deleted' => 'text-bg-secondary',
+        'failed' => 'text-bg-danger',
+        'held' => 'text-bg-warning',
+        'idle' => 'text-bg-success',
+        'offline' => 'text-bg-secondary',
+        'queued' => 'text-bg-primary',
+        'running' => 'text-bg-warning',
+        'skipped' => 'text-bg-secondary',
+        'stale' => 'text-bg-danger',
+        'success' => 'text-bg-success',
+    ];
+
+    return $classes[$status] ?? 'text-bg-secondary';
+}
+
+
+function reflection_status_dot_class($status): string
+{
+    $status = strtolower((string) preg_replace('/[^a-z0-9_-]/i', '', (string) $status));
+    $classes = [
+        'configured' => 'bg-primary',
+        'idle' => 'bg-success',
+        'offline' => 'bg-secondary',
+        'running' => 'bg-warning',
+        'stale' => 'bg-danger',
+    ];
+
+    return $classes[$status] ?? 'bg-secondary';
 }
 
 function reflection_ess_soc_is_ignored(array $settings): bool

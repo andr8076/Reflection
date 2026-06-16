@@ -366,25 +366,25 @@ foreach ($validJobFilters as $filter) {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Logs · Reflection Farm Master</title>
-    <link rel="stylesheet" href="styles.css">
+    <?= reflection_stylesheet_links() ?>
 </head>
-<body class="automation-page">
-    <header class="hero compact-hero">
-        <div class="hero-main">
-            <p class="eyebrow">Reflection farm master</p>
+<body class="automation-page bg-light text-dark container-fluid px-3 px-md-4 py-4">
+    <header class="hero row g-3 align-items-stretch mb-4 compact-hero">
+        <div class="hero-main col-12 col-lg bg-white border rounded-4 shadow-sm p-4">
+            <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Reflection farm master</p>
             <h1>Logs</h1>
-            <p class="lede">Stable operational history, live queue review, bulk job cleanup, and a recoverable bin.</p>
-            <nav class="top-nav">
-                <a href="index.php">Dashboard</a>
-                <a href="automation.php">Automation</a>
-                <a href="storage_servers.php">Storage servers</a>
-                <a href="blocked_jobs.php">Blocked jobs</a>
-                <a href="system_checks.php">System checks</a>
-                <a class="active" href="logs.php">Logs</a>
-                <a href="settings.php">Settings</a>
+            <p class="lede text-secondary fs-5 mb-3">Stable operational history, live queue review, bulk job cleanup, and a recoverable bin.</p>
+            <nav class="top-nav nav nav-pills flex-wrap gap-2 mt-3">
+                <a class="nav-link" href="index.php">Dashboard</a>
+                <a class="nav-link" href="automation.php">Automation</a>
+                <a class="nav-link" href="storage_servers.php">Storage servers</a>
+                <a class="nav-link" href="blocked_jobs.php">Blocked jobs</a>
+                <a class="nav-link" href="system_checks.php">System checks</a>
+                <a class="nav-link active" href="logs.php">Logs</a>
+                <a class="nav-link" href="settings.php">Settings</a>
             </nav>
         </div>
-        <aside class="version-card" id="logs-version-card">
+        <aside class="version-card col-12 col-lg-4 bg-white border rounded-4 shadow-sm p-4 d-flex flex-column gap-2" id="logs-version-card">
             <span><?= reflection_h($currentMeta['title']) ?></span>
             <strong><?= (int) $currentMeta['count'] ?> item<?= (int) $currentMeta['count'] === 1 ? '' : 's' ?></strong>
             <small><?= reflection_h($currentMeta['path']) ?></small>
@@ -392,21 +392,21 @@ foreach ($validJobFilters as $filter) {
     </header>
 
     <main class="logs-layout">
-        <section class="panel" id="logs-viewer-panel">
-            <div class="panel-head">
+        <section class="panel bg-white border rounded-4 shadow-sm p-4 mb-4" id="logs-viewer-panel">
+            <div class="panel-head d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
                 <div>
-                    <p class="eyebrow">Viewer</p>
+                    <p class="eyebrow text-primary text-uppercase fw-bold small mb-1">Viewer</p>
                     <h2><?= reflection_h($currentMeta['title']) ?></h2>
-                    <p class="api-note"><?= reflection_h($currentMeta['description']) ?></p>
+                    <p class="api-note text-secondary small"><?= reflection_h($currentMeta['description']) ?></p>
                 </div>
             </div>
 
-            <?php if ($message !== null): ?><div class="notice success-notice"><?= reflection_h($message) ?></div><?php endif; ?>
-            <?php if ($error !== null): ?><div class="notice error-notice"><?= reflection_h($error) ?></div><?php endif; ?>
+            <?php if ($message !== null): ?><div class="notice alert alert-info success-notice"><?= reflection_h($message) ?></div><?php endif; ?>
+            <?php if ($error !== null): ?><div class="notice alert alert-info error-notice"><?= reflection_h($error) ?></div><?php endif; ?>
 
-            <nav class="status-tabs log-tabs" aria-label="Log type filters">
+            <nav class="status-tabs nav nav-pills flex-wrap gap-2 mb-3 log-tabs" aria-label="Log type filters">
                 <?php foreach ($logMeta as $type => $meta): ?>
-                    <a class="<?= $logType === $type ? 'active' : '' ?>" href="<?= reflection_h(reflection_logs_url(['log' => $type, 'page' => 1])) ?>"><?= reflection_h($meta['title']) ?> <span><?= (int) $meta['count'] ?></span></a>
+                    <a class="nav-link <?= $logType === $type ? 'active' : '' ?>" href="<?= reflection_h(reflection_logs_url(['log' => $type, 'page' => 1])) ?>"><?= reflection_h($meta['title']) ?> <span><?= (int) $meta['count'] ?></span></a>
                 <?php endforeach; ?>
             </nav>
 
@@ -415,7 +415,7 @@ foreach ($validJobFilters as $filter) {
                 <?php if (in_array($logType, ['jobs', 'bin'], true)): ?>
                     <label>
                         Status
-                        <select name="job_status">
+                        <select class="form-select" name="job_status">
                             <?php foreach ($validJobFilters as $filter): ?>
                                 <option value="<?= reflection_h($filter) ?>" <?= $jobStatus === $filter ? 'selected' : '' ?>><?= reflection_h($filter) ?></option>
                             <?php endforeach; ?>
@@ -424,43 +424,43 @@ foreach ($validJobFilters as $filter) {
                 <?php endif; ?>
                 <label>
                     Search loaded rows
-                    <input name="q" value="<?= reflection_h($query) ?>" placeholder="task id, worker, path, event...">
+                    <input name="q" value="<?= reflection_h($query) ?>" class="form-control" placeholder="task id, worker, path, event...">
                 </label>
                 <label>
                     Rows to load
-                    <select name="limit">
+                    <select class="form-select" name="limit">
                         <?php foreach ([25, 50, 100, 250, 500, 1000] as $option): ?>
                             <option value="<?= $option ?>" <?= $limit === $option ? 'selected' : '' ?>><?= $option ?></option>
                         <?php endforeach; ?>
                     </select>
                 </label>
-                <button type="submit" class="ghost-button">Apply</button>
+                <button type="submit" class="ghost-button btn btn-outline-primary">Apply</button>
             </form>
 
             <?php if ($logType === 'jobs'): ?>
-                <nav class="status-tabs log-tabs" aria-label="Job status filters">
+                <nav class="status-tabs nav nav-pills flex-wrap gap-2 mb-3 log-tabs" aria-label="Job status filters">
                     <?php foreach ($validJobFilters as $filter): ?>
-                        <a class="<?= $jobStatus === $filter ? 'active' : '' ?>" href="<?= reflection_h(reflection_logs_url(['log' => 'jobs', 'job_status' => $filter, 'page' => 1])) ?>"><?= reflection_h($filter) ?> <span><?= (int) ($tabCounts[$filter] ?? 0) ?></span></a>
+                        <a class="nav-link <?= $jobStatus === $filter ? 'active' : '' ?>" href="<?= reflection_h(reflection_logs_url(['log' => 'jobs', 'job_status' => $filter, 'page' => 1])) ?>"><?= reflection_h($filter) ?> <span><?= (int) ($tabCounts[$filter] ?? 0) ?></span></a>
                     <?php endforeach; ?>
                 </nav>
 
-                <form method="post" id="job-bulk-form" class="bulk-action-bar">
+                <form method="post" id="job-bulk-form" class="bulk-action-bar d-flex flex-wrap gap-2 align-items-center mb-3">
                     <input type="hidden" name="form_action" value="logs_bulk_job_action">
-                    <label class="select-all-label"><input type="checkbox" data-select-all data-target-form="job-bulk-form"> Select all shown</label>
-                    <span class="selection-count" data-selection-count="job-bulk-form">0 selected</span>
-                    <button class="ghost-button small-button" type="submit" name="bulk_action" value="hold">Hold selected</button>
-                    <button class="ghost-button small-button" type="submit" name="bulk_action" value="release">Release selected</button>
-                    <button class="ghost-button small-button" type="submit" name="bulk_action" value="retry" data-confirm="Queue retries for the selected jobs?">Retry selected</button>
-                    <button class="danger-button small-button" type="submit" name="bulk_action" value="delete" data-confirm="Move selected jobs to the bin? Running jobs will be skipped.">Move selected to bin</button>
+                    <label class="select-all-label form-check d-flex gap-2 align-items-center"><input type="checkbox" data-select-all data-target-form="job-bulk-form"> Select all shown</label>
+                    <span class="selection-count text-secondary small" data-selection-count="job-bulk-form">0 selected</span>
+                    <button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit" name="bulk_action" value="hold">Hold selected</button>
+                    <button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit" name="bulk_action" value="release">Release selected</button>
+                    <button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit" name="bulk_action" value="retry" data-confirm="Queue retries for the selected jobs?">Retry selected</button>
+                    <button class="danger-button btn btn-outline-danger small-button btn-sm" type="submit" name="bulk_action" value="delete" data-confirm="Move selected jobs to the bin? Running jobs will be skipped.">Move selected to bin</button>
                 </form>
 
-                <div class="table-wrap">
-                    <table>
+                <div class="table-wrap table-responsive">
+                    <table class="table table-sm table-hover align-middle mb-0">
                         <thead>
                         <tr><th>Select</th><th>Job</th><th>Task</th><th>Status</th><th>Worker</th><th>Source / delivery</th><th>Timing</th><th>Error</th><th>Actions</th></tr>
                         </thead>
                         <tbody>
-                        <?php if ($jobs === []): ?><tr><td colspan="9" class="empty">No jobs match this filter.</td></tr><?php endif; ?>
+                        <?php if ($jobs === []): ?><tr><td colspan="9" class="empty text-secondary text-center py-4">No jobs match this filter.</td></tr><?php endif; ?>
                         <?php foreach ($jobs as $job): ?>
                             <?php $jobStatusValue = (string) ($job['status'] ?? 'unknown'); $taskId = (string) ($job['task_id'] ?? ''); ?>
                             <tr>
@@ -469,23 +469,23 @@ foreach ($validJobFilters as $filter) {
                                 <td><?= reflection_h($job['module'] ?? '—') ?></td>
                                 <td><span class="badge <?= reflection_h(reflection_status_class($jobStatusValue)) ?>"><?= reflection_h($jobStatusValue) ?></span></td>
                                 <td><?= reflection_h($job['worker'] ?? '—') ?></td>
-                                <td class="path-cell"><code title="<?= reflection_h($job['source'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['source'] ?? '—', 80)) ?></code><br><code title="<?= reflection_h($job['delivery'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['delivery'] ?? '—', 80)) ?></code></td>
+                                <td class="path-cell text-break"><code title="<?= reflection_h($job['source'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['source'] ?? '—', 80)) ?></code><br><code title="<?= reflection_h($job['delivery'] ?? '') ?>"><?= reflection_h(reflection_short_value($job['delivery'] ?? '—', 80)) ?></code></td>
                                 <td><span title="<?= reflection_h($job['created_at'] ?? '') ?>">Created <?= reflection_h(reflection_relative_time($job['created_at'] ?? null)) ?></span><br><span title="<?= reflection_h($job['started_at'] ?? '') ?>">Started <?= reflection_h(reflection_relative_time($job['started_at'] ?? null)) ?></span><br><span title="<?= reflection_h($job['finished_at'] ?? '') ?>">Finished <?= reflection_h(reflection_relative_time($job['finished_at'] ?? null)) ?></span></td>
                                 <td><?= reflection_h(reflection_short_value($job['error'] ?? '', 120)) ?></td>
                                 <td>
-                                    <div class="button-row table-actions">
+                                    <div class="button-row d-flex flex-wrap gap-2 table-actions align-items-center">
                                         <?php if (in_array($jobStatusValue, ['queued', 'running'], true)): ?>
-                                            <form method="post"><input type="hidden" name="form_action" value="logs_bulk_job_action"><input type="hidden" name="task_ids[]" value="<?= reflection_h($taskId) ?>"><button class="ghost-button small-button" type="submit" name="bulk_action" value="hold">Hold</button></form>
+                                            <form method="post"><input type="hidden" name="form_action" value="logs_bulk_job_action"><input type="hidden" name="task_ids[]" value="<?= reflection_h($taskId) ?>"><button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit" name="bulk_action" value="hold">Hold</button></form>
                                         <?php elseif ($jobStatusValue === 'held'): ?>
-                                            <form method="post"><input type="hidden" name="form_action" value="logs_bulk_job_action"><input type="hidden" name="task_ids[]" value="<?= reflection_h($taskId) ?>"><button class="ghost-button small-button" type="submit" name="bulk_action" value="release">Release</button></form>
+                                            <form method="post"><input type="hidden" name="form_action" value="logs_bulk_job_action"><input type="hidden" name="task_ids[]" value="<?= reflection_h($taskId) ?>"><button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit" name="bulk_action" value="release">Release</button></form>
                                         <?php endif; ?>
                                         <?php if (in_array($jobStatusValue, ['failed', 'stale', 'blocked'], true)): ?>
-                                            <form method="post" data-confirm="Queue a fresh retry of this job?"><input type="hidden" name="form_action" value="logs_bulk_job_action"><input type="hidden" name="task_ids[]" value="<?= reflection_h($taskId) ?>"><button class="ghost-button small-button" type="submit" name="bulk_action" value="retry">Retry</button></form>
+                                            <form method="post" data-confirm="Queue a fresh retry of this job?"><input type="hidden" name="form_action" value="logs_bulk_job_action"><input type="hidden" name="task_ids[]" value="<?= reflection_h($taskId) ?>"><button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit" name="bulk_action" value="retry">Retry</button></form>
                                         <?php endif; ?>
                                         <?php if ($jobStatusValue !== 'running'): ?>
-                                            <form method="post" data-confirm="Move this job to the bin?"><input type="hidden" name="form_action" value="logs_bulk_job_action"><input type="hidden" name="task_ids[]" value="<?= reflection_h($taskId) ?>"><button class="danger-button small-button" type="submit" name="bulk_action" value="delete">Delete</button></form>
+                                            <form method="post" data-confirm="Move this job to the bin?"><input type="hidden" name="form_action" value="logs_bulk_job_action"><input type="hidden" name="task_ids[]" value="<?= reflection_h($taskId) ?>"><button class="danger-button btn btn-outline-danger small-button btn-sm" type="submit" name="bulk_action" value="delete">Delete</button></form>
                                         <?php else: ?>
-                                            <span class="api-note">Hold before deleting.</span>
+                                            <span class="api-note text-secondary small">Hold before deleting.</span>
                                         <?php endif; ?>
                                     </div>
                                 </td>
@@ -494,14 +494,14 @@ foreach ($validJobFilters as $filter) {
                         </tbody>
                     </table>
                 </div>
-                <div class="pagination"><a class="<?= (int) $jobPageData['page'] <= 1 ? 'disabled' : '' ?>" href="<?= reflection_h(reflection_logs_url(['page' => max(1, (int) $jobPageData['page'] - 1)])) ?>">Previous</a><span>Page <?= (int) $jobPageData['page'] ?> of <?= (int) $jobPageData['pages'] ?> · showing <?= count($jobs) ?> of <?= (int) $jobPageData['total'] ?></span><a class="<?= (int) $jobPageData['page'] >= (int) $jobPageData['pages'] ? 'disabled' : '' ?>" href="<?= reflection_h(reflection_logs_url(['page' => min((int) $jobPageData['pages'], (int) $jobPageData['page'] + 1)])) ?>">Next</a></div>
+                <div class="pagination d-flex flex-wrap justify-content-center align-items-center gap-2 my-3"><a class="<?= (int) $jobPageData['page'] <= 1 ? 'disabled' : '' ?>" href="<?= reflection_h(reflection_logs_url(['page' => max(1, (int) $jobPageData['page'] - 1)])) ?>">Previous</a><span>Page <?= (int) $jobPageData['page'] ?> of <?= (int) $jobPageData['pages'] ?> · showing <?= count($jobs) ?> of <?= (int) $jobPageData['total'] ?></span><a class="<?= (int) $jobPageData['page'] >= (int) $jobPageData['pages'] ? 'disabled' : '' ?>" href="<?= reflection_h(reflection_logs_url(['page' => min((int) $jobPageData['pages'], (int) $jobPageData['page'] + 1)])) ?>">Next</a></div>
 
             <?php elseif ($logType === 'events'): ?>
-                <div class="table-wrap">
-                    <table>
+                <div class="table-wrap table-responsive">
+                    <table class="table table-sm table-hover align-middle mb-0">
                         <thead><tr><th>Time</th><th>Event</th><th>Job</th><th>Module</th><th>Worker</th><th>Source / delivery</th><th>Error</th><th>Raw</th></tr></thead>
                         <tbody>
-                        <?php if ($events === []): ?><tr><td colspan="8" class="empty">No event rows loaded.</td></tr><?php endif; ?>
+                        <?php if ($events === []): ?><tr><td colspan="8" class="empty text-secondary text-center py-4">No event rows loaded.</td></tr><?php endif; ?>
                         <?php foreach ($events as $event): ?>
                             <tr>
                                 <td title="<?= reflection_h($event['timestamp'] ?? '') ?>"><?= reflection_h(reflection_relative_time($event['timestamp'] ?? null)) ?></td>
@@ -509,7 +509,7 @@ foreach ($validJobFilters as $filter) {
                                 <td><code><?= reflection_h($event['task_id'] ?? '—') ?></code></td>
                                 <td><?= reflection_h($event['module'] ?? '—') ?></td>
                                 <td><?= reflection_h($event['worker'] ?? '—') ?></td>
-                                <td class="path-cell"><code><?= reflection_h(reflection_short_value($event['source'] ?? '—', 70)) ?></code><br><code><?= reflection_h(reflection_short_value($event['delivery'] ?? '—', 70)) ?></code></td>
+                                <td class="path-cell text-break"><code><?= reflection_h(reflection_short_value($event['source'] ?? '—', 70)) ?></code><br><code><?= reflection_h(reflection_short_value($event['delivery'] ?? '—', 70)) ?></code></td>
                                 <td><?= reflection_h(reflection_short_value($event['error'] ?? '', 120)) ?></td>
                                 <td><details><summary>JSON</summary><pre><?= reflection_h(json_encode($event, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) ?: '') ?></pre></details></td>
                             </tr>
@@ -518,38 +518,38 @@ foreach ($validJobFilters as $filter) {
                     </table>
                 </div>
             <?php elseif ($logType === 'automation'): ?>
-                <div class="log-card-grid">
-                    <?php if ($automationRuns === []): ?><p class="empty">No automation run rows loaded.</p><?php endif; ?>
+                <div class="log-card-grid row row-cols-1 g-3">
+                    <?php if ($automationRuns === []): ?><p class="empty text-secondary text-center py-4">No automation run rows loaded.</p><?php endif; ?>
                     <?php foreach ($automationRuns as $run): ?>
-                        <article class="log-card">
-                            <div class="log-card-head">
+                        <article class="log-card col bg-light border rounded-3 p-3">
+                            <div class="log-card-head d-flex justify-content-between gap-3 flex-wrap">
                                 <div><strong><?= reflection_h($run['rule_name'] ?? $run['rule_id'] ?? 'Automation run') ?></strong><small><?= reflection_h(reflection_relative_time($run['started_at'] ?? null)) ?> → <?= reflection_h(reflection_relative_time($run['finished_at'] ?? null)) ?></small></div>
-                                <span class="badge <?= !empty($run['dry_run']) ? 'queued' : 'success' ?>"><?= !empty($run['dry_run']) ? 'dry run' : 'run' ?></span>
+                                <span class="badge <?= reflection_h(reflection_status_class(!empty($run['dry_run']) ? 'queued' : 'success')) ?>"><?= !empty($run['dry_run']) ? 'dry run' : 'run' ?></span>
                             </div>
-                            <div class="template-preview-grid small-preview-grid">
-                                <div class="template-preview-card"><span>Scanned</span><strong><?= (int) ($run['scanned'] ?? 0) ?></strong></div>
-                                <div class="template-preview-card"><span>Matched</span><strong><?= (int) ($run['matched'] ?? 0) ?></strong></div>
-                                <div class="template-preview-card"><span>Queued</span><strong><?= (int) ($run['queued'] ?? 0) ?></strong></div>
-                                <div class="template-preview-card"><span>Errors</span><strong><?= (int) ($run['errors'] ?? 0) ?></strong></div>
+                            <div class="template-preview-grid row row-cols-1 row-cols-md-2 g-3 small-preview-grid row-cols-lg-4">
+                                <div class="template-preview-card col bg-light border rounded-3 p-3"><span>Scanned</span><strong><?= (int) ($run['scanned'] ?? 0) ?></strong></div>
+                                <div class="template-preview-card col bg-light border rounded-3 p-3"><span>Matched</span><strong><?= (int) ($run['matched'] ?? 0) ?></strong></div>
+                                <div class="template-preview-card col bg-light border rounded-3 p-3"><span>Queued</span><strong><?= (int) ($run['queued'] ?? 0) ?></strong></div>
+                                <div class="template-preview-card col bg-light border rounded-3 p-3"><span>Errors</span><strong><?= (int) ($run['errors'] ?? 0) ?></strong></div>
                             </div>
                             <?php $rows = is_array($run['rows'] ?? null) ? $run['rows'] : []; ?>
                             <?php if ($rows !== []): ?>
-                                <details><summary>Rows <?= count($rows) ?></summary><div class="table-wrap compact-table"><table><thead><tr><th>Status</th><th>Path</th><th>Reason</th><th>Job</th></tr></thead><tbody><?php foreach ($rows as $row): ?><tr><td><?= reflection_h($row['status'] ?? '—') ?></td><td class="path-cell"><code><?= reflection_h(reflection_short_value($row['path'] ?? '', 90)) ?></code></td><td><?= reflection_h(reflection_short_value($row['reason'] ?? '', 120)) ?></td><td><code><?= reflection_h($row['task_id'] ?? '') ?></code></td></tr><?php endforeach; ?></tbody></table></div></details>
+                                <details><summary>Rows <?= count($rows) ?></summary><div class="table-wrap table-responsive compact-table"><table class="table table-sm table-hover align-middle mb-0"><thead><tr><th>Status</th><th>Path</th><th>Reason</th><th>Job</th></tr></thead><tbody><?php foreach ($rows as $row): ?><tr><td><?= reflection_h($row['status'] ?? '—') ?></td><td class="path-cell text-break"><code><?= reflection_h(reflection_short_value($row['path'] ?? '', 90)) ?></code></td><td><?= reflection_h(reflection_short_value($row['reason'] ?? '', 120)) ?></td><td><code><?= reflection_h($row['task_id'] ?? '') ?></code></td></tr><?php endforeach; ?></tbody></table></div></details>
                             <?php endif; ?>
                             <details><summary>Raw JSON</summary><pre><?= reflection_h(json_encode($run, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) ?: '') ?></pre></details>
                         </article>
                     <?php endforeach; ?>
                 </div>
             <?php elseif ($logType === 'files'): ?>
-                <div class="table-wrap">
-                    <table>
+                <div class="table-wrap table-responsive">
+                    <table class="table table-sm table-hover align-middle mb-0">
                         <thead><tr><th>Path or URI</th><th>Last touched</th><th>Recent actions</th><th>Raw</th></tr></thead>
                         <tbody>
-                        <?php if ($fileHistory === []): ?><tr><td colspan="4" class="empty">No file or URI history loaded.</td></tr><?php endif; ?>
+                        <?php if ($fileHistory === []): ?><tr><td colspan="4" class="empty text-secondary text-center py-4">No file or URI history loaded.</td></tr><?php endif; ?>
                         <?php foreach ($fileHistory as $path => $touches): ?>
                             <?php $recentTouches = array_slice(array_reverse($touches), 0, 8); ?>
                             <tr>
-                                <td class="path-cell"><code title="<?= reflection_h($path) ?>"><?= reflection_h(reflection_short_value($path, 110)) ?></code></td>
+                                <td class="path-cell text-break"><code title="<?= reflection_h($path) ?>"><?= reflection_h(reflection_short_value($path, 110)) ?></code></td>
                                 <td title="<?= reflection_h($recentTouches[0]['timestamp'] ?? '') ?>"><?= reflection_h(reflection_relative_time($recentTouches[0]['timestamp'] ?? null)) ?></td>
                                 <td><?php foreach ($recentTouches as $touch): ?><div><strong><?= reflection_h($touch['action'] ?? '—') ?></strong> · <code><?= reflection_h($touch['task_id'] ?? '—') ?></code> · <?= reflection_h(reflection_relative_time($touch['timestamp'] ?? null)) ?></div><?php endforeach; ?></td>
                                 <td><details><summary>JSON</summary><pre><?= reflection_h(json_encode($touches, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) ?: '') ?></pre></details></td>
@@ -559,18 +559,18 @@ foreach ($validJobFilters as $filter) {
                     </table>
                 </div>
             <?php elseif ($logType === 'archive'): ?>
-                <div class="table-wrap">
-                    <table>
+                <div class="table-wrap table-responsive">
+                    <table class="table table-sm table-hover align-middle mb-0">
                         <thead><tr><th>Job</th><th>Task</th><th>Status</th><th>Worker</th><th>Source / delivery</th><th>Finished</th><th>Error</th><th>Raw</th></tr></thead>
                         <tbody>
-                        <?php if ($archiveJobs === []): ?><tr><td colspan="8" class="empty">No archived jobs loaded.</td></tr><?php endif; ?>
+                        <?php if ($archiveJobs === []): ?><tr><td colspan="8" class="empty text-secondary text-center py-4">No archived jobs loaded.</td></tr><?php endif; ?>
                         <?php foreach ($archiveJobs as $job): ?>
                             <tr>
                                 <td><code><?= reflection_h($job['task_id'] ?? '—') ?></code></td>
                                 <td><?= reflection_h($job['module'] ?? '—') ?></td>
                                 <td><span class="badge <?= reflection_h(reflection_status_class($job['status'] ?? 'unknown')) ?>"><?= reflection_h($job['status'] ?? 'unknown') ?></span></td>
                                 <td><?= reflection_h($job['worker'] ?? '—') ?></td>
-                                <td class="path-cell"><code><?= reflection_h(reflection_short_value($job['source'] ?? '—', 80)) ?></code><br><code><?= reflection_h(reflection_short_value($job['delivery'] ?? '—', 80)) ?></code></td>
+                                <td class="path-cell text-break"><code><?= reflection_h(reflection_short_value($job['source'] ?? '—', 80)) ?></code><br><code><?= reflection_h(reflection_short_value($job['delivery'] ?? '—', 80)) ?></code></td>
                                 <td title="<?= reflection_h($job['finished_at'] ?? '') ?>"><?= reflection_h(reflection_relative_time($job['finished_at'] ?? null)) ?></td>
                                 <td><?= reflection_h(reflection_short_value($job['error'] ?? '', 120)) ?></td>
                                 <td><details><summary>JSON</summary><pre><?= reflection_h(json_encode($job, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) ?: '') ?></pre></details></td>
@@ -580,26 +580,26 @@ foreach ($validJobFilters as $filter) {
                     </table>
                 </div>
             <?php else: ?>
-                <nav class="status-tabs log-tabs" aria-label="Bin status filters">
+                <nav class="status-tabs nav nav-pills flex-wrap gap-2 mb-3 log-tabs" aria-label="Bin status filters">
                     <?php foreach ($validJobFilters as $filter): ?>
-                        <a class="<?= $jobStatus === $filter ? 'active' : '' ?>" href="<?= reflection_h(reflection_logs_url(['log' => 'bin', 'job_status' => $filter, 'page' => 1])) ?>"><?= reflection_h($filter) ?> <span><?= (int) ($binTabCounts[$filter] ?? 0) ?></span></a>
+                        <a class="nav-link <?= $jobStatus === $filter ? 'active' : '' ?>" href="<?= reflection_h(reflection_logs_url(['log' => 'bin', 'job_status' => $filter, 'page' => 1])) ?>"><?= reflection_h($filter) ?> <span><?= (int) ($binTabCounts[$filter] ?? 0) ?></span></a>
                     <?php endforeach; ?>
                 </nav>
 
-                <form method="post" id="bin-bulk-form" class="bulk-action-bar">
+                <form method="post" id="bin-bulk-form" class="bulk-action-bar d-flex flex-wrap gap-2 align-items-center mb-3">
                     <input type="hidden" name="form_action" value="logs_bulk_job_action">
-                    <label class="select-all-label"><input type="checkbox" data-select-all data-target-form="bin-bulk-form"> Select all shown</label>
-                    <span class="selection-count" data-selection-count="bin-bulk-form">0 selected</span>
-                    <button class="ghost-button small-button" type="submit" name="bulk_action" value="restore">Restore selected</button>
-                    <button class="danger-button small-button" type="submit" name="bulk_action" value="purge" data-confirm="Delete selected jobs forever?">Delete forever</button>
-                    <button class="danger-button small-button" type="submit" name="bulk_action" value="empty_bin" data-confirm="Empty the entire bin forever?">Empty bin</button>
+                    <label class="select-all-label form-check d-flex gap-2 align-items-center"><input type="checkbox" data-select-all data-target-form="bin-bulk-form"> Select all shown</label>
+                    <span class="selection-count text-secondary small" data-selection-count="bin-bulk-form">0 selected</span>
+                    <button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit" name="bulk_action" value="restore">Restore selected</button>
+                    <button class="danger-button btn btn-outline-danger small-button btn-sm" type="submit" name="bulk_action" value="purge" data-confirm="Delete selected jobs forever?">Delete forever</button>
+                    <button class="danger-button btn btn-outline-danger small-button btn-sm" type="submit" name="bulk_action" value="empty_bin" data-confirm="Empty the entire bin forever?">Empty bin</button>
                 </form>
 
-                <div class="table-wrap">
-                    <table>
+                <div class="table-wrap table-responsive">
+                    <table class="table table-sm table-hover align-middle mb-0">
                         <thead><tr><th>Select</th><th>Job</th><th>Task</th><th>Status</th><th>Worker</th><th>Source / delivery</th><th>Deleted</th><th>Error</th><th>Actions</th><th>Raw</th></tr></thead>
                         <tbody>
-                        <?php if ($binJobs === []): ?><tr><td colspan="10" class="empty">The bin is empty for this filter.</td></tr><?php endif; ?>
+                        <?php if ($binJobs === []): ?><tr><td colspan="10" class="empty text-secondary text-center py-4">The bin is empty for this filter.</td></tr><?php endif; ?>
                         <?php foreach ($binJobs as $job): ?>
                             <?php $taskId = (string) ($job['task_id'] ?? ''); ?>
                             <tr>
@@ -608,17 +608,17 @@ foreach ($validJobFilters as $filter) {
                                 <td><?= reflection_h($job['module'] ?? '—') ?></td>
                                 <td><span class="badge <?= reflection_h(reflection_status_class($job['status'] ?? 'unknown')) ?>"><?= reflection_h($job['status'] ?? 'unknown') ?></span></td>
                                 <td><?= reflection_h($job['worker'] ?? '—') ?></td>
-                                <td class="path-cell"><code><?= reflection_h(reflection_short_value($job['source'] ?? '—', 80)) ?></code><br><code><?= reflection_h(reflection_short_value($job['delivery'] ?? '—', 80)) ?></code></td>
+                                <td class="path-cell text-break"><code><?= reflection_h(reflection_short_value($job['source'] ?? '—', 80)) ?></code><br><code><?= reflection_h(reflection_short_value($job['delivery'] ?? '—', 80)) ?></code></td>
                                 <td title="<?= reflection_h($job['deleted_at'] ?? '') ?>"><?= reflection_h(reflection_relative_time($job['deleted_at'] ?? null)) ?></td>
                                 <td><?= reflection_h(reflection_short_value($job['error'] ?? '', 120)) ?></td>
-                                <td><div class="button-row table-actions"><form method="post"><input type="hidden" name="form_action" value="logs_bulk_job_action"><input type="hidden" name="task_ids[]" value="<?= reflection_h($taskId) ?>"><button class="ghost-button small-button" type="submit" name="bulk_action" value="restore">Restore</button></form><form method="post" data-confirm="Delete this job forever?"><input type="hidden" name="form_action" value="logs_bulk_job_action"><input type="hidden" name="task_ids[]" value="<?= reflection_h($taskId) ?>"><button class="danger-button small-button" type="submit" name="bulk_action" value="purge">Delete forever</button></form></div></td>
+                                <td><div class="button-row d-flex flex-wrap gap-2 table-actions align-items-center"><form method="post"><input type="hidden" name="form_action" value="logs_bulk_job_action"><input type="hidden" name="task_ids[]" value="<?= reflection_h($taskId) ?>"><button class="ghost-button btn btn-outline-primary small-button btn-sm" type="submit" name="bulk_action" value="restore">Restore</button></form><form method="post" data-confirm="Delete this job forever?"><input type="hidden" name="form_action" value="logs_bulk_job_action"><input type="hidden" name="task_ids[]" value="<?= reflection_h($taskId) ?>"><button class="danger-button btn btn-outline-danger small-button btn-sm" type="submit" name="bulk_action" value="purge">Delete forever</button></form></div></td>
                                 <td><details><summary>JSON</summary><pre><?= reflection_h(json_encode($job, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) ?: '') ?></pre></details></td>
                             </tr>
                         <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>
-                <div class="pagination"><a class="<?= (int) $deletedPageData['page'] <= 1 ? 'disabled' : '' ?>" href="<?= reflection_h(reflection_logs_url(['page' => max(1, (int) $deletedPageData['page'] - 1)])) ?>">Previous</a><span>Page <?= (int) $deletedPageData['page'] ?> of <?= (int) $deletedPageData['pages'] ?> · showing <?= count($binJobs) ?> of <?= (int) $deletedPageData['total'] ?></span><a class="<?= (int) $deletedPageData['page'] >= (int) $deletedPageData['pages'] ? 'disabled' : '' ?>" href="<?= reflection_h(reflection_logs_url(['page' => min((int) $deletedPageData['pages'], (int) $deletedPageData['page'] + 1)])) ?>">Next</a></div>
+                <div class="pagination d-flex flex-wrap justify-content-center align-items-center gap-2 my-3"><a class="<?= (int) $deletedPageData['page'] <= 1 ? 'disabled' : '' ?>" href="<?= reflection_h(reflection_logs_url(['page' => max(1, (int) $deletedPageData['page'] - 1)])) ?>">Previous</a><span>Page <?= (int) $deletedPageData['page'] ?> of <?= (int) $deletedPageData['pages'] ?> · showing <?= count($binJobs) ?> of <?= (int) $deletedPageData['total'] ?></span><a class="<?= (int) $deletedPageData['page'] >= (int) $deletedPageData['pages'] ? 'disabled' : '' ?>" href="<?= reflection_h(reflection_logs_url(['page' => min((int) $deletedPageData['pages'], (int) $deletedPageData['page'] + 1)])) ?>">Next</a></div>
             <?php endif; ?>
         </section>
     </main>
@@ -627,7 +627,7 @@ foreach ($validJobFilters as $filter) {
         <p>Dashboard log panels show only the last 5 items. Use this page for detailed review and cleanup.</p>
         <p><a href="index.php">Back to dashboard</a></p>
     </footer>
-    <script src="<?= reflection_h(reflection_asset_url('common.js')) ?>"></script>
-    <script src="<?= reflection_h(reflection_asset_url('logs.js')) ?>"></script>
-</body>
+    <script src="<?= reflection_h(reflection_asset_url('assets/js/common.js')) ?>"></script>
+    <script src="<?= reflection_h(reflection_asset_url('assets/js/logs.js')) ?>"></script>
+<?= reflection_script_links() ?></body>
 </html>
