@@ -1717,7 +1717,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
         <?php endif; ?>
     </footer>
 
-    <script src="<?= reflection_h(reflection_asset_url('common.js')) ?>"></script>
-    <script src="<?= reflection_h(reflection_asset_url('dashboard.js')) ?>"></script>
-</body>
+    <script src="<?= reflection_h(reflection_asset_url('assets/js/common.js')) ?>"></script>
+    <script src="<?= reflection_h(reflection_asset_url('assets/js/dashboard.js')) ?>"></script>
+<?= reflection_script_links() ?></body>
 </html>

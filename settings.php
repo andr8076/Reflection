@@ -472,6 +472,6 @@ $dataDirectory = dirname((string) $config['storage_path']);
         <p>Protect this dashboard with your web server, VPN, or reverse-proxy auth.</p>
         <p><a href="index.php">Back to dashboard</a></p>
     </footer>
-    <script src="<?= reflection_h(reflection_asset_url('settings.js')) ?>"></script>
-</body>
+    <script src="<?= reflection_h(reflection_asset_url('assets/js/settings.js')) ?>"></script>
+<?= reflection_script_links() ?></body>
 </html>

@@ -15,9 +15,12 @@ function assertSameValue($expected, $actual, string $message): void
 
 assertSameValue('&lt;farm&gt;', reflection_h('<farm>'), 'HTML helper should escape output.');
 $stylesheetLinks = reflection_stylesheet_links();
-assertSameValue(true, strpos($stylesheetLinks, 'https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css') !== false, 'Stylesheet helper should include Bootstrap from the official jsDelivr CDN.');
-assertSameValue(true, strpos($stylesheetLinks, 'integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB"') !== false, 'Stylesheet helper should pin Bootstrap with subresource integrity.');
+assertSameValue(true, strpos($stylesheetLinks, 'assets/vendor/bootstrap/bootstrap.min.css?v=') !== false, 'Stylesheet helper should include the versioned bundled Bootstrap stylesheet.');
+assertSameValue(false, strpos($stylesheetLinks, 'cdn.jsdelivr.net') !== false, 'Stylesheet helper should not pull Bootstrap from a CDN.');
 assertSameValue(false, strpos($stylesheetLinks, 'styles.css') !== false, 'Stylesheet helper should rely on Bootstrap without a local stylesheet.');
+$scriptLinks = reflection_script_links();
+assertSameValue(true, strpos($scriptLinks, 'assets/vendor/bootstrap/bootstrap.min.js?v=') !== false, 'Script helper should include the versioned bundled Bootstrap script.');
+assertSameValue(false, strpos($scriptLinks, 'cdn.jsdelivr.net') !== false, 'Script helper should not pull Bootstrap scripts from a CDN.');
 assertSameValue('1.50 KB', reflection_format_bytes(1536), 'Byte helper should format values consistently.');
 assertSameValue('parse failed', reflection_ess_status_label(['ess_soc_status' => 'parse_error']), 'ESS helper should preserve the dashboard label.');
 assertSameValue('abcdef…', reflection_short_value('abcdefgh', 7), 'Short-value helper should preserve truncation behavior.');

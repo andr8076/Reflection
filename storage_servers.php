@@ -263,6 +263,6 @@ if ($editingServer === null) {
         <p>Storage servers live in <code>data/storage_servers.json</code>. Passwords should stay in each worker’s local config.</p>
         <p><a href="index.php">Back to dashboard</a></p>
     </footer>
-    <script src="<?= reflection_h(reflection_asset_url('common.js')) ?>"></script>
-</body>
+    <script src="<?= reflection_h(reflection_asset_url('assets/js/common.js')) ?>"></script>
+<?= reflection_script_links() ?></body>
 </html>
