@@ -97,6 +97,6 @@ $blockedJobs = $store->blockedJobs(300);
     </main>
 
     <footer><p><a href="index.php">Back to dashboard</a></p></footer>
-    <script src="<?= reflection_h(reflection_asset_url('common.js')) ?>"></script>
+    <script src="<?= reflection_h(reflection_asset_url('assets/js/common.js')) ?>"></script>
 <?= reflection_script_links() ?></body>
 </html>

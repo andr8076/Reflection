@@ -10,7 +10,7 @@ function reflection_send_security_headers(): void
 function reflection_stylesheet_links(): string
 {
     $links = [
-        '<link href="bootstrap.min.css" rel="stylesheet">',
+        '<link href="' . reflection_h(reflection_asset_url('assets/vendor/bootstrap/bootstrap.min.css')) . '" rel="stylesheet">',
     ];
 
     return implode(PHP_EOL . '    ', $links) . PHP_EOL;
@@ -19,7 +19,7 @@ function reflection_stylesheet_links(): string
 function reflection_script_links(): string
 {
     $scripts = [
-        '<script src="bootstrap.min.js"></script>',
+        '<script src="' . reflection_h(reflection_asset_url('assets/vendor/bootstrap/bootstrap.min.js')) . '"></script>',
     ];
 
     return implode(PHP_EOL . '    ', $scripts) . PHP_EOL;

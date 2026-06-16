@@ -196,6 +196,6 @@ $presets = [
         <?php endif; ?>
     </section>
 
-    <script src="<?= reflection_h(reflection_asset_url('json_tool.js')) ?>"></script>
+    <script src="<?= reflection_h(reflection_asset_url('assets/js/json_tool.js')) ?>"></script>
 <?= reflection_script_links() ?></body>
 </html>
