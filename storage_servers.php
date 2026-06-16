@@ -264,5 +264,5 @@ if ($editingServer === null) {
         <p><a href="index.php">Back to dashboard</a></p>
     </footer>
     <script src="<?= reflection_h(reflection_asset_url('common.js')) ?>"></script>
-</body>
+<?= reflection_script_links() ?></body>
 </html>

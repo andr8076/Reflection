@@ -473,5 +473,5 @@ $dataDirectory = dirname((string) $config['storage_path']);
         <p><a href="index.php">Back to dashboard</a></p>
     </footer>
     <script src="<?= reflection_h(reflection_asset_url('settings.js')) ?>"></script>
-</body>
+<?= reflection_script_links() ?></body>
 </html>

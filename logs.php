@@ -629,5 +629,5 @@ foreach ($validJobFilters as $filter) {
     </footer>
     <script src="<?= reflection_h(reflection_asset_url('common.js')) ?>"></script>
     <script src="<?= reflection_h(reflection_asset_url('logs.js')) ?>"></script>
-</body>
+<?= reflection_script_links() ?></body>
 </html>

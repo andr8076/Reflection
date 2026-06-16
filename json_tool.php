@@ -197,5 +197,5 @@ $presets = [
     </section>
 
     <script src="<?= reflection_h(reflection_asset_url('json_tool.js')) ?>"></script>
-</body>
+<?= reflection_script_links() ?></body>
 </html>
