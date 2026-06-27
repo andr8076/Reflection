@@ -87,6 +87,61 @@ function reflection_send_json(string $endpoint, string $json, array $config, str
 
     return $body;
 }
+
+function reflection_json_tool_presets(string $version): array
+{
+    $baseWorker = [
+        'pc_id' => 'manual-worker',
+        'version' => $version,
+    ];
+
+    return [
+        'request_task' => array_merge(['action' => 'request_task'], $baseWorker),
+        'confirm_taken' => array_merge([
+            'action' => 'confirm_taken',
+            'task_id' => 'job_1001',
+        ], $baseWorker),
+        'heartbeat_task' => array_merge([
+            'action' => 'heartbeat_task',
+            'task_id' => 'job_1001',
+        ], $baseWorker),
+        'task_stage' => array_merge([
+            'action' => 'task_stage',
+            'task_id' => 'job_1001',
+            'stage' => 'processing',
+            'message' => 'Manual JSON tool stage update.',
+        ], $baseWorker),
+        'report_success' => array_merge([
+            'action' => 'report_done',
+            'task_id' => 'job_1001',
+            'status' => 'success',
+            'error' => '',
+        ], $baseWorker),
+        'report_failed' => array_merge([
+            'action' => 'report_done',
+            'task_id' => 'job_1001',
+            'status' => 'failed',
+            'error' => 'Simulated worker failure.',
+        ], $baseWorker),
+        'confirm_shutdown' => array_merge([
+            'action' => 'confirm_shutdown',
+            'reason' => 'manual_json_tool_check',
+        ], $baseWorker),
+        'register_quarantine' => array_merge([
+            'action' => 'register_quarantine',
+            'quarantine' => [
+                'scheme' => 'sftp',
+                'host' => 'worker.example.test',
+                'port' => 22,
+                'path' => '/mnt/render/.reflection_quarantine',
+                'uri' => 'sftp://worker.example.test/mnt/render/.reflection_quarantine',
+                'file_count' => 0,
+                'size_bytes' => 0,
+            ],
+        ], $baseWorker),
+    ];
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $requestJson = reflection_json_pretty($requestJson);
     if ($endpoint === '') {
@@ -99,35 +154,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-$presets = [
-    'request_task' => [
-        'action' => 'request_task',
-        'pc_id' => 'manual-worker',
-        'version' => $config['required_version'] ?? '',
-    ],
-    'confirm_taken' => [
-        'action' => 'confirm_taken',
-        'pc_id' => 'manual-worker',
-        'version' => $config['required_version'] ?? '',
-        'task_id' => 'job_1001',
-    ],
-    'report_success' => [
-        'action' => 'report_done',
-        'pc_id' => 'manual-worker',
-        'version' => $config['required_version'] ?? '',
-        'task_id' => 'job_1001',
-        'status' => 'success',
-        'error' => '',
-    ],
-    'report_failed' => [
-        'action' => 'report_done',
-        'pc_id' => 'manual-worker',
-        'version' => $config['required_version'] ?? '',
-        'task_id' => 'job_1001',
-        'status' => 'failed',
-        'error' => 'Simulated worker failure.',
-    ],
-];
+$presets = reflection_json_tool_presets((string) ($config['required_version'] ?? ''));
 ?>
 <!doctype html>
 <html lang="en">
