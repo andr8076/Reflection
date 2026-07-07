@@ -14,6 +14,15 @@ function assertSameValue($expected, $actual, string $message): void
 }
 
 assertSameValue('&lt;farm&gt;', reflection_h('<farm>'), 'HTML helper should escape output.');
+assertSameValue(
+    1,
+    reflection_recent_worker_count([
+        ['pc_id' => 'recent-worker', 'last_check_in' => gmdate(DATE_ATOM)],
+        ['pc_id' => 'stale-worker', 'last_check_in' => gmdate(DATE_ATOM, time() - 3600)],
+        ['pc_id' => 'bad-worker', 'last_check_in' => 'not-a-date'],
+    ], 900),
+    'Recent-worker helper should count only non-stale valid worker check-ins.'
+);
 $stylesheetLinks = reflection_stylesheet_links();
 assertSameValue(true, strpos($stylesheetLinks, 'assets/vendor/bootstrap/bootstrap.min.css?v=') !== false, 'Stylesheet helper should include the versioned bundled Bootstrap stylesheet.');
 assertSameValue(false, strpos($stylesheetLinks, 'cdn.jsdelivr.net') !== false, 'Stylesheet helper should not pull Bootstrap from a CDN.');

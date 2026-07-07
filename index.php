@@ -836,6 +836,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'crash_loop_lost_attempts' => (int) ($_POST['crash_loop_lost_attempts'] ?? 2),
             'crash_loop_distinct_workers' => (int) ($_POST['crash_loop_distinct_workers'] ?? 1),
             'ess_soc_url' => trim((string) ($_POST['ess_soc_url'] ?? '')),
+            'ess_soc_refresh_cooldown_seconds' => (int) ($_POST['ess_soc_refresh_cooldown_seconds'] ?? 30),
             'ess_min_soc_percent' => (int) ($_POST['ess_min_soc_percent'] ?? 20),
             'ess_shutdown_below_minimum' => isset($_POST['ess_shutdown_below_minimum']),
             'ess_ignore_when_unavailable' => isset($_POST['ess_ignore_when_unavailable']),

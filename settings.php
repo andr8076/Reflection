@@ -66,6 +66,7 @@ try {
                 'crash_loop_lost_attempts' => (int) ($_POST['crash_loop_lost_attempts'] ?? 2),
                 'crash_loop_distinct_workers' => (int) ($_POST['crash_loop_distinct_workers'] ?? 1),
                 'ess_soc_url' => trim((string) ($_POST['ess_soc_url'] ?? '')),
+                'ess_soc_refresh_cooldown_seconds' => (int) ($_POST['ess_soc_refresh_cooldown_seconds'] ?? 30),
                 'ess_min_soc_percent' => (int) ($_POST['ess_min_soc_percent'] ?? 20),
                 'ess_shutdown_below_minimum' => isset($_POST['ess_shutdown_below_minimum']),
                 'ess_ignore_when_unavailable' => isset($_POST['ess_ignore_when_unavailable']),
@@ -236,6 +237,11 @@ $dataDirectory = dirname((string) $config['storage_path']);
                             ESS SOC URL
                             <input name="ess_soc_url" value="<?= reflection_h($settings['ess_soc_url'] ?? '') ?>" class="form-control" placeholder="http://192.168.1.245:8076">
                             <small>Current SOC is read automatically and shown below. This is the endpoint, not a manual SOC value.</small>
+                        </label>
+                        <label>
+                            ESS refresh cooldown seconds
+                            <input type="number" name="ess_soc_refresh_cooldown_seconds" min="0" max="3600" value="<?= (int) ($settings['ess_soc_refresh_cooldown_seconds'] ?? 30) ?>" class="form-control">
+                            <small>Worker check-ins reuse the last SOC inside this window. Manual "Check ESS now" always refreshes immediately.</small>
                         </label>
                         <label>
                             Demand wake cooldown seconds

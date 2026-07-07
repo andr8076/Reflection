@@ -38,6 +38,7 @@ $data = $store->read();
 $settings = $store->effectiveSettings();
 $servers = $storageStore->enabledServers(true);
 $workers = $data['workers'] ?? [];
+$recentWorkerCount = reflection_recent_worker_count(is_array($workers) ? $workers : [], (int) ($config['stale_after_seconds'] ?? 900));
 $automationRules = [];
 try { $automationRules = (new AutomationStore($dataDirectory, is_array($config['task_specs'] ?? null) ? $config['task_specs'] : []))->rules(); } catch (Throwable $exception) { $automationRules = []; }
 $blockedCount = (int) (($store->jobPage(1, 10, 'blocked')['total'] ?? 0));
@@ -46,7 +47,7 @@ $checks = [];
 $checks[] = reflection_check_row('Data directory writable', is_dir($dataDirectory) && is_writable($dataDirectory), $dataDirectory, 'The web server user must be able to write here.');
 $checks[] = reflection_check_row('Farm store readable', is_file((string) $config['storage_path']) || is_writable($dataDirectory), (string) $config['storage_path']);
 $checks[] = reflection_check_row('Storage servers configured', count($servers) > 0, count($servers) . ' enabled server(s)', 'Add FTP/SFTP endpoints under Storage servers.');
-$checks[] = reflection_check_row('Online/recent workers', count($workers) > 0, count($workers) . ' worker record(s)', 'Start a worker if this is empty.');
+$checks[] = reflection_check_row('Online/recent workers', $recentWorkerCount > 0, $recentWorkerCount . ' recent of ' . count($workers) . ' worker record(s)', 'Start a worker if this is empty or all workers are stale.');
 $checks[] = reflection_check_row('Automation rules', count($automationRules) > 0, count($automationRules) . ' rule(s)', 'Rules are optional but needed for automatic file discovery.');
 $checks[] = reflection_check_row('ESS status', ($settings['ess_soc_status'] ?? '') === 'online' || trim((string) ($settings['ess_soc_url'] ?? '')) === '', (string) ($settings['ess_soc_status'] ?? 'manual') . ' · SOC ' . (int) ($settings['ess_soc_percent'] ?? 100) . '%', (string) ($settings['ess_soc_error'] ?? ''));
 $checks[] = reflection_check_row('Blocked-job queue', $blockedCount === 0, $blockedCount . ' blocked job(s)', 'Review poison files under Blocked jobs.');
