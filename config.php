@@ -219,6 +219,7 @@ function reflection_default_runtime_settings(): array
         'ess_soc_last_checked_at' => null,
         'ess_soc_last_success_at' => null,
         'ess_soc_last_failure_at' => null,
+        'ess_soc_refresh_cooldown_seconds' => 30,
         'idle_shutdown_after_no_job_checks' => 0,
         'prefer_lower_shutdown_layers_for_work' => true,
         'shutdown_debug_mode' => false,
@@ -256,6 +257,7 @@ function reflection_default_allowed_tasks(): array
         'update_worker' => 'Ask a worker to download the latest code, report success, and reboot the farm computer.',
         'wake_farm' => 'Ask a worker to send Wake-on-LAN packets to configured farm computers.',
         'storage_test' => 'Ask a worker to verify read/write/rename/delete access to a configured storage server.',
+        'purge_quarantine' => 'Ask a worker to manually empty a tracked remote overwrite quarantine folder.',
     ];
 }
 

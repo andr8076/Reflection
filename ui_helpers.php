@@ -35,6 +35,24 @@ function reflection_post_bool(string $key): bool
     return isset($_POST[$key]) && in_array((string) $_POST[$key], ['1', 'true', 'yes', 'on'], true);
 }
 
+function reflection_recent_worker_count(array $workers, int $staleAfterSeconds): int
+{
+    $cutoff = time() - max(1, $staleAfterSeconds);
+    $recent = 0;
+    foreach ($workers as $worker) {
+        if (!is_array($worker)) {
+            continue;
+        }
+
+        $lastCheckIn = strtotime((string) ($worker['last_check_in'] ?? ''));
+        if ($lastCheckIn !== false && $lastCheckIn >= $cutoff) {
+            $recent++;
+        }
+    }
+
+    return $recent;
+}
+
 function reflection_parse_machine_list(string $raw): array
 {
     $machines = [];

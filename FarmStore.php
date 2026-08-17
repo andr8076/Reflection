@@ -1444,6 +1444,7 @@ final class FarmStore
             $data['settings']['ess_soc_status'] = $this->cleanEssStatus((string) ($data['settings']['ess_soc_status'] ?? 'manual'));
             $data['settings']['ess_soc_error'] = $this->limitString((string) ($data['settings']['ess_soc_error'] ?? ''), 500);
             $data['settings']['ess_soc_raw_sample'] = $this->limitString((string) ($data['settings']['ess_soc_raw_sample'] ?? ''), 500);
+            $data['settings']['ess_soc_refresh_cooldown_seconds'] = max(0, min(3600, (int) ($data['settings']['ess_soc_refresh_cooldown_seconds'] ?? 30)));
             $data['settings']['idle_shutdown_after_no_job_checks'] = max(0, (int) ($data['settings']['idle_shutdown_after_no_job_checks'] ?? 0));
             if ($data['settings']['idle_shutdown_after_no_job_checks'] !== $previousIdleShutdownLimit) {
                 foreach (($data['workers'] ?? []) as $workerId => $worker) {
@@ -1533,7 +1534,7 @@ final class FarmStore
         return $data['machines'] ?? [];
     }
 
-    public function refreshEssSocFromConfiguredEndpoint(): ?int
+    public function refreshEssSocFromConfiguredEndpoint(bool $force = true): ?int
     {
         $settings = $this->effectiveSettings();
         $url = trim((string) ($settings['ess_soc_url'] ?? ''));
@@ -1542,6 +1543,10 @@ final class FarmStore
                 $this->recordEssSocStatus('manual', null, 'Manual SOC value is being used because no ESS SOC URL is configured.');
             }
             return null;
+        }
+
+        if (!$force && !$this->essSocRefreshDue($settings)) {
+            return is_int($settings['ess_soc_percent'] ?? null) ? (int) $settings['ess_soc_percent'] : null;
         }
 
         $checkedAt = gmdate(DATE_ATOM);
@@ -3086,6 +3091,26 @@ final class FarmStore
                 'raw_sample' => $sample,
             ]);
         }
+    }
+
+    private function essSocRefreshDue(array $settings): bool
+    {
+        $cooldown = max(0, (int) ($settings['ess_soc_refresh_cooldown_seconds'] ?? 30));
+        if ($cooldown === 0) {
+            return true;
+        }
+
+        $lastChecked = trim((string) ($settings['ess_soc_last_checked_at'] ?? ''));
+        if ($lastChecked === '') {
+            return true;
+        }
+
+        $lastTimestamp = strtotime($lastChecked);
+        if ($lastTimestamp === false) {
+            return true;
+        }
+
+        return (time() - $lastTimestamp) >= $cooldown;
     }
 
     private function cleanNullableBool($value): ?bool

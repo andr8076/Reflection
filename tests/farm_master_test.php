@@ -33,7 +33,9 @@ assertSameValue(null, $defaultConfig['storage_warning'], 'Writable default farm 
 assertSameValue(true, array_key_exists('wake_farm', $defaultConfig['allowed_tasks']), 'Wake-on-LAN should be an allowed master task.');
 assertSameValue(true, array_key_exists('update_worker', $defaultConfig['allowed_tasks']), 'Remote worker update should be an allowed master task.');
 assertSameValue(true, array_key_exists('h265_encode', $defaultConfig['allowed_tasks']), 'H.265 encoder should be an allowed master task.');
+assertSameValue(true, array_key_exists('purge_quarantine', $defaultConfig['allowed_tasks']), 'Quarantine purge should be a canonical allowed control task.');
 assertSameValue(true, $defaultConfig['runtime_defaults']['auto_wake_for_queued_jobs'], 'Demand-based Wake-on-LAN should default to enabled.');
+assertSameValue(30, $defaultConfig['runtime_defaults']['ess_soc_refresh_cooldown_seconds'], 'ESS refreshes should default to a short API check-in cooldown.');
 assertSameValue(false, $defaultConfig['runtime_defaults']['shutdown_debug_mode'], 'Shutdown debug mode should default to disabled so server shutdown requests power off workers.');
 
 assertSameValue('default', $defaultConfig['farm_id'], 'Default farm id should come from farm settings.');
@@ -133,6 +135,11 @@ assertSameValue(97, $socStore->refreshEssSocFromConfiguredEndpoint(), 'Plain fra
 assertSameValue(97, $socStore->effectiveSettings()['ess_soc_percent'], 'Parsed SOC should be stored as percent.');
 assertSameValue('online', $socStore->effectiveSettings()['ess_soc_status'], 'Valid SOC refresh should mark ESS online.');
 assertSameValue(null, $socStore->effectiveSettings()['ess_charging'], 'Plain SOC endpoints should leave charging state unknown.');
+$firstCheckedAt = $socStore->effectiveSettings()['ess_soc_last_checked_at'];
+file_put_contents($socEndpointPath, '0.25');
+assertSameValue(97, $socStore->refreshEssSocFromConfiguredEndpoint(false), 'Non-forced ESS refreshes should reuse the cached SOC inside the cooldown window.');
+assertSameValue($firstCheckedAt, $socStore->effectiveSettings()['ess_soc_last_checked_at'], 'Cached ESS refreshes should not update the last-checked timestamp.');
+assertSameValue(25, $socStore->refreshEssSocFromConfiguredEndpoint(true), 'Forced ESS refreshes should bypass the check-in cooldown.');
 $socStore->updateSettings(['ess_min_soc_percent' => 50, 'ess_charging_override_enabled' => true]);
 file_put_contents($socEndpointPath, '{"soc":0.393197836719441,"charging":false}');
 assertSameValue(39, $socStore->refreshEssSocFromConfiguredEndpoint(), 'ESS JSON fractional SOC should parse from the top-level soc key.');

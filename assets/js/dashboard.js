@@ -223,26 +223,57 @@
         }
     }
 
+    function cleanDashboardFragment(fragment) {
+        fragment.querySelectorAll('script, iframe, object, embed').forEach(function (node) {
+            node.remove();
+        });
+        fragment.querySelectorAll('*').forEach(function (node) {
+            Array.prototype.slice.call(node.attributes).forEach(function (attribute) {
+                var name = attribute.name.toLowerCase();
+                var value = String(attribute.value || '').trim().toLowerCase();
+                if (name.indexOf('on') === 0 || ((name === 'href' || name === 'src' || name === 'formaction') && value.indexOf('javascript:') === 0)) {
+                    node.removeAttribute(attribute.name);
+                }
+            });
+        });
+        return fragment;
+    }
+
+    function fragmentFromHtml(element, html) {
+        var range = document.createRange();
+        range.selectNodeContents(element);
+        return cleanDashboardFragment(range.createContextualFragment(String(html || '')));
+    }
+
+    function setSafeHtml(element, html) {
+        if (element && typeof html === 'string') {
+            element.replaceChildren(fragmentFromHtml(element, html));
+        }
+    }
+
+    function replaceWithSafeHtml(element, html) {
+        if (!element || typeof html !== 'string') {
+            return;
+        }
+
+        var fragment = fragmentFromHtml(element, html.trim());
+        if (fragment.childElementCount === 1) {
+            element.replaceWith(fragment.firstElementChild);
+        }
+    }
+
     function updateDashboardSections(data) {
         var metricsSection = document.getElementById('metrics-section');
-        if (metricsSection && data.metrics) {
-            metricsSection.innerHTML = data.metrics;
-        }
+        setSafeHtml(metricsSection, data.metrics);
 
         var workerSummary = document.getElementById('worker-summary');
-        if (workerSummary && typeof data.worker_summary === 'string') {
-            workerSummary.innerHTML = data.worker_summary;
-        }
+        setSafeHtml(workerSummary, data.worker_summary);
 
         var workersGrid = document.getElementById('workers-grid');
-        if (workersGrid && typeof data.workers === 'string') {
-            workersGrid.innerHTML = data.workers;
-        }
+        setSafeHtml(workersGrid, data.workers);
 
         var powerPanel = document.getElementById('power-panel');
-        if (powerPanel && typeof data.power === 'string') {
-            powerPanel.outerHTML = data.power;
-        }
+        replaceWithSafeHtml(powerPanel, data.power);
 
         var jobSummary = document.getElementById('jobs-summary');
         if (jobSummary && data.job_summary) {
@@ -250,29 +281,19 @@
         }
 
         var jobTabs = document.getElementById('job-status-tabs');
-        if (jobTabs && data.job_tabs) {
-            jobTabs.innerHTML = data.job_tabs;
-        }
+        setSafeHtml(jobTabs, data.job_tabs);
 
         var jobsTbody = document.getElementById('jobs-tbody');
-        if (jobsTbody && typeof data.jobs === 'string') {
-            jobsTbody.innerHTML = data.jobs;
-        }
+        setSafeHtml(jobsTbody, data.jobs);
 
         var jobsPagination = document.getElementById('jobs-pagination');
-        if (jobsPagination && data.job_pagination) {
-            jobsPagination.innerHTML = data.job_pagination;
-        }
+        setSafeHtml(jobsPagination, data.job_pagination);
 
         var eventsTbody = document.getElementById('events-tbody');
-        if (eventsTbody && data.events) {
-            eventsTbody.innerHTML = data.events;
-        }
+        setSafeHtml(eventsTbody, data.events);
 
         var filesTbody = document.getElementById('files-tbody');
-        if (filesTbody && data.files) {
-            filesTbody.innerHTML = data.files;
-        }
+        setSafeHtml(filesTbody, data.files);
 
         syncJobFormFromData(data);
     }

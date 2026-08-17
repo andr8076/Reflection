@@ -73,7 +73,7 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
 
     $capabilities = is_array($payload['capabilities'] ?? null) ? $payload['capabilities'] : [];
     $store->recordWorkerCheckIn($pcId, $version, $capabilities);
-    $store->refreshEssSocFromConfiguredEndpoint();
+    $store->refreshEssSocFromConfiguredEndpoint(false);
 
     $settings = $store->effectiveSettings();
     $masterCommit = reflection_api_master_commit($config);
@@ -323,9 +323,7 @@ function reflection_api_shutdown_allowed(FarmStore $store, string $pcId, array $
 
 function reflection_api_task_payload(array $job, array $config, array $settings, int $allowedWorkers, ?FarmStore $store = null, string $pcId = ''): array
 {
-    $shutdownRequested = false;
     $shutdownLayer = $store !== null && $pcId !== '' ? reflection_api_shutdown_layer_payload($store, $pcId, $config) : ['allowed' => true];
-    $shutdownAfterTask = $shutdownRequested && !empty($shutdownLayer['allowed']);
 
     $task = [
         'task_id' => $job['task_id'],
@@ -333,17 +331,12 @@ function reflection_api_task_payload(array $job, array $config, array $settings,
         'source' => $job['source'],
         'delivery' => $job['delivery'],
         'overwrite_allowed' => (bool) $job['overwrite_allowed'],
-        'shutdown_after_task' => $shutdownAfterTask,
         'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
         'shutdown_layer' => $shutdownLayer,
         'quarantine_keep_days' => max(1, (int) ($settings['quarantine_keep_days'] ?? 14)),
         'quarantine_max_gb' => max(0.0, (float) ($settings['quarantine_max_gb'] ?? 100)),
         'worker_temp_max_age_hours' => max(1, (int) ($settings['worker_temp_max_age_hours'] ?? 24)),
     ];
-
-    if ($shutdownRequested && !$shutdownAfterTask) {
-        $task['shutdown_blocked_by_layer'] = true;
-    }
 
     $transferServer = reflection_worker_transfer_server_for_job($job, $config);
     if ($transferServer !== null && (!reflection_is_control_task((string) $job['module']) || in_array((string) $job['module'], ['storage_test', 'purge_quarantine'], true))) {
