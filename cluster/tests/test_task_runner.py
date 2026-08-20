@@ -20,6 +20,8 @@ class TaskDiscoveryTest(unittest.TestCase):
             tasks_dir = Path(temp_dir)
             (tasks_dir / "broken.py").write_text("raise RuntimeError('broken import')\n", encoding="utf-8")
             (tasks_dir / "working.py").write_text(
+                "TASK_NAME = 'working'\n"
+                "TASK_SPEC = {'name': 'working', 'production_ready': True, 'source': {'mode': 'required'}, 'delivery': {'mode': 'required'}, 'output': {'kind': 'file'}}\n"
                 "def run(source, delivery, overwrite_allowed):\n"
                 "    return {'success': source == 'input' and delivery == 'output'}\n",
                 encoding="utf-8",

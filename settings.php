@@ -51,6 +51,10 @@ try {
                 if (!empty($location['server_id'])) {
                     $jobExtra['transfer_server_id'] = (string) $location['server_id'];
                 }
+                $requiredScheme = strtolower(trim((string) ($location['scheme'] ?? '')));
+                if (in_array($requiredScheme, ['ftp', 'ftps', 'sftp'], true)) {
+                    $jobExtra['required_transfer_scheme'] = $requiredScheme;
+                }
                 $job = $store->createJob('purge_quarantine', $sourceJson, '', false, $jobExtra);
                 $store->markQuarantinePurgeQueued((string) ($location['id'] ?? $quarantineId), (string) ($job['task_id'] ?? ''));
                 $message = 'Queued quarantine delete job ' . (string) ($job['task_id'] ?? '') . ' for ' . (string) ($location['uri'] ?? $location['path'] ?? 'the selected folder') . '.';
@@ -75,8 +79,6 @@ try {
                 'prefer_lower_shutdown_layers_for_work' => isset($_POST['prefer_lower_shutdown_layers_for_work']),
                 'shutdown_debug_mode' => isset($_POST['shutdown_debug_mode']),
                 'auto_wake_for_queued_jobs' => isset($_POST['auto_wake_for_queued_jobs']),
-                'automation_run_due_on_worker_checkin' => isset($_POST['automation_run_due_on_worker_checkin']),
-                'automation_checkin_cooldown_seconds' => (int) ($_POST['automation_checkin_cooldown_seconds'] ?? 60),
                 'wake_dispatch_mode' => (string) ($_POST['wake_dispatch_mode'] ?? 'worker_relay'),
                 'auto_wake_cooldown_seconds' => (int) ($_POST['auto_wake_cooldown_seconds'] ?? 300),
                 'auto_wake_max_targets_per_run' => (int) ($_POST['auto_wake_max_targets_per_run'] ?? 20),
@@ -86,6 +88,7 @@ try {
                 'event_log_keep_lines' => (int) ($_POST['event_log_keep_lines'] ?? 1000),
                 'file_history_keep_paths' => (int) ($_POST['file_history_keep_paths'] ?? 500),
                 'file_history_keep_entries_per_path' => (int) ($_POST['file_history_keep_entries_per_path'] ?? 10),
+                'job_lease_seconds' => (int) ($_POST['job_lease_seconds'] ?? 180),
                 'job_archive_keep_lines' => (int) ($_POST['job_archive_keep_lines'] ?? 5000),
                 'worker_temp_max_age_hours' => (int) ($_POST['worker_temp_max_age_hours'] ?? 24),
                 'quarantine_keep_days' => (int) ($_POST['quarantine_keep_days'] ?? 14),
@@ -189,6 +192,11 @@ $dataDirectory = dirname((string) $config['storage_path']);
                             <input type="number" name="stale_max_retries" min="0" value="<?= (int) ($settings['stale_max_retries'] ?? 1) ?>" class="form-control">
                         </label>
                         <label>
+                            Job lease seconds
+                            <input type="number" name="job_lease_seconds" min="30" max="3600" value="<?= (int) ($settings['job_lease_seconds'] ?? 180) ?>" class="form-control">
+                            <small>Workers renew this lease while processing. Unacknowledged workers stop before it expires; the master tick then recovers the job.</small>
+                        </label>
+                        <label>
                             Idle no-job polls before shutdown
                             <input type="number" name="idle_shutdown_after_no_job_checks" min="0" value="<?= (int) ($settings['idle_shutdown_after_no_job_checks'] ?? 0) ?>" class="form-control">
                             <small>Counts consecutive no-job polls. Changing this value restarts the idle counter so old polls cannot trigger an instant shutdown.</small>
@@ -241,7 +249,7 @@ $dataDirectory = dirname((string) $config['storage_path']);
                         <label>
                             ESS refresh cooldown seconds
                             <input type="number" name="ess_soc_refresh_cooldown_seconds" min="0" max="3600" value="<?= (int) ($settings['ess_soc_refresh_cooldown_seconds'] ?? 30) ?>" class="form-control">
-                            <small>Worker check-ins reuse the last SOC inside this window. Manual "Check ESS now" always refreshes immediately.</small>
+                            <small>The master tick reuses the last SOC inside this window. Manual "Check ESS now" always refreshes immediately.</small>
                         </label>
                         <label>
                             Demand wake cooldown seconds
@@ -300,18 +308,8 @@ $dataDirectory = dirname((string) $config['storage_path']);
                 </div>
 
                 <div class="settings-section-box bg-light border rounded-3 p-3">
-                    <h3>Automation trigger policy</h3>
-                    <div class="settings-grid row g-3">
-                        <label class="check-row form-check d-flex gap-2 align-items-center">
-                            <input type="checkbox" name="automation_run_due_on_worker_checkin" value="1" <?= !empty($settings['automation_run_due_on_worker_checkin']) ? 'checked' : '' ?>>
-                            Run due automation scans when a worker checks in
-                        </label>
-                        <label>
-                            Automation check-in cooldown seconds
-                            <input type="number" name="automation_checkin_cooldown_seconds" min="0" max="3600" value="<?= (int) ($settings['automation_checkin_cooldown_seconds'] ?? 60) ?>" class="form-control">
-                            <small>Prevents several farm PCs that boot together from all starting automation scans.</small>
-                        </label>
-                    </div>
+                    <h3>Master tick</h3>
+                    <p class="mb-0">Recurring work has one owner: <code>php automation_tick.php</code>. Schedule it once per minute for automations, ESS refresh, lease recovery, demand wake, and retention maintenance.</p>
                 </div>
 
                 <div class="settings-section-box bg-light border rounded-3 p-3">

@@ -224,8 +224,6 @@ function reflection_default_runtime_settings(): array
         'prefer_lower_shutdown_layers_for_work' => true,
         'shutdown_debug_mode' => false,
         'auto_wake_for_queued_jobs' => true,
-        'automation_run_due_on_worker_checkin' => true,
-        'automation_checkin_cooldown_seconds' => 60,
         'wake_dispatch_mode' => 'worker_relay',
         'auto_wake_cooldown_seconds' => 300,
         'auto_wake_max_targets_per_run' => 20,
@@ -239,14 +237,13 @@ function reflection_default_runtime_settings(): array
         'event_log_keep_lines' => 1000,
         'file_history_keep_paths' => 500,
         'file_history_keep_entries_per_path' => 10,
+        'job_lease_seconds' => 180,
     ];
 }
 
 function reflection_default_allowed_tasks(): array
 {
     return [
-        'dummy_task' => 'Placeholder pipeline test task.',
-        'render_frame' => 'Render a frame with the configured worker renderer.',
         'h265_encode' => 'Transcode the main video stream to H.265/HEVC MKV while preserving audio, subtitles, chapters, attachments, and metadata.',
         'compress_archive' => 'Compress a file or directory into a .zip archive.',
         'invert_image' => 'Invert an image while preserving alpha transparency when possible.',

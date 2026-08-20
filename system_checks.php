@@ -7,6 +7,7 @@ require_once __DIR__ . '/FarmStore.php';
 require_once __DIR__ . '/StorageStore.php';
 require_once __DIR__ . '/AutomationStore.php';
 require_once __DIR__ . '/ui_helpers.php';
+require_once __DIR__ . '/MasterTick.php';
 
 reflection_send_security_headers();
 
@@ -25,7 +26,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $serverId = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($_POST['server_id'] ?? '')) ?: '';
             $server = $storageStore->server($serverId);
             if ($server === null) throw new RuntimeException('Choose a storage server to test.');
-            $job = $store->createJob('storage_test', json_encode(['server_id' => $serverId], JSON_UNESCAPED_SLASHES), '', false, ['transfer_server_id' => $serverId]);
+            $job = $store->createJob('storage_test', json_encode(['server_id' => $serverId], JSON_UNESCAPED_SLASHES), '', false, [
+                'transfer_server_id' => $serverId,
+                'required_transfer_scheme' => (string) ($server['scheme'] ?? 'ftp'),
+            ]);
             $message = 'Queued storage test job ' . ($job['task_id'] ?? '') . '. An online worker will perform the real credential/read-write test.';
         } elseif ($action === 'refresh_ess') {
             $soc = $store->refreshEssSocFromConfiguredEndpoint();
@@ -43,11 +47,25 @@ $automationRules = [];
 try { $automationRules = (new AutomationStore($dataDirectory, is_array($config['task_specs'] ?? null) ? $config['task_specs'] : []))->rules(); } catch (Throwable $exception) { $automationRules = []; }
 $blockedCount = (int) (($store->jobPage(1, 10, 'blocked')['total'] ?? 0));
 $archive = $store->archiveInfo();
+$masterTick = reflection_read_master_tick_status($dataDirectory);
+$masterTickAt = strtotime((string) ($masterTick['finished_at'] ?? ''));
+$masterTickHealthy = ($masterTick['status'] ?? '') === 'ok'
+    && $masterTickAt !== false
+    && (time() - $masterTickAt) <= 180;
+$readyWorkerCount = 0;
+foreach ($workers as $worker) {
+    $capabilities = is_array($worker['capabilities'] ?? null) ? $worker['capabilities'] : [];
+    if (!empty($capabilities['task_isolation']) && !empty($capabilities['show_task_terminal']) && !empty($capabilities['terminal_available'])) {
+        $readyWorkerCount++;
+    }
+}
 $checks = [];
 $checks[] = reflection_check_row('Data directory writable', is_dir($dataDirectory) && is_writable($dataDirectory), $dataDirectory, 'The web server user must be able to write here.');
 $checks[] = reflection_check_row('Farm store readable', is_file((string) $config['storage_path']) || is_writable($dataDirectory), (string) $config['storage_path']);
 $checks[] = reflection_check_row('Storage servers configured', count($servers) > 0, count($servers) . ' enabled server(s)', 'Add FTP/SFTP endpoints under Storage servers.');
 $checks[] = reflection_check_row('Online/recent workers', $recentWorkerCount > 0, $recentWorkerCount . ' recent of ' . count($workers) . ' worker record(s)', 'Start a worker if this is empty or all workers are stale.');
+$checks[] = reflection_check_row('Visible-terminal workers', $readyWorkerCount > 0, $readyWorkerCount . ' worker(s) report visible isolated execution ready', 'Install a supported terminal emulator on at least one worker.');
+$checks[] = reflection_check_row('Master tick', $masterTickHealthy, $masterTickHealthy ? 'Last completed ' . reflection_relative_time((string) ($masterTick['finished_at'] ?? '')) : (string) ($masterTick['error'] ?? 'No recent successful tick'), 'Schedule php automation_tick.php once per minute.');
 $checks[] = reflection_check_row('Automation rules', count($automationRules) > 0, count($automationRules) . ' rule(s)', 'Rules are optional but needed for automatic file discovery.');
 $checks[] = reflection_check_row('ESS status', ($settings['ess_soc_status'] ?? '') === 'online' || trim((string) ($settings['ess_soc_url'] ?? '')) === '', (string) ($settings['ess_soc_status'] ?? 'manual') . ' · SOC ' . (int) ($settings['ess_soc_percent'] ?? 100) . '%', (string) ($settings['ess_soc_error'] ?? ''));
 $checks[] = reflection_check_row('Blocked-job queue', $blockedCount === 0, $blockedCount . ' blocked job(s)', 'Review poison files under Blocked jobs.');

@@ -67,7 +67,10 @@ try {
             if ($server === null) {
                 throw new RuntimeException('Choose a saved storage server to test.');
             }
-            $job = $farmStore->createJob('storage_test', json_encode(['server_id' => $id], JSON_UNESCAPED_SLASHES), '', false, ['transfer_server_id' => $id]);
+            $job = $farmStore->createJob('storage_test', json_encode(['server_id' => $id], JSON_UNESCAPED_SLASHES), '', false, [
+                'transfer_server_id' => $id,
+                'required_transfer_scheme' => (string) ($server['scheme'] ?? 'ftp'),
+            ]);
             $message = 'Queued storage test job ' . ($job['task_id'] ?? '') . '. The next worker that checks in will test this server using its local login.';
             $editingId = $id;
         }

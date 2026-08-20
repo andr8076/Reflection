@@ -1,4 +1,4 @@
-"""Batch transcode videos to H.265/HEVC MKV outputs while preserving movie streams.
+"""Transcode one video to H.265/HEVC MKV while preserving movie streams.
 
 This module also exposes an optional H.265 preflight helper for Reflection
 automation command filters. The task never runs the sample/quality preflight
@@ -26,15 +26,20 @@ TASK_SPEC_JSON = r'''
 {
   "name": "h265_encode",
   "description": "Transcode the main video stream to H.265/HEVC MKV while preserving the rest of the movie structure.",
+  "production_ready": true,
+  "requirements": {
+    "commands": ["ffmpeg", "ffprobe"],
+    "ffmpeg_encoders": ["libx265"]
+  },
   "source": {
     "mode": "required",
-    "label": "Source video or folder",
-    "help": "A video file or folder containing video files. JSON options may tune encoder mode, encode_profile, recursion, extension filters, and worker-side skip_hevc behavior. encode_profile defaults to auto, which uses the 4k profile for 4K sources and standard for everything else."
+    "label": "Source video",
+    "help": "One video file. When a folder is submitted, the master expands it into one independently scheduled job per video. JSON options may tune encoder mode, encode_profile, and worker-side skip_hevc behavior."
   },
   "delivery": {
     "mode": "auto",
     "label": "H.265 MKV output",
-    "help": "Automatically written beside each source as {name}_h265.mkv. Audio, subtitles, chapters, attachments, and metadata are copied when FFmpeg can preserve them.",
+    "help": "Automatically written beside the source as {name}_h265.mkv. Audio, subtitles, chapters, attachments, and metadata are copied when FFmpeg can preserve them.",
     "template": "{dir}/{name}_h265.mkv",
     "extension": ".mkv"
   },
@@ -88,7 +93,7 @@ TASK_SPEC_JSON = r'''
     }
   },
   "output": {
-    "kind": "file_or_folder",
+    "kind": "file",
     "extension": ".mkv",
     "container": "mkv",
     "preserve_streams": true,
@@ -103,20 +108,6 @@ TASK_SPEC_JSON = r'''
 '''
 TASK_SPEC = json.loads(TASK_SPEC_JSON)
 
-
-COMMON_VIDEO_EXTENSIONS = {
-    "mp4",
-    "mkv",
-    "mov",
-    "avi",
-    "webm",
-    "m4v",
-    "ts",
-    "mts",
-    "m2ts",
-    "wmv",
-    "flv",
-}
 
 EFFICIENT_CODECS = {"hevc", "h265", "av1", "vp9"}
 SOFTWARE_ARGS = ["-c:v:0", "libx265", "-crf", "20", "-preset", "slow"]
@@ -219,58 +210,42 @@ def install():
 
 
 def run(source, delivery, overwrite_allowed):
-    """Transcode one source file or every matching video in a source folder."""
+    """Transcode exactly one source file; folders are expanded by the master."""
     options = _parse_options(source)
     input_path = Path(options["path"]).expanduser()
     if not input_path.exists():
         raise FileNotFoundError(f"Source path does not exist: {input_path}")
+    if not input_path.is_file():
+        raise IsADirectoryError(
+            "h265_encode accepts one video per job. Submit the folder through the "
+            "master dashboard so it can create one job for each video."
+        )
 
     _require_tool("ffmpeg")
     _require_tool("ffprobe")
 
-    allowed_extensions = _normalize_extensions(options.get("extensions"))
-    recursive = _option_enabled(options.get("recursive", False))
     skip_hevc = _option_enabled(options.get("skip_hevc", True))
     delivery_path = Path(delivery).expanduser() if delivery else None
+    output_file = _output_path(input_path, input_path, delivery_path, 1)
+    if output_file.suffix.lower() != ".mkv":
+        raise ValueError(f"h265_encode delivery must end with .mkv: {output_file}")
+    if output_file.exists() and not overwrite_allowed:
+        raise FileExistsError(f"Target delivery file exists and overwrite is disabled: {output_file}")
 
-    input_files = _collect_files(input_path, allowed_extensions, recursive)
-    if not input_files:
-        raise FileNotFoundError(f"No matching video files found under: {input_path}")
+    analysis = _analyze_video(input_path)
+    if analysis["codec"] == "hevc" and skip_hevc:
+        message = f"Skipped source because it is already HEVC: {input_path}"
+        logging.info(message)
+        return {"success": True, "skipped": True, "message": message, "cleanup_source": False}
 
-    logging.info("h265_encode found %s matching source file(s).", len(input_files))
-    encoded_count = 0
-    skipped_count = 0
-    skip_reasons: list[str] = []
+    profile_name, encoder_args, pixel_format_args = _encoder_for_analysis(options, analysis)
+    logging.info("Using H.265 encode profile %s for %s.", profile_name, input_path)
+    if analysis["height"] > 1080:
+        logging.warning("%s is %sp; keeping original resolution.", input_path, analysis["height"])
 
-    for input_file in input_files:
-        output_file = _output_path(input_file, input_path, delivery_path, len(input_files))
-        if output_file.suffix.lower() != ".mkv":
-            raise ValueError(f"h265_encode delivery must end with .mkv: {output_file}")
-        if output_file.exists() and not overwrite_allowed:
-            raise FileExistsError(f"Target delivery file exists and overwrite is disabled: {output_file}")
-
-        analysis = _analyze_video(input_file)
-        if analysis["codec"] == "hevc" and skip_hevc:
-            reason = f"already HEVC: {input_file}"
-            logging.info("Skipping %s", reason)
-            skipped_count += 1
-            skip_reasons.append(reason)
-            continue
-
-        profile_name, encoder_args, pixel_format_args = _encoder_for_analysis(options, analysis)
-        logging.info("Using H.265 encode profile %s for %s.", profile_name, input_file)
-
-        if analysis["height"] > 1080:
-            logging.warning("%s is %sp; keeping original resolution.", input_file, analysis["height"])
-
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        _encode_file(input_file, output_file, encoder_args, pixel_format_args)
-        encoded_count += 1
-
-    if skip_reasons and encoded_count == 0:
-        message = f"Encoded 0 MKV file(s); skipped {skipped_count} file(s). " + "; ".join(skip_reasons[:5])
-    else:
-        message = f"Encoded {encoded_count} MKV file(s); skipped {skipped_count} file(s)."
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    _encode_file(input_path, output_file, encoder_args, pixel_format_args)
+    message = f"Encoded 1 MKV file: {output_file}"
     logging.info("h265_encode complete. %s", message)
     return {"success": True, "message": message, "cleanup_source": False}
 
@@ -714,32 +689,6 @@ def _install_system_packages(packages: list[str]) -> None:
     logging.info("Installing h265_encode system dependencies with apt: %s", ", ".join(packages))
     subprocess.run([*prefix, apt, "update", "-y"], check=False, env=env)
     subprocess.run([*prefix, apt, "install", "-y", *packages], check=False, env=env)
-
-
-def _normalize_extensions(extensions: Any):
-    if extensions is None or extensions == [] or extensions == "":
-        return COMMON_VIDEO_EXTENSIONS
-
-    if isinstance(extensions, str):
-        extensions = extensions.replace(",", " ").split()
-
-    normalized = {str(extension).lower().lstrip(".") for extension in extensions}
-    normalized.discard("")
-    if not normalized:
-        raise ValueError("Extension filter was provided but no valid extensions were found.")
-    return normalized
-
-
-def _collect_files(input_path, allowed_extensions, recursive):
-    if input_path.is_file():
-        return [input_path] if input_path.suffix.lower().lstrip(".") in allowed_extensions else []
-
-    pattern = "**/*" if recursive else "*"
-    return sorted(
-        path
-        for path in input_path.glob(pattern)
-        if path.is_file() and path.suffix.lower().lstrip(".") in allowed_extensions
-    )
 
 
 def _detected_hardware():

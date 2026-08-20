@@ -315,11 +315,21 @@ final class StorageStore
             return $fallback;
         }
         $raw = file_get_contents($path);
-        if ($raw === false || trim($raw) === '') {
-            return $fallback;
+        if ($raw === false) {
+            throw new RuntimeException('Storage-server JSON could not be read: ' . $path);
+        }
+        if (trim($raw) === '') {
+            $corruptPath = $path . '.corrupt-' . gmdate('Ymd-His') . '-' . bin2hex(random_bytes(3));
+            @file_put_contents($corruptPath, $raw, LOCK_EX);
+            throw new RuntimeException('Storage-server JSON is empty. A corrupt copy was preserved beside it.');
         }
         $decoded = json_decode($raw, true);
-        return is_array($decoded) ? $decoded : $fallback;
+        if (!is_array($decoded)) {
+            $corruptPath = $path . '.corrupt-' . gmdate('Ymd-His') . '-' . bin2hex(random_bytes(3));
+            @file_put_contents($corruptPath, $raw, LOCK_EX);
+            throw new RuntimeException('Storage-server JSON is invalid. A corrupt copy was preserved beside it.');
+        }
+        return $decoded;
     }
 
     private function atomicWriteJson(string $path, array $data): void
@@ -330,10 +340,18 @@ final class StorageStore
         }
 
         $tmp = $path . '.tmp.' . getmypid() . '.' . bin2hex(random_bytes(4));
-        $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-        if ($json === false || file_put_contents($tmp, $json . PHP_EOL, LOCK_EX) === false) {
+        $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        if (file_put_contents($tmp, $json . PHP_EOL, LOCK_EX) === false) {
             @unlink($tmp);
             throw new RuntimeException(sprintf('Unable to write storage-server file: %s', $path));
+        }
+        if (is_file($path)) {
+            $backupTmp = $path . '.bak.tmp.' . getmypid() . '.' . bin2hex(random_bytes(3));
+            if (!@copy($path, $backupTmp) || !@rename($backupTmp, $path . '.bak')) {
+                @unlink($tmp);
+                @unlink($backupTmp);
+                throw new RuntimeException(sprintf('Unable to update storage-server backup: %s.bak', $path));
+            }
         }
         if (!@rename($tmp, $path)) {
             @unlink($tmp);

@@ -6,6 +6,8 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
 require_once __DIR__ . '/StorageStore.php';
 require_once __DIR__ . '/ui_helpers.php';
+require_once __DIR__ . '/MasterTick.php';
+require_once __DIR__ . '/TaskSubmission.php';
 
 reflection_send_security_headers();
 
@@ -13,6 +15,11 @@ $config = reflection_master_config();
 $taskSpecs = is_array($config['task_specs'] ?? null) ? $config['task_specs'] : [];
 $store = reflection_farm_store($config);
 $dataDirectory = dirname((string) $config['storage_path']);
+$masterTickStatus = reflection_read_master_tick_status($dataDirectory);
+$masterTickFinishedAt = strtotime((string) ($masterTickStatus['finished_at'] ?? ''));
+$masterTickHealthy = ($masterTickStatus['status'] ?? '') === 'ok'
+    && $masterTickFinishedAt !== false
+    && (time() - $masterTickFinishedAt) <= 180;
 $storageStore = new StorageStore($dataDirectory, $config['transfer_server'] ?? null);
 $storageServers = $storageStore->enabledServers(true);
 $storageServerIds = array_map(static function (array $server): string {
@@ -311,7 +318,12 @@ function reflection_resolve_task_paths(string $module, ?string $source, ?string 
         if ($sourceValue === '') {
             return ['error' => 'A source path is required before an automatic delivery path can be generated.', 'source' => null, 'delivery' => null, 'auto_delivery' => false];
         }
-        $deliveryValue = reflection_apply_delivery_template($template, $sourceValue) ?? '';
+        $templateSource = $sourceValue;
+        $decodedSource = json_decode($sourceValue, true);
+        if (is_array($decodedSource) && isset($decodedSource['path']) && is_string($decodedSource['path'])) {
+            $templateSource = $decodedSource['path'];
+        }
+        $deliveryValue = reflection_apply_delivery_template($template, $templateSource) ?? '';
         $autoDelivery = true;
     }
 
@@ -711,40 +723,6 @@ function reflection_manual_wake_result(FarmStore $store, int $staleAfterSeconds)
     ];
 }
 
-function reflection_auto_wake_notice(FarmStore $store, int $staleAfterSeconds, string $reason): ?string
-{
-    $store->refreshEssSocFromConfiguredEndpoint();
-    $plan = $store->autoWakeForQueuedJobs($staleAfterSeconds, $reason);
-    if (empty($plan['enabled'])) {
-        return null;
-    }
-
-    $sent = (int) ($plan['wake_result']['sent'] ?? 0);
-    $queued = (int) ($plan['wake_result']['queued'] ?? 0);
-    $failed = (int) ($plan['wake_result']['failed'] ?? 0);
-    $needed = (int) ($plan['needed'] ?? 0);
-    $ready = (int) ($plan['ready_targets'] ?? 0);
-    if ($queued > 0) {
-        return 'Demand wake queued a worker relay task for ' . $queued . ' computer' . ($queued === 1 ? '' : 's') . '.';
-    }
-    if (!empty($plan['wake_result']['relay_pending'])) {
-        return 'Demand wake is waiting for an already queued/running Wake-on-LAN relay task.';
-    }
-    if ($sent > 0) {
-        $notice = 'Demand wake sent to ' . $sent . ' computer' . ($sent === 1 ? '' : 's') . ' for ' . (int) ($plan['queued_work'] ?? 0) . ' queued job' . ((int) ($plan['queued_work'] ?? 0) === 1 ? '' : 's') . '.';
-        if ($failed > 0) {
-            $notice .= ' ' . $failed . ' wake attempt' . ($failed === 1 ? '' : 's') . ' failed.';
-        }
-        return $notice;
-    }
-
-    if ($needed > 0 && $ready === 0) {
-        return 'Demand wake wanted ' . $needed . ' more worker' . ($needed === 1 ? '' : 's') . ', but no eligible Wake-on-LAN target is ready right now.';
-    }
-
-    return null;
-}
-
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $formAction = (string) ($_POST['form_action'] ?? 'single');
     $isAjax = (strtolower((string) ($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '')) === 'xmlhttprequest');
@@ -756,6 +734,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $taskSpec = $module !== '' ? reflection_task_spec($module, $config) : [];
     $transferServerId = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($_POST['transfer_server_id'] ?? '')) ?: '';
     $transferExtra = (!$isControlTask && $transferServerId !== '') ? ['transfer_server_id' => $transferServerId] : [];
+    $selectedTransferServer = $transferServerId !== '' ? $storageStore->server($transferServerId) : null;
+    if (!$isControlTask && $selectedTransferServer !== null) {
+        $transferExtra['required_transfer_scheme'] = (string) ($selectedTransferServer['scheme'] ?? 'ftp');
+    }
 
     if ($formAction === 'job_action') {
         $jobAction = (string) ($_POST['job_action'] ?? '');
@@ -843,8 +825,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'idle_shutdown_after_no_job_checks' => (int) ($_POST['idle_shutdown_after_no_job_checks'] ?? 0),
             'shutdown_debug_mode' => isset($_POST['shutdown_debug_mode']),
             'auto_wake_for_queued_jobs' => isset($_POST['auto_wake_for_queued_jobs']),
-            'automation_run_due_on_worker_checkin' => isset($_POST['automation_run_due_on_worker_checkin']),
-            'automation_checkin_cooldown_seconds' => (int) ($_POST['automation_checkin_cooldown_seconds'] ?? 60),
             'wake_dispatch_mode' => (string) ($_POST['wake_dispatch_mode'] ?? 'worker_relay'),
             'auto_wake_cooldown_seconds' => (int) ($_POST['auto_wake_cooldown_seconds'] ?? 300),
             'auto_wake_max_targets_per_run' => (int) ($_POST['auto_wake_max_targets_per_run'] ?? 20),
@@ -854,6 +834,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'event_log_keep_lines' => (int) ($_POST['event_log_keep_lines'] ?? 1000),
             'file_history_keep_paths' => (int) ($_POST['file_history_keep_paths'] ?? 500),
             'file_history_keep_entries_per_path' => (int) ($_POST['file_history_keep_entries_per_path'] ?? 10),
+            'job_lease_seconds' => (int) ($_POST['job_lease_seconds'] ?? 180),
             'job_archive_keep_lines' => (int) ($_POST['job_archive_keep_lines'] ?? 5000),
             'worker_temp_max_age_hours' => (int) ($_POST['worker_temp_max_age_hours'] ?? 24),
             'quarantine_keep_days' => (int) ($_POST['quarantine_keep_days'] ?? 14),
@@ -892,26 +873,37 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 }
 
                 $lineLabel = 'line ' . ((int) $lineNumber + 1) . ' (' . $source . ')';
-                $resolvedPaths = reflection_resolve_task_paths($module, $source, $delivery, $config);
-                if (($resolvedPaths['error'] ?? null) !== null) {
-                    $skipped[] = $lineLabel . ': ' . (string) $resolvedPaths['error'];
+                $expanded = reflection_expand_task_sources($module, $source, $delivery);
+                if (($expanded['error'] ?? null) !== null) {
+                    $skipped[] = $lineLabel . ': ' . (string) $expanded['error'];
                     continue;
                 }
 
-                $jobExtra = $transferExtra;
-                $jobExtra['task_contract'] = reflection_task_contract_summary($resolvedPaths['spec'] ?? reflection_task_spec($module, $config));
-                if (!empty($resolvedPaths['auto_delivery'])) {
-                    $jobExtra['delivery_auto_generated'] = true;
-                }
+                foreach (($expanded['sources'] ?? []) as $expandedSource) {
+                    $resolvedPaths = reflection_resolve_task_paths($module, (string) $expandedSource, $delivery, $config);
+                    if (($resolvedPaths['error'] ?? null) !== null) {
+                        $skipped[] = $lineLabel . ': ' . (string) $resolvedPaths['error'];
+                        continue;
+                    }
 
-                $store->createJob(
-                    $module,
-                    $resolvedPaths['source'] ?? null,
-                    $resolvedPaths['delivery'] ?? null,
-                    $overwriteAllowed,
-                    $jobExtra
-                );
-                $queued++;
+                    $jobExtra = array_merge($transferExtra, reflection_job_resource_requirements($resolvedPaths['source'] ?? null));
+                    $jobExtra['task_contract'] = reflection_task_contract_summary($resolvedPaths['spec'] ?? reflection_task_spec($module, $config));
+                    if (!empty($resolvedPaths['auto_delivery'])) {
+                        $jobExtra['delivery_auto_generated'] = true;
+                    }
+                    if (!empty($expanded['expanded_folder'])) {
+                        $jobExtra['expanded_from_folder'] = $source;
+                    }
+
+                    $store->createJob(
+                        $module,
+                        $resolvedPaths['source'] ?? null,
+                        $resolvedPaths['delivery'] ?? null,
+                        $overwriteAllowed,
+                        $jobExtra
+                    );
+                    $queued++;
+                }
             }
 
             if ($queued > 0) {
@@ -926,58 +918,61 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             } elseif ($queued === 0) {
                 $error = 'No importable source paths found.';
             }
-            if ($queued > 0 && !$isControlTask) {
-                $notice = reflection_auto_wake_notice($store, (int) ($config['stale_after_seconds'] ?? 900), 'queue_bulk');
-                if ($notice !== null) {
-                    $message = reflection_append_message($message, $notice);
-                }
-            }
         }
     } else {
         $source = trim((string) ($_POST['single_source'] ?? ''));
-        $resolvedPaths = ['error' => null, 'source' => null, 'delivery' => null, 'auto_delivery' => false, 'spec' => $taskSpec];
         $error = reflection_validate_task($module, $config)
             ?? ((!$isControlTask && $transferServerId !== '' && !in_array($transferServerId, $storageServerIds, true)) ? 'Choose an available storage server.' : null);
+        $expanded = ['sources' => [$source], 'expanded_folder' => false, 'error' => null];
 
         if ($error === null) {
-            $resolvedPaths = reflection_resolve_task_paths($module, $source, $delivery, $config);
-            $error = $resolvedPaths['error'] ?? null;
+            $expanded = reflection_expand_task_sources($module, $source, $delivery);
+            $error = $expanded['error'] ?? null;
         }
 
         if ($error === null) {
-            $jobExtra = $transferExtra;
-            $jobExtra['task_contract'] = reflection_task_contract_summary($resolvedPaths['spec'] ?? reflection_task_spec($module, $config));
-            if (!empty($resolvedPaths['auto_delivery'])) {
-                $jobExtra['delivery_auto_generated'] = true;
+            $createdJobs = [];
+            foreach (($expanded['sources'] ?? []) as $expandedSource) {
+                $resolvedPaths = reflection_resolve_task_paths($module, (string) $expandedSource, $delivery, $config);
+                if (($resolvedPaths['error'] ?? null) !== null) {
+                    $error = (string) $resolvedPaths['error'];
+                    break;
+                }
+
+                $jobExtra = array_merge($transferExtra, reflection_job_resource_requirements($resolvedPaths['source'] ?? null));
+                $jobExtra['task_contract'] = reflection_task_contract_summary($resolvedPaths['spec'] ?? reflection_task_spec($module, $config));
+                if (!empty($resolvedPaths['auto_delivery'])) {
+                    $jobExtra['delivery_auto_generated'] = true;
+                }
+                if (!empty($expanded['expanded_folder'])) {
+                    $jobExtra['expanded_from_folder'] = $source;
+                }
+
+                $createdJobs[] = $store->createJob(
+                    $module,
+                    $resolvedPaths['source'] ?? null,
+                    $resolvedPaths['delivery'] ?? null,
+                    $overwriteAllowed,
+                    $jobExtra
+                );
             }
 
-            $job = $store->createJob(
-                $module,
-                $resolvedPaths['source'] ?? null,
-                $resolvedPaths['delivery'] ?? null,
-                $overwriteAllowed,
-                $jobExtra
-            );
-            $message = 'Queued ' . $job['task_id'] . ' for ' . $job['module'] . '.';
-            if (!empty($resolvedPaths['auto_delivery']) && !empty($job['delivery'])) {
-                $message .= ' Delivery auto-generated: ' . $job['delivery'] . '.';
-            }
-            if (!$isControlTask) {
-                $notice = reflection_auto_wake_notice($store, (int) ($config['stale_after_seconds'] ?? 900), 'queue_single');
-                if ($notice !== null) {
-                    $message = reflection_append_message($message, $notice);
+            if ($error === null && count($createdJobs) > 1) {
+                $message = 'Queued ' . count($createdJobs) . ' H.265 jobs—one per video.';
+            } elseif ($error === null && isset($createdJobs[0])) {
+                $job = $createdJobs[0];
+                $message = 'Queued ' . $job['task_id'] . ' for ' . $job['module'] . '.';
+                if (!empty($job['delivery_auto_generated']) && !empty($job['delivery'])) {
+                    $message .= ' Delivery auto-generated: ' . $job['delivery'] . '.';
                 }
             }
         }
     }
 }
 
-$store->refreshEssSocFromConfiguredEndpoint();
-$staleCount = $store->requeueStaleJobs((int) $config['stale_after_seconds']);
 $settings = $store->effectiveSettings();
 $essSocIgnored = reflection_ess_soc_is_ignored($settings);
 $essChargingOverrideActive = reflection_ess_charging_override_active($settings);
-$automaticMaintenance = reflection_run_store_maintenance($store, $settings);
 $data = $store->read();
 $workers = $data['workers'];
 $events = $store->readRecentEvents(5);
@@ -1024,7 +1019,6 @@ $activeJobsMore = array_slice($activeJobsAll, $activeJobsPreviewLimit);
 $activeJobsShownLimit = count($activeJobsAll);
 $completedInStore = (int) ($statusCounts['success'] ?? 0) + (int) ($statusCounts['skipped'] ?? 0) + (int) ($statusCounts['failed'] ?? 0) + (int) ($statusCounts['stale'] ?? 0) + (int) ($statusCounts['blocked'] ?? 0) + (int) ($statusCounts['ignored'] ?? 0);
 $activeCount = (int) ($statusCounts['queued'] ?? 0) + (int) ($statusCounts['running'] ?? 0) + (int) ($statusCounts['held'] ?? 0);
-$maintenanceChanged = array_sum($automaticMaintenance) > 0;
 $powerPanelContext = [
     'wakeButtonDisabled' => $wakeButtonDisabled,
     'wakeTargetCount' => $wakeTargetCount,
@@ -1346,11 +1340,8 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
     <?php elseif ($essChargingOverrideActive): ?>
         <div class="alert muted alert-secondary text-bg-secondary">ESS reports charging. Minimum SOC limits are being bypassed while the charging override option is enabled.</div>
     <?php endif; ?>
-    <?php if ($staleCount > 0): ?>
-        <div class="alert warning alert-warning text-bg-warning"><?= reflection_h($staleCount) ?> lost/blocked job(s) were marked for operator review.</div>
-    <?php endif; ?>
-    <?php if ($maintenanceChanged): ?>
-        <div class="alert muted alert-secondary text-bg-secondary">Automatic maintenance archived <?= (int) $automaticMaintenance['archived_jobs'] ?> old job(s), trimmed <?= (int) $automaticMaintenance['trimmed_events'] ?> event(s), compacted <?= (int) $automaticMaintenance['trimmed_file_history'] ?> file-history item(s), and trimmed <?= (int) $automaticMaintenance['trimmed_job_archive'] ?> archived job line(s).</div>
+    <?php if (!$masterTickHealthy): ?>
+        <div class="alert warning alert-warning text-bg-warning">The master tick has not completed successfully in the last three minutes. Automations, lease expiry, ESS refresh, wake decisions, and maintenance are paused. Check <a href="system_checks.php">System checks</a>.</div>
     <?php endif; ?>
 
     <section class="overview-grid row row-cols-1 row-cols-sm-2 row-cols-xl-5 g-3 mb-4" id="metrics-section">

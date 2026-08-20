@@ -16,6 +16,7 @@ class TaskDefinition:
     install: Optional[Callable[[], None]] = None
     description: str = ""
     spec: dict = field(default_factory=dict)
+    source_path: Optional[Path] = None
 
 
 def import_task_file(path: Path):
@@ -51,6 +52,7 @@ def load_task_definition(path: Path, module=None) -> TaskDefinition:
         spec = {}
     if not isinstance(spec, dict):
         raise TypeError(f"{path} TASK_SPEC must be a dictionary when provided.")
+    validate_task_spec(path, task_name, spec)
 
     return TaskDefinition(
         name=task_name,
@@ -58,7 +60,36 @@ def load_task_definition(path: Path, module=None) -> TaskDefinition:
         install=installer,
         description=str(getattr(module, "DESCRIPTION", "")),
         spec=spec,
+        source_path=path,
     )
+
+
+def validate_task_spec(path: Path, task_name: str, spec: dict) -> None:
+    """Reject partial task contracts before a worker advertises the task."""
+    if not spec:
+        raise ValueError(f"{path} must define a non-empty TASK_SPEC contract.")
+    if str(spec.get("name") or "") != task_name:
+        raise ValueError(f"{path} TASK_SPEC.name must match TASK_NAME ({task_name}).")
+    if not isinstance(spec.get("production_ready"), bool):
+        raise TypeError(f"{path} TASK_SPEC.production_ready must be true or false.")
+
+    source = spec.get("source")
+    delivery = spec.get("delivery")
+    output = spec.get("output")
+    if not isinstance(source, dict) or source.get("mode") not in {"required", "optional", "none"}:
+        raise ValueError(f"{path} TASK_SPEC.source.mode must be required, optional, or none.")
+    if not isinstance(delivery, dict) or delivery.get("mode") not in {"required", "optional", "auto", "none"}:
+        raise ValueError(f"{path} TASK_SPEC.delivery.mode must be required, optional, auto, or none.")
+    if not isinstance(output, dict) or not str(output.get("kind") or "").strip():
+        raise ValueError(f"{path} TASK_SPEC.output.kind is required.")
+
+    requirements = spec.get("requirements", {})
+    if not isinstance(requirements, dict):
+        raise TypeError(f"{path} TASK_SPEC.requirements must be an object when provided.")
+    for key in ("commands", "python_modules", "ffmpeg_encoders"):
+        value = requirements.get(key, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+            raise TypeError(f"{path} TASK_SPEC.requirements.{key} must be a list of non-empty strings.")
 
 
 def discover_task_definitions(tasks_dir: Path, on_error=None) -> dict:

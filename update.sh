@@ -12,6 +12,11 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reflection-update.XXXXXX")"
 SOURCE_DIR="$TEMP_DIR/source"
 TARGET_COMMIT=""
+WORKER_INSTALL=false
+
+if [[ -f "$SCRIPT_DIR/cluster/reflection_config.json" || -f "$SCRIPT_DIR/cluster/reflection_config.local.json" ]]; then
+    WORKER_INSTALL=true
+fi
 
 cleanup() {
     rm -rf -- "$TEMP_DIR"
@@ -57,53 +62,6 @@ for command in git python3; do
         exit 1
     fi
 done
-
-run_system_package_updates() {
-    # Keep Linux farm workers patched during Reflection updates. This is best-effort:
-    # a broken apt mirror, package lock, or missing sudo should not leave the
-    # Reflection application half-updated or prevent version-follow updates.
-    local apt_cmd=""
-    if command -v apt-get >/dev/null 2>&1; then
-        apt_cmd="apt-get"
-    elif command -v apt >/dev/null 2>&1; then
-        apt_cmd="apt"
-    else
-        echo "System package update skipped: apt/apt-get was not found on this system."
-        return 0
-    fi
-
-    local runner=()
-    if [[ "$(id -u)" -eq 0 ]]; then
-        runner=()
-    elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
-        runner=(sudo -n)
-    else
-        echo "System package update skipped: root or passwordless sudo is required."
-        return 0
-    fi
-
-    echo "Running system package update before finishing Reflection update..."
-    if [[ "$apt_cmd" == "apt-get" ]]; then
-        if ! DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a "${runner[@]}" apt-get update -y; then
-            echo "System package update warning: apt-get update failed; continuing Reflection update." >&2
-            return 0
-        fi
-        if ! DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a "${runner[@]}" apt-get upgrade -y; then
-            echo "System package update warning: apt-get upgrade failed; continuing Reflection update." >&2
-            return 0
-        fi
-    else
-        if ! DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a "${runner[@]}" apt update -y; then
-            echo "System package update warning: apt update failed; continuing Reflection update." >&2
-            return 0
-        fi
-        if ! DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a "${runner[@]}" apt upgrade -y; then
-            echo "System package update warning: apt upgrade failed; continuing Reflection update." >&2
-            return 0
-        fi
-    fi
-    echo "System packages updated successfully."
-}
 
 if [[ ! -f "$SCRIPT_DIR/config.php" || ! -f "$SCRIPT_DIR/cluster/Reflection.py" ]]; then
     echo "Run this script from the Reflection project directory." >&2
@@ -153,19 +111,45 @@ if [[ -n "$TARGET_COMMIT" ]]; then
     fi
 fi
 
-# Validate the downloaded worker entry points before replacing the live files.
+# Validate every downloaded entry point before replacing live code. A master-
+# only installation does not need a desktop terminal or worker dependencies.
 python3 -m py_compile \
     "$SOURCE_DIR/cluster/Reflection.py" \
+    "$SOURCE_DIR/cluster/agent_state.py" \
+    "$SOURCE_DIR/cluster/task_readiness.py" \
     "$SOURCE_DIR/cluster/task_registry.py" \
     "$SOURCE_DIR/cluster/task_runner.py" \
     "$SOURCE_DIR/cluster/task_log_viewer.py" \
+    "$SOURCE_DIR/cluster/preflight.py" \
     "$SOURCE_DIR/cluster/run_setup.py" \
     "$SOURCE_DIR/cluster/toggle_start_on_boot.py"
+
+if command -v php >/dev/null 2>&1; then
+    while IFS= read -r php_file; do
+        php -l "$php_file" >/dev/null
+    done < <(find "$SOURCE_DIR" -maxdepth 2 -type f -name '*.php' -print | sort)
+fi
+
+LIVE_VENV="$SCRIPT_DIR/cluster/.venv"
+if [[ "$WORKER_INSTALL" == true ]]; then
+    # Resolve exact worker dependencies before replacing live code. The venv is
+    # preserved across replacement, so dependency or preflight failures leave
+    # the current application code in place.
+    if [[ ! -x "$LIVE_VENV/bin/python" ]]; then
+        if ! python3 -m venv "$LIVE_VENV"; then
+            echo "Unable to create cluster/.venv. Install python3-venv and retry." >&2
+            exit 1
+        fi
+    fi
+    LIVE_PYTHON="$LIVE_VENV/bin/python"
+    "$LIVE_PYTHON" -m pip install --disable-pip-version-check -r "$SOURCE_DIR/cluster/requirements.txt"
+    "$LIVE_PYTHON" "$SOURCE_DIR/cluster/preflight.py" --skip-server
+fi
 
 # The Reflection application folder is disposable. Runtime/local files are not.
 # Preserve those files outside the wipe, replace the whole app folder with the
 # freshly cloned Git checkout, then restore the preserved paths.
-python3 - "$SOURCE_DIR" "$SCRIPT_DIR" "$TEMP_DIR/preserved" <<'PY'
+python3 - "$SOURCE_DIR" "$SCRIPT_DIR" "$TEMP_DIR/preserved" "$TEMP_DIR/backup" <<'PY'
 import shutil
 import sys
 from pathlib import Path
@@ -173,12 +157,16 @@ from pathlib import Path
 source = Path(sys.argv[1]).resolve()
 target = Path(sys.argv[2]).resolve()
 preserve_root = Path(sys.argv[3]).resolve()
+backup_root = Path(sys.argv[4]).resolve()
 
 preserve_paths = [
     Path("data"),
     Path("farm_settings.local.php"),
     Path("cluster/reflection_config.json"),
     Path("cluster/reflection_config.local.json"),
+    Path("cluster/reflection_outbox.json"),
+    Path("cluster/tasks_local"),
+    Path("cluster/.venv"),
     Path(".env"),
 ]
 ignored_names = {"__MACOSX", ".DS_Store"}
@@ -200,54 +188,109 @@ def copy_path(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst, follow_symlinks=False)
 
 
+def clear_directory(directory: Path) -> None:
+    for child in directory.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
 for relative in preserve_paths:
     existing = target / relative
     if existing.exists() or existing.is_symlink():
         copy_path(existing, preserve_root / relative)
 
+# Keep a complete rollback copy until the replacement succeeds.
 for child in target.iterdir():
-    if child.name in ignored_names:
-        if child.is_dir() and not child.is_symlink():
-            shutil.rmtree(child)
-        else:
-            child.unlink()
-        continue
+    if child.name not in ignored_names:
+        copy_path(child, backup_root / child.name)
+
+try:
+    clear_directory(target)
+    for child in source.iterdir():
+        if child.name not in ignored_names:
+            copy_path(child, target / child.name)
+
+    for relative in preserve_paths:
+        preserved = preserve_root / relative
+        if preserved.exists() or preserved.is_symlink():
+            destination = target / relative
+            if destination.exists() or destination.is_symlink():
+                if destination.is_dir() and not destination.is_symlink():
+                    shutil.rmtree(destination)
+                else:
+                    destination.unlink()
+            copy_path(preserved, destination)
+except BaseException:
+    clear_directory(target)
+    for child in backup_root.iterdir():
+        copy_path(child, target / child.name)
+    raise
+PY
+
+restore_backup() {
+    python3 - "$SCRIPT_DIR" "$TEMP_DIR/backup" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+target = Path(sys.argv[1]).resolve()
+backup = Path(sys.argv[2]).resolve()
+for child in list(target.iterdir()):
     if child.is_dir() and not child.is_symlink():
         shutil.rmtree(child)
     else:
         child.unlink()
-
-for child in source.iterdir():
-    if child.name in ignored_names:
-        continue
-    copy_path(child, target / child.name)
-
-for relative in preserve_paths:
-    preserved = preserve_root / relative
-    if preserved.exists() or preserved.is_symlink():
-        destination = target / relative
-        if destination.exists() or destination.is_symlink():
-            if destination.is_dir() and not destination.is_symlink():
-                shutil.rmtree(destination)
-            else:
-                destination.unlink()
-        copy_path(preserved, destination)
+for child in backup.iterdir():
+    destination = target / child.name
+    if child.is_dir() and not child.is_symlink():
+        shutil.copytree(child, destination, symlinks=True)
+    else:
+        shutil.copy2(child, destination, follow_symlinks=False)
 PY
+}
 
-# Validate the copied worker entry points too, so failed updates are obvious.
-python3 -m py_compile \
+# Validate the copied entry points too. Restore the complete previous tree if
+# the on-disk result does not validate exactly as the downloaded source did.
+POST_PYTHON=python3
+if [[ "$WORKER_INSTALL" == true ]]; then
+    POST_PYTHON="$SCRIPT_DIR/cluster/.venv/bin/python"
+fi
+if ! "$POST_PYTHON" -m py_compile \
     "$SCRIPT_DIR/cluster/Reflection.py" \
+    "$SCRIPT_DIR/cluster/agent_state.py" \
+    "$SCRIPT_DIR/cluster/task_readiness.py" \
     "$SCRIPT_DIR/cluster/task_registry.py" \
     "$SCRIPT_DIR/cluster/task_runner.py" \
     "$SCRIPT_DIR/cluster/task_log_viewer.py" \
+    "$SCRIPT_DIR/cluster/preflight.py" \
     "$SCRIPT_DIR/cluster/run_setup.py" \
-    "$SCRIPT_DIR/cluster/toggle_start_on_boot.py"
+    "$SCRIPT_DIR/cluster/toggle_start_on_boot.py"; then
+    echo "Updated Python files failed validation. Restoring the previous installation." >&2
+    restore_backup
+    exit 1
+fi
+
+if command -v php >/dev/null 2>&1; then
+    php_validation_failed=false
+    while IFS= read -r php_file; do
+        if ! php -l "$php_file" >/dev/null; then
+            php_validation_failed=true
+            break
+        fi
+    done < <(find "$SCRIPT_DIR" -maxdepth 2 -type f -name '*.php' -print | sort)
+    if [[ "$php_validation_failed" == true ]]; then
+        echo "Updated PHP files failed validation. Restoring the previous installation." >&2
+        restore_backup
+        exit 1
+    fi
+fi
 
 new_commit="$(git -C "$SCRIPT_DIR" rev-parse HEAD)"
 printf '%s\n' "$new_commit" > "$SCRIPT_DIR/.reflection_commit"
 chmod 0660 "$SCRIPT_DIR/.reflection_commit" 2>/dev/null || true
 new_version="${new_commit:0:12}"
-run_system_package_updates
 echo "Reflection updated successfully to Git version ${new_version}."
-echo "Protected local paths kept: data/, farm_settings.local.php, cluster/reflection_config.json, cluster/reflection_config.local.json, .env"
+echo "Protected local paths kept: data/, farm_settings.local.php, worker config/outbox, tasks_local/, cluster/.venv/, .env"
 echo "Farm workers started by update_worker or version-follow self-update will reboot after the update completes."

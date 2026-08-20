@@ -9,8 +9,11 @@ final class FarmStore
     private string $path;
     private string $lockPath;
     private string $eventLogPath;
+    private string $eventLogLockPath;
     private string $fileHistoryPath;
+    private string $fileHistoryLockPath;
     private string $jobArchivePath;
+    private string $jobArchiveLockPath;
     private array $configuredDefaultSettings;
 
     public function __construct(string $path, array $defaultSettings = [])
@@ -20,8 +23,11 @@ final class FarmStore
         $this->configuredDefaultSettings = $defaultSettings;
         $directory = dirname($this->path);
         $this->eventLogPath = $directory . DIRECTORY_SEPARATOR . 'farm_events.log';
+        $this->eventLogLockPath = $this->eventLogPath . '.lock';
         $this->fileHistoryPath = $directory . DIRECTORY_SEPARATOR . 'farm_file_history.json';
+        $this->fileHistoryLockPath = $this->fileHistoryPath . '.lock';
         $this->jobArchivePath = $directory . DIRECTORY_SEPARATOR . 'farm_job_archive.jsonl';
+        $this->jobArchiveLockPath = $this->jobArchivePath . '.lock';
         if (!is_dir($directory) && !@mkdir($directory, 0775, true) && !is_dir($directory)) {
             $parentDirectory = dirname($directory);
             throw new RuntimeException(sprintf(
@@ -134,6 +140,13 @@ final class FarmStore
 
     public function trimEventLog(int $keepLines): int
     {
+        return $this->withSidecarLock($this->eventLogLockPath, true, function () use ($keepLines): int {
+            return $this->trimEventLogUnlocked($keepLines);
+        });
+    }
+
+    private function trimEventLogUnlocked(int $keepLines): int
+    {
         $keepLines = max(0, $keepLines);
         if (!is_file($this->eventLogPath)) {
             return 0;
@@ -141,7 +154,7 @@ final class FarmStore
 
         if ($keepLines === 0) {
             $removed = $this->countFileLines($this->eventLogPath);
-            @file_put_contents($this->eventLogPath, '', LOCK_EX);
+            @file_put_contents($this->eventLogPath, '');
             return $removed;
         }
 
@@ -151,11 +164,18 @@ final class FarmStore
         }
 
         $tail = $this->tailLines($this->eventLogPath, $keepLines);
-        @file_put_contents($this->eventLogPath, implode(PHP_EOL, $tail) . PHP_EOL, LOCK_EX);
+        @file_put_contents($this->eventLogPath, implode(PHP_EOL, $tail) . PHP_EOL);
         return $lineCount - count($tail);
     }
 
     public function compactFileHistory(int $maxPaths, int $entriesPerPath): int
+    {
+        return $this->withSidecarLock($this->fileHistoryLockPath, true, function () use ($maxPaths, $entriesPerPath): int {
+            return $this->compactFileHistoryUnlocked($maxPaths, $entriesPerPath);
+        });
+    }
+
+    private function compactFileHistoryUnlocked(int $maxPaths, int $entriesPerPath): int
     {
         $maxPaths = max(0, $maxPaths);
         $entriesPerPath = max(0, $entriesPerPath);
@@ -163,7 +183,7 @@ final class FarmStore
             return 0;
         }
 
-        $history = $this->readFileHistory();
+        $history = $this->readFileHistoryUnlocked();
         if ($history === []) {
             return 0;
         }
@@ -208,12 +228,14 @@ final class FarmStore
 
     public function archiveInfo(): array
     {
-        return [
-            'path' => $this->jobArchivePath,
-            'exists' => is_file($this->jobArchivePath),
-            'size_bytes' => is_file($this->jobArchivePath) ? (int) filesize($this->jobArchivePath) : 0,
-            'jobs' => is_file($this->jobArchivePath) ? $this->countFileLines($this->jobArchivePath) : 0,
-        ];
+        return $this->withSidecarLock($this->jobArchiveLockPath, false, function (): array {
+            return [
+                'path' => $this->jobArchivePath,
+                'exists' => is_file($this->jobArchivePath),
+                'size_bytes' => is_file($this->jobArchivePath) ? (int) filesize($this->jobArchivePath) : 0,
+                'jobs' => is_file($this->jobArchivePath) ? $this->countFileLines($this->jobArchivePath) : 0,
+            ];
+        });
     }
 
     public function quarantineLocations(): array
@@ -527,6 +549,189 @@ final class FarmStore
         });
     }
 
+    /**
+     * Atomically select and lease one eligible job to a worker.
+     *
+     * A claim is recorded before the task payload is returned, so two workers
+     * can never be offered the same queued job.  An unconfirmed claim is
+     * replayed to the same worker until it expires, which makes a lost HTTP
+     * response harmless.
+     */
+    public function claimNextQueuedJobForWorker(
+        string $pcId,
+        int $staleAfterSeconds,
+        int $leaseSeconds,
+        bool $allowNewClaim = true,
+        int $allowedWorkers = PHP_INT_MAX
+    ): array
+    {
+        $pcId = trim($pcId);
+        $leaseSeconds = max(30, min(3600, $leaseSeconds));
+        if ($pcId === '') {
+            return ['job' => null, 'rejections' => [], 'busy' => false, 'replayed' => false, 'capacity_limited' => false];
+        }
+
+        $claim = $this->withLock(function (array $data) use ($pcId, $staleAfterSeconds, $leaseSeconds, $allowNewClaim, $allowedWorkers): array {
+            $now = time();
+            $nowText = gmdate(DATE_ATOM, $now);
+            $worker = is_array($data['workers'][$pcId] ?? null) ? $data['workers'][$pcId] : ['pc_id' => $pcId];
+            $currentTaskId = trim((string) ($worker['current_job'] ?? ''));
+
+            if ($currentTaskId !== '') {
+                foreach ($data['jobs'] as $job) {
+                    if (($job['task_id'] ?? '') !== $currentTaskId || ($job['status'] ?? '') !== 'running' || ($job['worker'] ?? '') !== $pcId) {
+                        continue;
+                    }
+                    if (empty($job['confirmed_at']) && !$this->jobLeaseExpired($job, $now)) {
+                        return ['data' => $data, 'result' => [
+                            'job' => $job,
+                            'rejections' => [],
+                            'busy' => false,
+                            'replayed' => true,
+                            'new_claim' => false,
+                            'capacity_limited' => false,
+                        ]];
+                    }
+                    return ['data' => $data, 'result' => [
+                        'job' => null,
+                        'rejections' => [],
+                        'busy' => true,
+                        'replayed' => false,
+                        'new_claim' => false,
+                        'capacity_limited' => false,
+                    ]];
+                }
+                $worker['current_job'] = null;
+            }
+
+            if (!$allowNewClaim) {
+                $data['workers'][$pcId] = $worker;
+                return ['data' => $data, 'result' => [
+                    'job' => null,
+                    'rejections' => [],
+                    'busy' => false,
+                    'replayed' => false,
+                    'new_claim' => false,
+                    'capacity_limited' => false,
+                ]];
+            }
+
+            if ($allowedWorkers !== PHP_INT_MAX) {
+                $runningWorkers = [];
+                foreach ($data['jobs'] as $job) {
+                    if (($job['status'] ?? '') !== 'running') {
+                        continue;
+                    }
+                    $workerId = trim((string) ($job['worker'] ?? ''));
+                    if ($workerId !== '') {
+                        $runningWorkers[$workerId] = true;
+                    }
+                }
+                if (count($runningWorkers) >= max(0, $allowedWorkers)) {
+                    $data['workers'][$pcId] = $worker;
+                    return ['data' => $data, 'result' => [
+                        'job' => null,
+                        'rejections' => [],
+                        'busy' => false,
+                        'replayed' => false,
+                        'new_claim' => false,
+                        'capacity_limited' => true,
+                    ]];
+                }
+            }
+
+            $rejections = [];
+            $orderedIndexes = [];
+            foreach ($data['jobs'] as $index => $job) {
+                if (($job['status'] ?? '') === 'queued' && $this->isControlModule((string) ($job['module'] ?? ''))) {
+                    $orderedIndexes[] = $index;
+                }
+            }
+            foreach ($data['jobs'] as $index => $job) {
+                if (($job['status'] ?? '') === 'queued' && !$this->isControlModule((string) ($job['module'] ?? ''))) {
+                    $orderedIndexes[] = $index;
+                }
+            }
+
+            $claimedJob = null;
+            foreach ($orderedIndexes as $index) {
+                $job = $data['jobs'][$index];
+                if (($job['module'] ?? '') === 'shutdown') {
+                    $layer = $this->shutdownLayerStatusFromData($data, $pcId, $staleAfterSeconds);
+                    if (empty($layer['allowed'])) {
+                        $rejections[] = [
+                            'task_id' => (string) ($job['task_id'] ?? ''),
+                            'module' => (string) ($job['module'] ?? ''),
+                            'reasons' => ['shutdown layer is not currently allowed'],
+                        ];
+                        continue;
+                    }
+                }
+
+                $reasons = $this->jobEligibilityReasonsFromData($data, $job, $pcId);
+                if ($reasons !== []) {
+                    if (count($rejections) < 20) {
+                        $rejections[] = [
+                            'task_id' => (string) ($job['task_id'] ?? ''),
+                            'module' => (string) ($job['module'] ?? ''),
+                            'reasons' => $reasons,
+                        ];
+                    }
+                    $data['jobs'][$index]['last_assignment_rejection'] = [
+                        'worker' => $pcId,
+                        'checked_at' => $nowText,
+                        'reasons' => $reasons,
+                    ];
+                    continue;
+                }
+
+                $leaseToken = bin2hex(random_bytes(24));
+                $data['jobs'][$index]['status'] = 'running';
+                $data['jobs'][$index]['worker'] = $pcId;
+                $data['jobs'][$index]['claimed_at'] = $nowText;
+                $data['jobs'][$index]['confirmed_at'] = null;
+                $data['jobs'][$index]['started_at'] = null;
+                $data['jobs'][$index]['heartbeat_at'] = $nowText;
+                $data['jobs'][$index]['lease_token'] = $leaseToken;
+                $data['jobs'][$index]['lease_expires_at'] = gmdate(DATE_ATOM, $now + $leaseSeconds);
+                $data['jobs'][$index]['stage'] = 'claimed';
+                $data['jobs'][$index]['stage_message'] = 'Claimed by an eligible worker; waiting for confirmation.';
+                unset($data['jobs'][$index]['last_assignment_rejection']);
+                $claimedJob = $data['jobs'][$index];
+                break;
+            }
+
+            if ($claimedJob !== null) {
+                $worker['pc_id'] = $pcId;
+                $worker['last_check_in'] = $nowText;
+                $worker['current_job'] = (string) $claimedJob['task_id'];
+                $worker['current_job_stage'] = 'claimed';
+                $worker['idle_no_job_checkins'] = 0;
+            }
+            $data['workers'][$pcId] = $worker;
+
+            return ['data' => $data, 'result' => [
+                'job' => $claimedJob,
+                'rejections' => $rejections,
+                'busy' => false,
+                'replayed' => false,
+                'new_claim' => $claimedJob !== null,
+                'capacity_limited' => false,
+            ]];
+        }, true);
+
+        if (is_array($claim['job'] ?? null) && !empty($claim['new_claim'])) {
+            $this->recordEvent('job_claimed', $claim['job']);
+        }
+        return is_array($claim) ? $claim : [
+            'job' => null,
+            'rejections' => [],
+            'busy' => false,
+            'replayed' => false,
+            'capacity_limited' => false,
+        ];
+    }
+
     public function nextQueuedUpdateJob(): ?array
     {
         return $this->withLock(function (array $data): ?array {
@@ -554,27 +759,47 @@ final class FarmStore
         });
     }
 
-    public function markJobRunning(string $taskId, string $pcId): bool
+    public function markJobRunning(string $taskId, string $pcId, string $leaseToken = '', int $leaseSeconds = 180): bool
     {
-        $result = $this->withLock(function (array $data) use ($taskId, $pcId): array {
+        $leaseSeconds = max(30, min(3600, $leaseSeconds));
+        $result = $this->withLock(function (array $data) use ($taskId, $pcId, $leaseToken, $leaseSeconds): array {
             $lockedJob = null;
+            $startedNow = false;
             foreach ($data['jobs'] as &$job) {
-                if (($job['task_id'] ?? '') === $taskId && ($job['status'] ?? '') === 'queued') {
+                if (($job['task_id'] ?? '') !== $taskId) {
+                    continue;
+                }
+
+                if (($job['status'] ?? '') === 'queued') {
+                    // Compatibility for jobs confirmed through the legacy peek
+                    // path. Normal API requests already atomically claim first.
                     $job['status'] = 'running';
                     $job['worker'] = $pcId;
-                    $now = gmdate(DATE_ATOM);
-                    $job['started_at'] = $now;
-                    $job['heartbeat_at'] = $now;
-                    if (is_array($job['worker_command_filter'] ?? null)) {
-                        $job['stage'] = 'preparing_source';
-                        $job['worker_preflight_status'] = 'preparing';
-                        $job['worker_preflight_note'] = 'Worker picked up this candidate and is preparing the source before the command filter.';
-                    } else {
-                        $job['stage'] = 'processing';
-                    }
-                    $lockedJob = $job;
+                    $job['lease_token'] = $leaseToken;
+                    $job['claimed_at'] = gmdate(DATE_ATOM);
+                } elseif (($job['status'] ?? '') !== 'running' || ($job['worker'] ?? '') !== $pcId || !$this->jobLeaseMatches($job, $leaseToken)) {
                     break;
                 }
+
+                $now = time();
+                $nowText = gmdate(DATE_ATOM, $now);
+                if (empty($job['confirmed_at'])) {
+                    $job['confirmed_at'] = $nowText;
+                    $job['started_at'] = $nowText;
+                    $startedNow = true;
+                }
+                $job['heartbeat_at'] = $nowText;
+                $job['lease_expires_at'] = gmdate(DATE_ATOM, $now + $leaseSeconds);
+                if (is_array($job['worker_command_filter'] ?? null)) {
+                    $job['stage'] = 'preparing_source';
+                    $job['worker_preflight_status'] = 'preparing';
+                    $job['worker_preflight_note'] = 'Worker confirmed this candidate and is preparing the source before the command filter.';
+                } else {
+                    $job['stage'] = 'processing';
+                }
+                $job['stage_message'] = 'Worker confirmed the lease and started processing.';
+                $lockedJob = $job;
+                break;
             }
             unset($job);
 
@@ -588,19 +813,21 @@ final class FarmStore
                 ]);
             }
 
-            return ['data' => $data, 'result' => $lockedJob];
+            return ['data' => $data, 'result' => $lockedJob !== null ? ['job' => $lockedJob, 'started_now' => $startedNow] : null];
         }, true);
 
-        if (is_array($result)) {
-            $this->recordEvent('job_started', $result);
-            $this->recordFileTouch($result['source'], 'started_source', $result);
+        if (is_array($result) && is_array($result['job'] ?? null)) {
+            if (!empty($result['started_now'])) {
+                $this->recordEvent('job_started', $result['job']);
+                $this->recordFileTouch($result['job']['source'], 'started_source', $result['job']);
+            }
             return true;
         }
 
         return false;
     }
 
-    public function updateJobStage(string $taskId, string $pcId, string $stage, string $message = ''): bool
+    public function updateJobStage(string $taskId, string $pcId, string $stage, string $message = '', string $leaseToken = ''): bool
     {
         $stage = strtolower(trim(preg_replace('/[^a-zA-Z0-9_-]+/', '_', $stage)));
         if ($stage === '' || $taskId === '' || $pcId === '') {
@@ -611,7 +838,7 @@ final class FarmStore
             $message = substr($message, 0, 500);
         }
 
-        $result = $this->withLock(function (array $data) use ($taskId, $pcId, $stage, $message): array {
+        $result = $this->withLock(function (array $data) use ($taskId, $pcId, $stage, $message, $leaseToken): array {
             $updatedJob = null;
             $now = gmdate(DATE_ATOM);
             foreach ($data['jobs'] as &$job) {
@@ -619,6 +846,8 @@ final class FarmStore
                     ($job['task_id'] ?? '') === $taskId
                     && ($job['status'] ?? '') === 'running'
                     && ($job['worker'] ?? '') === $pcId
+                    && $this->jobLeaseMatches($job, $leaseToken)
+                    && !empty($job['confirmed_at'])
                 ) {
                     $job['stage'] = $stage;
                     $job['stage_at'] = $now;
@@ -659,19 +888,24 @@ final class FarmStore
         return is_array($result);
     }
 
-    public function heartbeatJob(string $taskId, string $pcId): bool
+    public function heartbeatJob(string $taskId, string $pcId, string $leaseToken = '', int $leaseSeconds = 180): bool
     {
-        $result = $this->withLock(function (array $data) use ($taskId, $pcId): array {
+        $leaseSeconds = max(30, min(3600, $leaseSeconds));
+        $result = $this->withLock(function (array $data) use ($taskId, $pcId, $leaseToken, $leaseSeconds): array {
             $heartbeatJob = null;
-            $now = gmdate(DATE_ATOM);
+            $nowTimestamp = time();
+            $now = gmdate(DATE_ATOM, $nowTimestamp);
 
             foreach ($data['jobs'] as &$job) {
                 if (
                     ($job['task_id'] ?? '') === $taskId
                     && ($job['status'] ?? '') === 'running'
                     && ($job['worker'] ?? '') === $pcId
+                    && $this->jobLeaseMatches($job, $leaseToken)
+                    && !empty($job['confirmed_at'])
                 ) {
                     $job['heartbeat_at'] = $now;
+                    $job['lease_expires_at'] = gmdate(DATE_ATOM, $nowTimestamp + $leaseSeconds);
                     $heartbeatJob = $job;
                     break;
                 }
@@ -744,6 +978,7 @@ final class FarmStore
                 $job['heartbeat_at'] = null;
                 $job['finished_at'] = null;
                 $job['released_at'] = gmdate(DATE_ATOM);
+                $this->clearJobLeaseFields($job);
                 unset($job['held_at'], $job['held_from_status'], $job['held_worker']);
                 $releasedJob = $job;
                 break;
@@ -778,20 +1013,44 @@ final class FarmStore
         });
     }
 
-    public function finishJob(string $taskId, string $pcId, string $status, string $error): bool
+    public function finishJob(
+        string $taskId,
+        string $pcId,
+        string $status,
+        string $error,
+        string $leaseToken = '',
+        string $completionId = ''
+    ): bool
     {
-        $result = $this->withLock(function (array $data) use ($taskId, $pcId, $status, $error): array {
+        $result = $this->withLock(function (array $data) use ($taskId, $pcId, $status, $error, $leaseToken, $completionId): array {
             $finishedJob = null;
             $retryJob = null;
+            $idempotent = false;
             foreach ($data['jobs'] as &$job) {
+                if (($job['task_id'] ?? '') !== $taskId || ($job['worker'] ?? '') !== $pcId) {
+                    continue;
+                }
+
                 if (
-                    ($job['task_id'] ?? '') === $taskId
-                    && ($job['status'] ?? '') === 'running'
-                    && ($job['worker'] ?? '') === $pcId
+                    in_array((string) ($job['status'] ?? ''), ['success', 'failed', 'skipped'], true)
+                    && $completionId !== ''
+                    && hash_equals((string) ($job['completion_id'] ?? ''), $completionId)
+                    && $this->jobLeaseMatches($job, $leaseToken)
+                ) {
+                    $finishedJob = $job;
+                    $idempotent = true;
+                    break;
+                }
+
+                if (
+                    ($job['status'] ?? '') === 'running'
+                    && $this->jobLeaseMatches($job, $leaseToken)
+                    && (!array_key_exists('confirmed_at', $job) || !empty($job['confirmed_at']))
                 ) {
                     $job['status'] = in_array($status, ['success', 'skipped'], true) ? $status : 'failed';
                     $job['error'] = $error;
                     $job['finished_at'] = gmdate(DATE_ATOM);
+                    $job['completion_id'] = $completionId;
                     if (is_array($job['worker_command_filter'] ?? null)) {
                         if ($job['status'] === 'skipped') {
                             $job['worker_preflight_status'] = 'skipped';
@@ -823,6 +1082,7 @@ final class FarmStore
                         $retryJob['started_at'] = null;
                         $retryJob['heartbeat_at'] = null;
                         $retryJob['finished_at'] = null;
+                        $this->clearJobLeaseFields($retryJob);
                         $data['jobs'][] = $retryJob;
                     }
                     break;
@@ -840,14 +1100,16 @@ final class FarmStore
                 $this->markQuarantinePurgeFinishedInData($data, $finishedJob);
             }
 
-            return ['data' => $data, 'result' => ['finished' => $finishedJob, 'retry' => $retryJob]];
+            return ['data' => $data, 'result' => ['finished' => $finishedJob, 'retry' => $retryJob, 'idempotent' => $idempotent]];
         }, true);
 
         if (is_array($result) && is_array($result['finished'] ?? null)) {
             $finishedJob = $result['finished'];
-            $this->recordEvent('job_' . $finishedJob['status'], $finishedJob);
-            $this->recordFileTouch($finishedJob['source'], 'finished_source_' . $finishedJob['status'], $finishedJob);
-            $this->recordFileTouch($finishedJob['delivery'], 'finished_delivery_' . $finishedJob['status'], $finishedJob);
+            if (empty($result['idempotent'])) {
+                $this->recordEvent('job_' . $finishedJob['status'], $finishedJob);
+                $this->recordFileTouch($finishedJob['source'], 'finished_source_' . $finishedJob['status'], $finishedJob);
+                $this->recordFileTouch($finishedJob['delivery'], 'finished_delivery_' . $finishedJob['status'], $finishedJob);
+            }
 
             if (is_array($result['retry'] ?? null)) {
                 $this->recordEvent('job_retried', $result['retry']);
@@ -888,13 +1150,19 @@ final class FarmStore
                 }
 
                 $lastProgressAt = strtotime($progressText);
-                if ($lastProgressAt === false || ($now - $lastProgressAt) <= $staleAfterSeconds) {
+                $hasLease = trim((string) ($job['lease_expires_at'] ?? '')) !== '';
+                $expired = $hasLease
+                    ? $this->jobLeaseExpired($job, $now)
+                    : ($lastProgressAt !== false && ($now - $lastProgressAt) > $staleAfterSeconds);
+                if (!$expired) {
                     continue;
                 }
 
                 $originalWorkerId = (string) ($job['worker'] ?? '');
                 $job['status'] = 'stale';
-                $job['error'] = 'Worker heartbeat timed out after ' . $staleAfterSeconds . ' seconds. Last progress: ' . $progressText;
+                $job['error'] = $hasLease
+                    ? 'Worker lease expired without a successful renewal. Last acknowledged progress: ' . $progressText
+                    : 'Worker heartbeat timed out after ' . $staleAfterSeconds . ' seconds. Last progress: ' . $progressText;
                 $job['stale_at'] = $nowText;
                 $job['finished_at'] = $nowText;
                 $job['crash_key'] = $this->jobCrashKey($job);
@@ -927,6 +1195,7 @@ final class FarmStore
                     $retryJob['started_at'] = null;
                     $retryJob['heartbeat_at'] = null;
                     $retryJob['finished_at'] = null;
+                    $this->clearJobLeaseFields($retryJob);
                     $retryJob['crash_key'] = $this->jobCrashKey($retryJob);
                     unset($retryJob['stale_at'], $retryJob['blocked_at'], $retryJob['blocked_reason'], $retryJob['crash_pattern_count'], $retryJob['crash_pattern_workers']);
                     $data['jobs'][] = $retryJob;
@@ -1019,6 +1288,7 @@ final class FarmStore
                             $requeuedJob['heartbeat_at'] = null;
                             $requeuedJob['finished_at'] = null;
                             $requeuedJob['loss_reason'] = null;
+                            $this->clearJobLeaseFields($requeuedJob);
                             $requeuedJob['crash_key'] = $this->jobCrashKey($requeuedJob);
                             unset($requeuedJob['stale_at'], $requeuedJob['blocked_at'], $requeuedJob['blocked_reason'], $requeuedJob['crash_pattern_count'], $requeuedJob['crash_pattern_workers']);
                             $data['jobs'][] = $requeuedJob;
@@ -1073,6 +1343,13 @@ final class FarmStore
 
     public function trimJobArchive(int $keepLines): int
     {
+        return $this->withSidecarLock($this->jobArchiveLockPath, true, function () use ($keepLines): int {
+            return $this->trimJobArchiveUnlocked($keepLines);
+        });
+    }
+
+    private function trimJobArchiveUnlocked(int $keepLines): int
+    {
         $keepLines = max(0, $keepLines);
         if (!is_file($this->jobArchivePath)) {
             return 0;
@@ -1080,7 +1357,7 @@ final class FarmStore
 
         if ($keepLines === 0) {
             $removed = $this->countFileLines($this->jobArchivePath);
-            @file_put_contents($this->jobArchivePath, '', LOCK_EX);
+            @file_put_contents($this->jobArchivePath, '');
             return $removed;
         }
 
@@ -1090,7 +1367,7 @@ final class FarmStore
         }
 
         $tail = $this->tailLines($this->jobArchivePath, $keepLines);
-        @file_put_contents($this->jobArchivePath, implode(PHP_EOL, $tail) . PHP_EOL, LOCK_EX);
+        @file_put_contents($this->jobArchivePath, implode(PHP_EOL, $tail) . PHP_EOL);
         return $lineCount - count($tail);
     }
 
@@ -1137,6 +1414,7 @@ final class FarmStore
                 $newJob['finished_at'] = null;
                 $newJob['manual_retry_from_task_id'] = $job['task_id'];
                 $newJob['manual_retry_from_status'] = $status;
+                $this->clearJobLeaseFields($newJob);
                 unset(
                     $newJob['stale_at'],
                     $newJob['blocked_at'],
@@ -1462,8 +1740,6 @@ final class FarmStore
             $data['settings']['prefer_lower_shutdown_layers_for_work'] = !empty($data['settings']['prefer_lower_shutdown_layers_for_work']);
             $data['settings']['shutdown_debug_mode'] = !empty($data['settings']['shutdown_debug_mode']);
             $data['settings']['auto_wake_for_queued_jobs'] = !empty($data['settings']['auto_wake_for_queued_jobs']);
-            $data['settings']['automation_run_due_on_worker_checkin'] = !empty($data['settings']['automation_run_due_on_worker_checkin']);
-            $data['settings']['automation_checkin_cooldown_seconds'] = max(0, min(3600, (int) ($data['settings']['automation_checkin_cooldown_seconds'] ?? 60)));
             $dispatchMode = (string) ($data['settings']['wake_dispatch_mode'] ?? 'worker_relay');
             $data['settings']['wake_dispatch_mode'] = in_array($dispatchMode, ['direct', 'worker_relay', 'direct_then_worker_relay'], true) ? $dispatchMode : 'worker_relay';
             $data['settings']['auto_wake_cooldown_seconds'] = max(0, (int) ($data['settings']['auto_wake_cooldown_seconds'] ?? 300));
@@ -1474,6 +1750,7 @@ final class FarmStore
             $data['settings']['event_log_keep_lines'] = max(0, (int) ($data['settings']['event_log_keep_lines'] ?? 1000));
             $data['settings']['file_history_keep_paths'] = max(0, (int) ($data['settings']['file_history_keep_paths'] ?? 500));
             $data['settings']['file_history_keep_entries_per_path'] = max(0, (int) ($data['settings']['file_history_keep_entries_per_path'] ?? 10));
+            $data['settings']['job_lease_seconds'] = max(30, min(3600, (int) ($data['settings']['job_lease_seconds'] ?? 180)));
             $data['settings']['job_archive_keep_lines'] = max(0, (int) ($data['settings']['job_archive_keep_lines'] ?? 5000));
             $data['settings']['worker_temp_max_age_hours'] = max(1, (int) ($data['settings']['worker_temp_max_age_hours'] ?? 24));
             $data['settings']['quarantine_keep_days'] = max(1, (int) ($data['settings']['quarantine_keep_days'] ?? 14));
@@ -1999,7 +2276,9 @@ final class FarmStore
             return [];
         }
 
-        $lines = $this->tailLines($this->eventLogPath, max(0, $limit));
+        $lines = $this->withSidecarLock($this->eventLogLockPath, false, function () use ($limit): array {
+            return $this->tailLines($this->eventLogPath, max(0, $limit));
+        });
         $events = [];
 
         foreach ($lines as $line) {
@@ -2014,13 +2293,22 @@ final class FarmStore
 
     public function readFileHistory(): array
     {
+        return $this->withSidecarLock($this->fileHistoryLockPath, false, function (): array {
+            return $this->readFileHistoryUnlocked();
+        });
+    }
+
+    private function readFileHistoryUnlocked(): array
+    {
         if (!is_file($this->fileHistoryPath)) {
             return [];
         }
 
-        $history = json_decode((string) file_get_contents($this->fileHistoryPath), true);
+        $contents = (string) file_get_contents($this->fileHistoryPath);
+        $history = json_decode($contents, true);
         if (!is_array($history)) {
-            return [];
+            $this->preserveCorruptJson($this->fileHistoryPath, $contents);
+            throw new RuntimeException('File-history JSON is invalid. A corrupt copy was preserved beside it.');
         }
 
         uasort($history, static function (array $a, array $b): int {
@@ -2045,7 +2333,7 @@ final class FarmStore
             'error' => $job['error'] ?? '',
         ];
 
-        @file_put_contents($this->eventLogPath, json_encode($entry, JSON_UNESCAPED_SLASHES) . PHP_EOL, FILE_APPEND | LOCK_EX);
+        $this->appendEventEntry($entry);
     }
 
     private function recordSystemEvent(string $event, string $error = '', array $extra = []): void
@@ -2062,7 +2350,17 @@ final class FarmStore
             'error' => $error,
         ], $extra);
 
-        @file_put_contents($this->eventLogPath, json_encode($entry, JSON_UNESCAPED_SLASHES) . PHP_EOL, FILE_APPEND | LOCK_EX);
+        $this->appendEventEntry($entry);
+    }
+
+    private function appendEventEntry(array $entry): void
+    {
+        $this->withSidecarLock($this->eventLogLockPath, true, function () use ($entry): void {
+            $encoded = json_encode($entry, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+            if (@file_put_contents($this->eventLogPath, $encoded . PHP_EOL, FILE_APPEND) === false) {
+                throw new RuntimeException('Unable to append farm event log: ' . $this->eventLogPath);
+            }
+        });
     }
 
     private function recordFileTouch(?string $path, string $action, array $job): void
@@ -2071,36 +2369,35 @@ final class FarmStore
             return;
         }
 
-        $history = $this->readFileHistory();
-        $entry = [
-            'timestamp' => gmdate(DATE_ATOM),
-            'action' => $action,
-            'task_id' => $job['task_id'] ?? null,
-            'module' => $job['module'] ?? null,
-            'status' => $job['status'] ?? null,
-            'worker' => $job['worker'] ?? null,
-            'paired_path' => ($path === ($job['source'] ?? null)) ? ($job['delivery'] ?? null) : ($job['source'] ?? null),
-            'error' => $job['error'] ?? '',
-        ];
+        $this->withSidecarLock($this->fileHistoryLockPath, true, function () use ($path, $action, $job): void {
+            $history = $this->readFileHistoryUnlocked();
+            $entry = [
+                'timestamp' => gmdate(DATE_ATOM),
+                'action' => $action,
+                'task_id' => $job['task_id'] ?? null,
+                'module' => $job['module'] ?? null,
+                'status' => $job['status'] ?? null,
+                'worker' => $job['worker'] ?? null,
+                'paired_path' => ($path === ($job['source'] ?? null)) ? ($job['delivery'] ?? null) : ($job['source'] ?? null),
+                'error' => $job['error'] ?? '',
+            ];
 
-        $settings = $this->effectiveSettings();
-        $entriesPerPath = max(1, (int) ($settings['file_history_keep_entries_per_path'] ?? 10));
-        $maxPaths = max(1, (int) ($settings['file_history_keep_paths'] ?? 500));
+            $settings = $this->effectiveSettings();
+            $entriesPerPath = max(1, (int) ($settings['file_history_keep_entries_per_path'] ?? 10));
+            $maxPaths = max(1, (int) ($settings['file_history_keep_paths'] ?? 500));
 
-        $history[$path][] = $entry;
-        $history[$path] = array_slice($history[$path], -$entriesPerPath);
-
-        uasort($history, static function (array $a, array $b): int {
-            $latestA = (string) ($a[count($a) - 1]['timestamp'] ?? '');
-            $latestB = (string) ($b[count($b) - 1]['timestamp'] ?? '');
-            return strcmp($latestB, $latestA);
+            $history[$path][] = $entry;
+            $history[$path] = array_slice($history[$path], -$entriesPerPath);
+            uasort($history, static function (array $a, array $b): int {
+                $latestA = (string) ($a[count($a) - 1]['timestamp'] ?? '');
+                $latestB = (string) ($b[count($b) - 1]['timestamp'] ?? '');
+                return strcmp($latestB, $latestA);
+            });
+            if (count($history) > $maxPaths) {
+                $history = array_slice($history, 0, $maxPaths, true);
+            }
+            $this->atomicWriteJson($this->fileHistoryPath, $history);
         });
-
-        if (count($history) > $maxPaths) {
-            $history = array_slice($history, 0, $maxPaths, true);
-        }
-
-        $this->atomicWriteJson($this->fileHistoryPath, $history);
     }
 
     private function appendArchivedJobs(array $jobs): void
@@ -2118,10 +2415,12 @@ final class FarmStore
         }
 
         if ($lines !== []) {
-            $written = @file_put_contents($this->jobArchivePath, implode(PHP_EOL, $lines) . PHP_EOL, FILE_APPEND | LOCK_EX);
-            if ($written === false) {
-                throw new RuntimeException(sprintf('Unable to append archived jobs to: %s', $this->jobArchivePath));
-            }
+            $this->withSidecarLock($this->jobArchiveLockPath, true, function () use ($lines): void {
+                $written = @file_put_contents($this->jobArchivePath, implode(PHP_EOL, $lines) . PHP_EOL, FILE_APPEND);
+                if ($written === false) {
+                    throw new RuntimeException(sprintf('Unable to append archived jobs to: %s', $this->jobArchivePath));
+                }
+            });
         }
     }
 
@@ -2199,9 +2498,18 @@ final class FarmStore
         }
 
         try {
-            $contents = is_file($this->path) ? (string) file_get_contents($this->path) : '';
+            $storeExists = is_file($this->path);
+            $contents = $storeExists ? file_get_contents($this->path) : '';
+            if ($storeExists && $contents === false) {
+                throw new RuntimeException('Farm store JSON could not be read: ' . $this->path);
+            }
+            $contents = (string) $contents;
             $decoded = null;
-            if (trim($contents) !== '') {
+            if ($storeExists && trim($contents) === '') {
+                $this->preserveCorruptStore($contents);
+                throw new RuntimeException('Farm store JSON is empty. A corrupt backup was written beside the store.');
+            }
+            if ($storeExists) {
                 $decoded = json_decode($contents, true);
                 if (json_last_error() !== JSON_ERROR_NONE) {
                     $this->preserveCorruptStore($contents);
@@ -2229,12 +2537,27 @@ final class FarmStore
         }
     }
 
+    private function withSidecarLock(string $lockPath, bool $write, callable $callback)
+    {
+        $handle = @fopen($lockPath, 'c+');
+        if ($handle === false) {
+            throw new RuntimeException('Unable to open JSON sidecar lock: ' . $lockPath);
+        }
+        if (!flock($handle, $write ? LOCK_EX : LOCK_SH)) {
+            fclose($handle);
+            throw new RuntimeException('Unable to acquire JSON sidecar lock: ' . $lockPath);
+        }
+        try {
+            return $callback();
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
     private function atomicWriteJson(string $path, array $data): void
     {
-        $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-        if ($json === false) {
-            throw new RuntimeException('Unable to encode farm JSON data.');
-        }
+        $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
 
         $directory = dirname($path);
         if (!is_dir($directory) && !@mkdir($directory, 0775, true) && !is_dir($directory)) {
@@ -2252,12 +2575,27 @@ final class FarmStore
                 throw new RuntimeException(sprintf('Unable to open temporary JSON file: %s', $temporaryPath));
             }
 
-            fwrite($temporaryHandle, $json . PHP_EOL);
+            $payload = $json . PHP_EOL;
+            $written = fwrite($temporaryHandle, $payload);
+            if ($written === false || $written !== strlen($payload)) {
+                throw new RuntimeException(sprintf('Unable to write complete JSON file: %s', $temporaryPath));
+            }
             fflush($temporaryHandle);
             if (function_exists('fsync')) {
                 fsync($temporaryHandle);
             }
             fclose($temporaryHandle);
+
+            if (is_file($path)) {
+                $backupPath = $path . '.bak';
+                $backupTemporaryPath = tempnam($directory, basename($backupPath) . '.tmp.');
+                if ($backupTemporaryPath === false || !@copy($path, $backupTemporaryPath) || !@rename($backupTemporaryPath, $backupPath)) {
+                    if (is_string($backupTemporaryPath) && is_file($backupTemporaryPath)) {
+                        @unlink($backupTemporaryPath);
+                    }
+                    throw new RuntimeException(sprintf('Unable to update JSON backup file: %s', $backupPath));
+                }
+            }
 
             if (!@rename($temporaryPath, $path)) {
                 throw new RuntimeException(sprintf('Unable to replace JSON file atomically: %s', $path));
@@ -2271,7 +2609,12 @@ final class FarmStore
 
     private function preserveCorruptStore(string $contents): void
     {
-        $backupPath = $this->path . '.corrupt-' . gmdate('Ymd-His');
+        $this->preserveCorruptJson($this->path, $contents);
+    }
+
+    private function preserveCorruptJson(string $path, string $contents): void
+    {
+        $backupPath = $path . '.corrupt-' . gmdate('Ymd-His') . '-' . bin2hex(random_bytes(3));
         @file_put_contents($backupPath, $contents, LOCK_EX);
     }
 
@@ -3263,6 +3606,94 @@ final class FarmStore
         $job['error'] = $previousError !== '' ? ($reason . ' Last lost-job error: ' . $previousError) : $reason;
     }
 
+    private function jobEligibilityReasonsFromData(array $data, array $job, string $pcId): array
+    {
+        $worker = is_array($data['workers'][$pcId] ?? null) ? $data['workers'][$pcId] : [];
+        $capabilities = is_array($worker['capabilities'] ?? null) ? $worker['capabilities'] : [];
+        $module = trim((string) ($job['module'] ?? ''));
+        $reasons = [];
+
+        $preferredWorker = trim((string) ($job['preferred_worker'] ?? ''));
+        if ($preferredWorker !== '' && $preferredWorker !== $pcId) {
+            $reasons[] = 'job is reserved for worker ' . $preferredWorker;
+        }
+
+        $tasks = is_array($capabilities['tasks'] ?? null) ? $capabilities['tasks'] : [];
+        if ($module === '' || !in_array($module, $tasks, true)) {
+            $readiness = is_array(($capabilities['task_readiness'] ?? null)) ? $capabilities['task_readiness'] : [];
+            $reason = trim((string) (($readiness[$module]['reason'] ?? '')));
+            $reasons[] = $reason !== ''
+                ? 'task is unavailable on this worker: ' . $reason
+                : 'task is not reported ready on this worker';
+        }
+
+        if (empty($capabilities['task_isolation']) || empty($capabilities['show_task_terminal']) || empty($capabilities['terminal_available'])) {
+            $reasons[] = 'worker cannot provide the required visible isolated task terminal';
+        }
+
+        if ($module === 'wake_farm' && empty($capabilities['can_send_wol'])) {
+            $reasons[] = 'worker cannot send Wake-on-LAN packets';
+        }
+
+        $requiredScheme = strtolower(trim((string) ($job['required_transfer_scheme'] ?? '')));
+        if ($requiredScheme !== '') {
+            $schemes = is_array($capabilities['transfer_schemes'] ?? null) ? $capabilities['transfer_schemes'] : [];
+            if (!in_array($requiredScheme, $schemes, true)) {
+                $reasons[] = 'worker does not support required transfer scheme ' . $requiredScheme;
+            }
+        }
+
+        $minimumTemp = max(0, (int) ($job['minimum_free_temp_bytes'] ?? 0));
+        if ($minimumTemp > 0 && (int) ($capabilities['free_temp_bytes'] ?? 0) < $minimumTemp) {
+            $reasons[] = 'worker has insufficient temporary disk space';
+        }
+
+        $required = is_array($job['required_capabilities'] ?? null) ? $job['required_capabilities'] : [];
+        foreach ($required as $name => $expected) {
+            if (!is_string($name) || preg_match('/^[a-zA-Z0-9_-]+$/', $name) !== 1) {
+                continue;
+            }
+            if (($capabilities[$name] ?? null) !== $expected) {
+                $reasons[] = 'required capability does not match: ' . $name;
+            }
+        }
+
+        return array_values(array_unique($reasons));
+    }
+
+    private function jobLeaseExpired(array $job, ?int $now = null): bool
+    {
+        $expiresAt = trim((string) ($job['lease_expires_at'] ?? ''));
+        if ($expiresAt === '') {
+            return false;
+        }
+        $expires = strtotime($expiresAt);
+        return $expires !== false && $expires <= ($now ?? time());
+    }
+
+    private function jobLeaseMatches(array $job, string $leaseToken): bool
+    {
+        $stored = trim((string) ($job['lease_token'] ?? ''));
+        if ($stored === '') {
+            return true;
+        }
+        return $leaseToken !== '' && hash_equals($stored, $leaseToken);
+    }
+
+    private function clearJobLeaseFields(array &$job): void
+    {
+        unset(
+            $job['lease_token'],
+            $job['lease_expires_at'],
+            $job['claimed_at'],
+            $job['confirmed_at'],
+            $job['completion_id']
+        );
+        if (($job['status'] ?? '') === 'queued') {
+            unset($job['stage'], $job['stage_at'], $job['stage_message']);
+        }
+    }
+
 
     private function cleanWorkerCapabilities(array $capabilities): array
     {
@@ -3277,7 +3708,7 @@ final class FarmStore
             }
             $clean['tasks'] = array_keys($tasks);
         }
-        foreach (['can_send_wol', 'ffmpeg', 'ffprobe', 'task_isolation'] as $key) {
+        foreach (['can_send_wol', 'ffmpeg', 'ffprobe', 'task_isolation', 'show_task_terminal', 'terminal_available'] as $key) {
             if (array_key_exists($key, $capabilities)) {
                 $clean[$key] = !empty($capabilities[$key]);
             }
@@ -3291,6 +3722,30 @@ final class FarmStore
             if (array_key_exists($key, $capabilities)) {
                 $clean[$key] = $this->limitString((string) $capabilities[$key], 200);
             }
+        }
+        if (isset($capabilities['transfer_schemes']) && is_array($capabilities['transfer_schemes'])) {
+            $schemes = [];
+            foreach ($capabilities['transfer_schemes'] as $scheme) {
+                $scheme = strtolower(trim((string) $scheme));
+                if (in_array($scheme, ['ftp', 'ftps', 'sftp'], true)) {
+                    $schemes[$scheme] = true;
+                }
+            }
+            $clean['transfer_schemes'] = array_keys($schemes);
+        }
+        if (isset($capabilities['task_readiness']) && is_array($capabilities['task_readiness'])) {
+            $readiness = [];
+            foreach (array_slice($capabilities['task_readiness'], 0, 100, true) as $name => $entry) {
+                $name = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) $name);
+                if ($name === '' || !is_array($entry)) {
+                    continue;
+                }
+                $readiness[$name] = [
+                    'ready' => !empty($entry['ready']),
+                    'reason' => $this->limitString((string) ($entry['reason'] ?? ''), 500),
+                ];
+            }
+            $clean['task_readiness'] = $readiness;
         }
         $clean['reported_at'] = gmdate(DATE_ATOM);
         return $clean;
