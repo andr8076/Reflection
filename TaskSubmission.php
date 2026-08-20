@@ -40,7 +40,7 @@ function reflection_expand_task_sources(string $module, string $source, string $
     }
 
     $extensions = ['3g2', '3gp', 'avi', 'flv', 'm2ts', 'm4v', 'mkv', 'mov', 'mp4', 'mpeg', 'mpg', 'mts', 'ts', 'vob', 'webm', 'wmv'];
-    $sources = [];
+    $videoPaths = [];
     $iterator = new RecursiveIteratorIterator(
         new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS)
     );
@@ -49,16 +49,9 @@ function reflection_expand_task_sources(string $module, string $source, string $
             continue;
         }
 
-        $videoPath = str_replace('\\', '/', $entry->getPathname());
-        if ($options !== null) {
-            $videoOptions = $options;
-            $videoOptions['path'] = $videoPath;
-            $sources[] = json_encode($videoOptions, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
-        } else {
-            $sources[] = $videoPath;
-        }
+        $videoPaths[] = str_replace('\\', '/', $entry->getPathname());
 
-        if (count($sources) > 10000) {
+        if (count($videoPaths) > 10000) {
             return [
                 'sources' => [],
                 'expanded_folder' => true,
@@ -67,13 +60,30 @@ function reflection_expand_task_sources(string $module, string $source, string $
         }
     }
 
-    sort($sources, SORT_NATURAL | SORT_FLAG_CASE);
-    if ($sources === []) {
+    if ($videoPaths === []) {
         return [
             'sources' => [],
             'expanded_folder' => true,
             'error' => 'No supported video files were found in the H.265 source folder.',
         ];
+    }
+
+    // Present folder imports in human-friendly filename order regardless of
+    // which nested directory the filesystem iterator happens to visit first.
+    usort($videoPaths, static function (string $left, string $right): int {
+        $byName = strnatcasecmp(basename($left), basename($right));
+        return $byName !== 0 ? $byName : strnatcasecmp($left, $right);
+    });
+
+    $sources = [];
+    foreach ($videoPaths as $videoPath) {
+        if ($options !== null) {
+            $videoOptions = $options;
+            $videoOptions['path'] = $videoPath;
+            $sources[] = json_encode($videoOptions, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        } else {
+            $sources[] = $videoPath;
+        }
     }
 
     return ['sources' => $sources, 'expanded_folder' => true, 'error' => null];
