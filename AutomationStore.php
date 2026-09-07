@@ -92,10 +92,6 @@ final class AutomationStore
             'min_size_mb' => '',
             'max_size_mb' => '',
             'require_unchanged_seconds' => 120,
-            'command_filter_mode' => 'disabled',
-            'command_filter_command' => '',
-            'command_filter_regex' => '',
-            'command_timeout_seconds' => 20,
             'max_files_per_scan' => 500,
             'max_jobs_per_scan' => 25,
             'scan_interval_minutes' => 60,
@@ -230,17 +226,11 @@ final class AutomationStore
                 break;
             }
         }
-        foreach (['include_regex', 'exclude_regex', 'command_filter_regex'] as $regexKey) {
+        foreach (['include_regex', 'exclude_regex'] as $regexKey) {
             $regex = trim((string) ($rule[$regexKey] ?? ''));
             if ($regex !== '' && !$this->regexIsValid($regex)) {
                 $errors[] = $regexKey . ' is not a valid PHP regular expression.';
             }
-        }
-        if (!in_array((string) ($rule['command_filter_mode'] ?? 'disabled'), ['disabled', 'exit_zero', 'output_matches', 'output_not_matches'], true)) {
-            $errors[] = 'The command filter mode is invalid.';
-        }
-        if (in_array((string) ($rule['command_filter_mode'] ?? 'disabled'), ['output_matches', 'output_not_matches'], true) && trim((string) ($rule['command_filter_regex'] ?? '')) === '') {
-            $errors[] = 'Command output modes require a command output regex.';
         }
         $taskDelivery = $this->taskDeliverySpec((string) ($rule['module'] ?? ''));
         $taskAutoTemplate = $this->taskAutoDeliveryTemplate($taskDelivery);
@@ -272,13 +262,6 @@ final class AutomationStore
             if ($customDeliveryTemplate !== '' && !$this->templateEndsWithExtension($customDeliveryTemplate, $requiredExtension)) {
                 $errors[] = (string) ($rule['module'] ?? 'Task') . ' delivery template must end with ' . $requiredExtension . ', or leave it blank to use the task automatic template.';
             }
-        }
-        if (($rule['command_filter_mode'] ?? 'disabled') !== 'disabled') {
-            $errors = array_merge($errors, $this->templateValidationErrors(
-                (string) ($rule['command_filter_command'] ?? ''),
-                'Command template',
-                $this->validCommandTemplatePlaceholders()
-            ));
         }
 
         return $errors;
@@ -363,8 +346,7 @@ final class AutomationStore
 
             if ($dryRun) {
                 $summary['queued']++;
-                $dryRunStatus = !empty($evaluation['worker_command_filter_pending']) ? 'would_queue_candidate' : 'would_queue';
-                $this->appendRunRow($summary, $candidate, array_merge($evaluation, ['source' => $source, 'delivery' => $delivery]), $dryRunStatus);
+                $this->appendRunRow($summary, $candidate, array_merge($evaluation, ['source' => $source, 'delivery' => $delivery]), 'would_queue');
                 continue;
             }
 
@@ -380,13 +362,6 @@ final class AutomationStore
                 $transferServerId = trim((string) ($rule['transfer_server_id'] ?? ''));
                 if ($transferServerId !== '' && isset($this->transferServerSchemes[$transferServerId])) {
                     $jobExtra['required_transfer_scheme'] = $this->transferServerSchemes[$transferServerId];
-                }
-                $workerCommandFilter = $this->workerCommandFilterPayload($rule);
-                if ($workerCommandFilter !== null) {
-                    $jobExtra['worker_command_filter'] = $workerCommandFilter;
-                    $jobExtra['candidate_job'] = true;
-                    $jobExtra['worker_preflight_status'] = 'pending';
-                    $jobExtra['worker_preflight_note'] = 'Queued as a candidate. A farm computer will run the worker command filter before processing.';
                 }
 
                 $job = $farmStore->createJob(
@@ -487,10 +462,6 @@ final class AutomationStore
         $rule['min_size_mb'] = $this->normalizeOptionalNumber($rule['min_size_mb'] ?? '');
         $rule['max_size_mb'] = $this->normalizeOptionalNumber($rule['max_size_mb'] ?? '');
         $rule['require_unchanged_seconds'] = max(0, (int) ($rule['require_unchanged_seconds'] ?? 0));
-        $rule['command_filter_mode'] = (string) ($rule['command_filter_mode'] ?? 'disabled');
-        $rule['command_filter_command'] = trim((string) ($rule['command_filter_command'] ?? ''));
-        $rule['command_filter_regex'] = trim((string) ($rule['command_filter_regex'] ?? ''));
-        $rule['command_timeout_seconds'] = max(1, min(3600, (int) ($rule['command_timeout_seconds'] ?? 20)));
         $rule['max_files_per_scan'] = max(1, min(100000, (int) ($rule['max_files_per_scan'] ?? 500)));
         $rule['max_jobs_per_scan'] = max(0, min(10000, (int) ($rule['max_jobs_per_scan'] ?? 25)));
         $rule['scan_interval_minutes'] = max(1, min(10080, (int) ($rule['scan_interval_minutes'] ?? 60)));
@@ -528,10 +499,6 @@ final class AutomationStore
             'min_size_mb' => '',
             'max_size_mb' => '',
             'require_unchanged_seconds' => 120,
-            'command_filter_mode' => 'disabled',
-            'command_filter_command' => '',
-            'command_filter_regex' => '',
-            'command_timeout_seconds' => 20,
             'max_files_per_scan' => 500,
             'max_jobs_per_scan' => 25,
             'scan_interval_minutes' => 60,
@@ -689,34 +656,7 @@ final class AutomationStore
             return ['include' => false, 'reason' => 'Matched exclude regex.'];
         }
 
-        $commandFilter = $this->workerCommandFilterPayload($rule);
-        if ($commandFilter !== null) {
-            return [
-                'include' => true,
-                'reason' => 'Matched server-side filters; worker command filter will run on the farm computer before the task starts.',
-                'worker_command_filter_pending' => true,
-            ];
-        }
-
         return ['include' => true, 'reason' => 'Matched all filters.'];
-    }
-
-    private function workerCommandFilterPayload(array $rule): ?array
-    {
-        $mode = (string) ($rule['command_filter_mode'] ?? 'disabled');
-        $command = trim((string) ($rule['command_filter_command'] ?? ''));
-        if ($mode === 'disabled' || $command === '') {
-            return null;
-        }
-
-        $payload = [
-            'mode' => $mode,
-            'command' => $command,
-            'regex' => trim((string) ($rule['command_filter_regex'] ?? '')),
-            'timeout_seconds' => max(1, (int) ($rule['command_timeout_seconds'] ?? 20)),
-        ];
-
-        return $payload;
     }
 
     private function shouldQueue(array $rule, array $candidate, string $source, FarmStore $farmStore, string $fingerprint, ?string &$reason): bool
@@ -824,7 +764,6 @@ final class AutomationStore
             'source' => (string) ($evaluation['source'] ?? ''),
             'delivery' => (string) ($evaluation['delivery'] ?? ''),
             'task_id' => (string) ($evaluation['task_id'] ?? ''),
-            'command_output' => $this->limitString((string) ($evaluation['command_output'] ?? ''), 250),
         ];
     }
 
@@ -1042,26 +981,11 @@ final class AutomationStore
         ];
     }
 
-    private function validCommandTemplatePlaceholders(): array
-    {
-        return array_values(array_unique(array_merge($this->validTemplatePlaceholders(), [
-            'farm_root', 'task_dir', 'task_file',
-        ])));
-    }
-
     private function templateValidationErrors(string $template, string $label, ?array $validPlaceholders = null): array
     {
         $template = trim($template);
         if ($template === '') {
             return [];
-        }
-
-        // Be defensive here: command templates have their own placeholder set.
-        // The save path passes that set explicitly, but this label-based fallback
-        // prevents future call sites from accidentally validating command filters
-        // against path-only placeholders and rejecting {task_file}.
-        if ($validPlaceholders === null && strtolower($label) === 'command template') {
-            $validPlaceholders = $this->validCommandTemplatePlaceholders();
         }
 
         $errors = [];
@@ -1108,99 +1032,6 @@ final class AutomationStore
             '{worker_ext}' => (string) ($candidate['worker_ext'] ?? ($candidate['ext'] ?? '')),
             '{worker_dot_ext}' => (string) (($candidate['worker_ext'] ?? ($candidate['ext'] ?? '')) !== '' ? '.' . ($candidate['worker_ext'] ?? ($candidate['ext'] ?? '')) : ''),
         ]);
-    }
-
-    private function applyCommandTemplate(string $template, array $candidate, string $module = ''): string
-    {
-        $farmRoot = __DIR__;
-        $taskDir = $farmRoot . DIRECTORY_SEPARATOR . 'cluster' . DIRECTORY_SEPARATOR . 'tasks';
-        $taskFile = $module !== '' ? $taskDir . DIRECTORY_SEPARATOR . basename($module) . '.py' : '';
-
-        return strtr($template, [
-            '{source}' => escapeshellarg((string) ($candidate['source'] ?? ($candidate['path'] ?? ''))),
-            '{path}' => escapeshellarg((string) ($candidate['path'] ?? '')),
-            '{root}' => escapeshellarg((string) ($candidate['root'] ?? '')),
-            '{relative}' => escapeshellarg((string) ($candidate['relative'] ?? '')),
-            '{dir}' => escapeshellarg((string) ($candidate['dir'] ?? '')),
-            '{directory}' => escapeshellarg((string) ($candidate['dir'] ?? '')),
-            '{basename}' => escapeshellarg((string) ($candidate['basename'] ?? '')),
-            '{name}' => escapeshellarg((string) ($candidate['name'] ?? '')),
-            '{ext}' => escapeshellarg((string) ($candidate['ext'] ?? '')),
-            '{dot_ext}' => escapeshellarg((string) (($candidate['ext'] ?? '') !== '' ? '.' . ($candidate['ext'] ?? '') : '')),
-            '{mtime}' => escapeshellarg((string) ($candidate['mtime'] ?? '')),
-            '{size}' => escapeshellarg((string) ($candidate['size'] ?? '')),
-            '{worker_path}' => escapeshellarg((string) ($candidate['worker_path'] ?? ($candidate['path'] ?? ''))),
-            '{worker_root}' => escapeshellarg((string) ($candidate['worker_root'] ?? ($candidate['root'] ?? ''))),
-            '{worker_relative}' => escapeshellarg((string) ($candidate['worker_relative'] ?? ($candidate['relative'] ?? ''))),
-            '{worker_dir}' => escapeshellarg((string) ($candidate['worker_dir'] ?? ($candidate['dir'] ?? ''))),
-            '{worker_basename}' => escapeshellarg((string) ($candidate['worker_basename'] ?? ($candidate['basename'] ?? ''))),
-            '{worker_name}' => escapeshellarg((string) ($candidate['worker_name'] ?? ($candidate['name'] ?? ''))),
-            '{worker_ext}' => escapeshellarg((string) ($candidate['worker_ext'] ?? ($candidate['ext'] ?? ''))),
-            '{worker_dot_ext}' => escapeshellarg((string) (($candidate['worker_ext'] ?? ($candidate['ext'] ?? '')) !== '' ? '.' . ($candidate['worker_ext'] ?? ($candidate['ext'] ?? '')) : '')),
-            '{farm_root}' => escapeshellarg($farmRoot),
-            '{task_dir}' => escapeshellarg($taskDir),
-            '{task_file}' => escapeshellarg($taskFile),
-        ]);
-    }
-
-    private function runCommand(string $command, int $timeoutSeconds): array
-    {
-        $descriptorSpec = [
-            1 => ['pipe', 'w'],
-            2 => ['pipe', 'w'],
-        ];
-        $process = @proc_open($command, $descriptorSpec, $pipes);
-        if (!is_resource($process)) {
-            return ['exit_code' => 127, 'output' => 'Unable to start command.', 'timed_out' => false];
-        }
-
-        foreach ($pipes as $pipe) {
-            stream_set_blocking($pipe, false);
-        }
-
-        $output = '';
-        $deadline = time() + max(1, $timeoutSeconds);
-        $timedOut = false;
-        while (true) {
-            foreach ($pipes as $pipe) {
-                $chunk = stream_get_contents($pipe);
-                if ($chunk !== false && $chunk !== '') {
-                    $output .= $chunk;
-                    if (strlen($output) > 4096) {
-                        $output = substr($output, -4096);
-                    }
-                }
-            }
-
-            $status = proc_get_status($process);
-            if (!$status['running']) {
-                break;
-            }
-            if (time() >= $deadline) {
-                $timedOut = true;
-                proc_terminate($process);
-                break;
-            }
-            usleep(100000);
-        }
-
-        foreach ($pipes as $pipe) {
-            $chunk = stream_get_contents($pipe);
-            if ($chunk !== false && $chunk !== '') {
-                $output .= $chunk;
-            }
-            fclose($pipe);
-        }
-        $exitCode = proc_close($process);
-        if ($timedOut) {
-            $exitCode = 124;
-        }
-
-        return [
-            'exit_code' => (int) $exitCode,
-            'output' => $this->limitString(trim($output), 4096),
-            'timed_out' => $timedOut,
-        ];
     }
 
     private function decorateCandidateForRule(array $rule, array $candidate): array
