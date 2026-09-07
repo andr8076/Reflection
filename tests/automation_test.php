@@ -198,11 +198,6 @@ assertSameValue(3, count($data['jobs']), 'Requeue override should allow concurre
 $due = $automationStore->runDueRules($farmStore, true);
 assertSameValue(0, count($due), 'Recently scanned rule should not be due yet.');
 
-$automationStore->runDueRulesForWorkerCheckin($farmStore, false, 60);
-$cooldownCheck = $automationStore->runDueRulesForWorkerCheckin($farmStore, false, 60);
-assertSameValue('skipped', $cooldownCheck[0]['status'] ?? '', 'Repeated worker-triggered automation checks should respect the global cooldown.');
-assertSameValue('automation_check_cooldown', $cooldownCheck[0]['reason'] ?? '', 'Worker-triggered automation cooldown should report a clear reason.');
-
 $contractStore = new AutomationStore($dataDir, [
     'h265_encode' => [
         'delivery' => [
@@ -235,6 +230,26 @@ assertSameValue(1, $h265Run['queued'], 'H265 rule should queue one job.');
 $data = $farmStore->read();
 $lastJob = end($data['jobs']);
 assertSameValue($scanDir . DIRECTORY_SEPARATOR . 'movie_h265.mkv', $lastJob['delivery'], 'Queued h265 job should deliver to MKV path from task contract.');
+
+$protocolStore = new AutomationStore($dataDir, [], ['archive' => 'sftp']);
+$protocolRule = $protocolStore->saveRule([
+    'name' => 'SFTP capability routing',
+    'enabled' => false,
+    'module' => 'dummy_task',
+    'scan_roots' => $scanDir . DIRECTORY_SEPARATOR . 'two.log',
+    'recursive' => false,
+    'source_template' => '{path}',
+    'transfer_server_id' => 'archive',
+    'extensions' => 'log',
+    'require_unchanged_seconds' => 0,
+    'max_files_per_scan' => 10,
+    'max_jobs_per_scan' => 10,
+], ['dummy_task' => 'dummy'], ['archive']);
+$protocolRun = $protocolStore->runRule($protocolRule, $farmStore, false);
+assertSameValue(1, $protocolRun['queued'], 'Automation jobs should queue through their selected transfer server.');
+$data = $farmStore->read();
+$protocolJob = end($data['jobs']);
+assertSameValue('sftp', $protocolJob['required_transfer_scheme'] ?? '', 'Automation jobs should carry transfer protocol requirements into worker scheduling.');
 
 $badTemplateErrors = $contractStore->validateRule($contractStore->normalizeRule([
     'name' => 'Bad H265 delivery',

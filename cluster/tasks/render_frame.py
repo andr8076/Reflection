@@ -9,6 +9,8 @@ TASK_SPEC_JSON = r'''
 {
   "name": "render_frame",
   "description": "Render a frame with the configured worker renderer.",
+  "production_ready": false,
+  "unavailable_reason": "render_frame has no renderer implementation yet.",
   "source": {
     "mode": "required",
     "label": "Render source",

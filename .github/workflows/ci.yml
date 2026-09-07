@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: cluster/requirements.txt
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+
+      - name: Install worker dependencies
+        run: python -m pip install -r cluster/requirements.txt
+
+      - name: Validate PHP
+        run: |
+          find . -maxdepth 2 -type f -name '*.php' -print0 | sort -z | xargs -0 -n1 php -l
+          for test_file in tests/*_test.php; do php "$test_file"; done
+
+      - name: Test worker
+        run: |
+          python -m py_compile cluster/*.py cluster/tasks/*.py
+          python -m unittest discover -s cluster/tests -v
+
+      - name: Validate scripts and browser JavaScript
+        run: |
+          bash -n install_master.sh update.sh cluster/install.sh cluster/uninstall.sh cluster/tools/*.sh
+          for js_file in assets/js/*.js; do node --check "$js_file"; done

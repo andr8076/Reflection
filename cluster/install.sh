@@ -15,6 +15,8 @@ this user's graphical desktop session starts.
 Options:
   --configure       Re-run the interactive reflection_config.json setup.
   --skip-config     Do not create or update reflection_config.json.
+  --skip-server-check
+                    Validate this worker without contacting the master.
   --accept-defaults Write default/current config values without prompting.
   --status          Show autostart status and exit.
   -h, --help        Show this help.
@@ -29,6 +31,7 @@ configure=false
 skip_config=false
 accept_defaults=false
 status_only=false
+skip_server_check=false
 
 while (($#)); do
     case "$1" in
@@ -43,6 +46,9 @@ while (($#)); do
             ;;
         --status)
             status_only=true
+            ;;
+        --skip-server-check)
+            skip_server_check=true
             ;;
         -h|--help)
             usage
@@ -105,11 +111,27 @@ fi
 echo "Installing $APP_NAME from: $SCRIPT_DIR"
 echo "Visible terminal command found: $terminal"
 
-python3 -m py_compile \
+VENV_DIR="$SCRIPT_DIR/.venv"
+if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+    echo "Creating isolated Python environment: $VENV_DIR"
+    if ! python3 -m venv "$VENV_DIR"; then
+        echo "Unable to create the Python virtual environment. Install python3-venv and run ./install.sh again." >&2
+        exit 1
+    fi
+fi
+
+VENV_PYTHON="$VENV_DIR/bin/python"
+"$VENV_PYTHON" -m pip install --disable-pip-version-check --upgrade pip
+"$VENV_PYTHON" -m pip install --disable-pip-version-check -r "$SCRIPT_DIR/requirements.txt"
+
+"$VENV_PYTHON" -m py_compile \
     "$SCRIPT_DIR/Reflection.py" \
+    "$SCRIPT_DIR/agent_state.py" \
+    "$SCRIPT_DIR/task_readiness.py" \
     "$SCRIPT_DIR/task_registry.py" \
     "$SCRIPT_DIR/task_runner.py" \
     "$SCRIPT_DIR/task_log_viewer.py" \
+    "$SCRIPT_DIR/preflight.py" \
     "$SCRIPT_DIR/run_setup.py" \
     "$SCRIPT_DIR/toggle_start_on_boot.py"
 
@@ -119,18 +141,26 @@ if [[ "$skip_config" != true ]]; then
         if [[ "$accept_defaults" == true ]]; then
             setup_args+=(--accept-defaults)
         fi
-        python3 "${setup_args[@]}"
+        "$VENV_PYTHON" "${setup_args[@]}"
     else
         echo "Keeping existing reflection_config.json. Use ./install.sh --configure to edit it."
     fi
 fi
 
-python3 "$SCRIPT_DIR/toggle_start_on_boot.py" --enable --repo-dir "$SCRIPT_DIR"
+"$VENV_PYTHON" "$SCRIPT_DIR/run_setup.py" --skip-agent-config --stop-on-error
+
+preflight_args=("$SCRIPT_DIR/preflight.py")
+if [[ "$skip_server_check" == true ]]; then
+    preflight_args+=(--skip-server)
+fi
+"$VENV_PYTHON" "${preflight_args[@]}"
+
+"$VENV_PYTHON" "$SCRIPT_DIR/toggle_start_on_boot.py" --enable --repo-dir "$SCRIPT_DIR"
 
 echo
 echo "Installed. $APP_NAME will open in a visible terminal at the next desktop login."
 echo "If this farm PC should start at power-on, enable OS auto-login for this user."
 echo "To start it manually right now, run:"
-echo "  cd '$SCRIPT_DIR' && python3 Reflection.py"
+echo "  cd '$SCRIPT_DIR' && .venv/bin/python Reflection.py"
 echo "To remove autostart, run:"
 echo "  cd '$SCRIPT_DIR' && ./uninstall.sh"

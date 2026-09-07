@@ -16,6 +16,10 @@ TASK_SPEC_JSON = r'''
 {
   "name": "invert_image",
   "description": "Invert an image while preserving alpha transparency when possible.",
+  "production_ready": true,
+  "requirements": {
+    "python_modules": ["PIL"]
+  },
   "source": {
     "mode": "required",
     "label": "Source image",

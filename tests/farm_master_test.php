@@ -250,6 +250,19 @@ function assertSameValue($expected, $actual, string $message): void
     }
 }
 
+function reflectionTestCapabilities(): array
+{
+    return [
+        'tasks' => ['dummy_task', 'invert_image', 'h265_encode', 'noop', 'status', 'reload_tasks', 'shutdown', 'update_worker', 'wake_farm', 'storage_test', 'purge_quarantine'],
+        'task_isolation' => true,
+        'show_task_terminal' => true,
+        'terminal_available' => true,
+        'transfer_schemes' => ['ftp', 'ftps', 'sftp'],
+        'free_temp_bytes' => 100 * 1024 * 1024 * 1024,
+        'free_disk_bytes' => 100 * 1024 * 1024 * 1024,
+    ];
+}
+
 $job = $store->createJob('dummy_task', 'incoming/source.dat', 'outputs/result.txt', false);
 assertSameValue('job_1001', $job['task_id'], 'Job ids should start at job_1001.');
 assertSameValue('job_queued', $store->readRecentEvents(1)[0]['event'], 'Queued jobs should be written to the event log.');
@@ -263,6 +276,7 @@ $response = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'old-version',
     'pc_id' => 'node-01',
+    'capabilities' => reflectionTestCapabilities(),
 ], $store, $config);
 assertSameValue('version_mismatch', $response['status'], 'Wrong worker versions must be rejected before normal work is offered.');
 assertSameValue('test-version', $response['required_version'], 'Version mismatch should publish the required version for old clients.');
@@ -274,7 +288,8 @@ assertSameValue(false, array_key_exists('task', $response), 'Mismatched workers 
 $response = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'old-version',
-    'pc_id' => 'node-no-master-commit',
+    'pc_id' => 'node-01',
+    'capabilities' => reflectionTestCapabilities(),
 ], $store, ['required_version' => '']);
 assertSameValue('task_available', $response['status'], 'If the master transmits no commit, version checking should be ignored.');
 assertSameValue(false, array_key_exists('master_commit', $response), 'No master commit should be advertised when the config has none.');
@@ -283,8 +298,12 @@ $response = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'test-version',
     'pc_id' => 'node-01',
+    'capabilities' => reflectionTestCapabilities(),
 ], $store, $config);
 assertSameValue('task_available', $response['status'], 'Queued jobs should be offered to workers.');
+$leaseToken = (string) ($response['task']['lease_token'] ?? '');
+assertSameValue(true, $leaseToken !== '', 'Task offers should include an exclusive lease token.');
+assertSameValue(true, !empty($response['claim_replayed']), 'A lost task offer should be replayed to the same worker.');
 assertSameValue('dummy_task', $response['task']['module'], 'API should expose the queued module.');
 assertSameValue(false, $response['task']['overwrite_allowed'], 'API should preserve overwrite policy.');
 assertSameValue(false, array_key_exists('transfer_auth', $response['task']), 'Workers should not receive blank transfer credentials.');
@@ -323,6 +342,7 @@ $serverResponse = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'server-version',
     'pc_id' => 'node-server',
+    'capabilities' => reflectionTestCapabilities(),
 ], $serverStore, [
     'required_version' => 'server-version',
     'transfer_server' => [
@@ -346,6 +366,17 @@ $response = reflection_handle_farm_api([
     'version' => 'test-version',
     'pc_id' => 'node-01',
     'task_id' => 'job_1001',
+    'lease_token' => 'wrong-lease-token',
+], $store, $config);
+assertSameValue('not_available', $response['status'], 'A worker must prove the exact lease token before starting its claimed job.');
+
+$response = reflection_handle_farm_api([
+    'action' => 'confirm_taken',
+    'version' => 'test-version',
+    'pc_id' => 'node-01',
+    'capabilities' => reflectionTestCapabilities(),
+    'task_id' => 'job_1001',
+    'lease_token' => $leaseToken,
 ], $store, $config);
 assertSameValue('acknowledged', $response['status'], 'Workers should be able to lock queued jobs.');
 
@@ -354,6 +385,7 @@ $response = reflection_handle_farm_api([
     'version' => 'test-version',
     'pc_id' => 'node-01',
     'task_id' => 'job_1001',
+    'lease_token' => $leaseToken,
 ], $store, $config);
 assertSameValue('heartbeat_acknowledged', $response['status'], 'Workers should be able to heartbeat running jobs they own.');
 
@@ -362,6 +394,7 @@ $response = reflection_handle_farm_api([
     'version' => 'test-version',
     'pc_id' => 'node-02',
     'task_id' => 'job_1001',
+    'lease_token' => $leaseToken,
 ], $store, $config);
 assertSameValue('not_available', $response['status'], 'Workers should not heartbeat jobs owned by another worker.');
 
@@ -370,6 +403,7 @@ $response = reflection_handle_farm_api([
     'version' => 'test-version',
     'pc_id' => 'node-02',
     'task_id' => 'job_1001',
+    'lease_token' => $leaseToken,
 ], $store, $config);
 assertSameValue('not_available', $response['status'], 'A locked job should not be locked twice.');
 
@@ -380,6 +414,8 @@ $response = reflection_handle_farm_api([
     'task_id' => 'job_1001',
     'status' => 'success',
     'error' => '',
+    'lease_token' => $leaseToken,
+    'completion_id' => 'completion-wrong-worker',
 ], $store, $config);
 assertSameValue('not_available', $response['status'], 'Workers should not be able to finish jobs owned by another worker.');
 
@@ -390,14 +426,37 @@ $response = reflection_handle_farm_api([
     'task_id' => 'job_1001',
     'status' => 'success',
     'error' => '',
+    'lease_token' => $leaseToken,
+    'completion_id' => 'completion-job-1001',
 ], $store, $config);
 assertSameValue('confirmed_by_server', $response['status'], 'Completed jobs should receive cleanup confirmation.');
 assertSameValue(false, $response['shutdown_debug_mode'], 'Task closeout should publish shutdown debug mode to the worker.');
 
 $response = reflection_handle_farm_api([
+    'action' => 'report_done',
+    'version' => 'test-version',
+    'pc_id' => 'node-01',
+    'task_id' => 'job_1001',
+    'status' => 'success',
+    'error' => '',
+    'lease_token' => $leaseToken,
+    'completion_id' => 'completion-job-1001',
+], $store, $config);
+assertSameValue('confirmed_by_server', $response['status'], 'Retrying the same completion id should be idempotently acknowledged.');
+$completionEvents = array_values(array_filter($store->readRecentEvents(100), static function (array $event): bool {
+    return ($event['task_id'] ?? '') === 'job_1001' && ($event['event'] ?? '') === 'job_success';
+}));
+assertSameValue(1, count($completionEvents), 'Completion retries must not duplicate terminal job events.');
+$completionTouches = array_values(array_filter($store->readFileHistory()['incoming/source.dat'] ?? [], static function (array $entry): bool {
+    return ($entry['task_id'] ?? '') === 'job_1001' && ($entry['action'] ?? '') === 'finished_source_success';
+}));
+assertSameValue(1, count($completionTouches), 'Completion retries must not duplicate file-history entries.');
+
+$response = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'test-version',
     'pc_id' => 'node-01',
+    'capabilities' => reflectionTestCapabilities(),
 ], $store, $config);
 assertSameValue('no_jobs', $response['status'], 'Finished jobs should leave the queue empty.');
 
@@ -417,6 +476,7 @@ $response = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'wrong-but-allowed',
     'pc_id' => 'node-03',
+    'capabilities' => reflectionTestCapabilities(),
 ], $store, $config);
 assertSameValue('no_jobs', $response['status'], 'SOC below minimum should withhold new work.');
 assertSameValue(true, $response['shutdown_after_task'], 'SOC below minimum should ask idle workers to shut down.');
@@ -432,6 +492,7 @@ $response = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'test-version',
     'pc_id' => 'node-idle',
+    'capabilities' => reflectionTestCapabilities(),
 ], $store, $config);
 assertSameValue('no_jobs', $response['status'], 'Idle workers should receive no_jobs while the queue is empty.');
 assertSameValue(false, $response['shutdown_after_task'], 'Idle workers should keep polling before the no-job limit is reached.');
@@ -441,6 +502,7 @@ $response = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'test-version',
     'pc_id' => 'node-idle',
+    'capabilities' => reflectionTestCapabilities(),
 ], $store, $config);
 assertSameValue('no_jobs', $response['status'], 'Idle workers should still receive no_jobs at the no-job limit.');
 assertSameValue(true, $response['shutdown_after_task'], 'Idle workers should be told to stop at the configured no-job limit.');
@@ -455,6 +517,7 @@ $response = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'test-version',
     'pc_id' => 'node-idle',
+    'capabilities' => reflectionTestCapabilities(),
 ], $store, $config);
 assertSameValue('no_jobs', $response['status'], 'Idle workers should still receive no_jobs after changing the no-job limit.');
 assertSameValue(false, $response['shutdown_after_task'], 'Changing the no-job limit should restart the no-job counter instead of shutting down immediately from an old count.');
@@ -502,6 +565,7 @@ foreach ($data['jobs'] as &$jobForStaleTest) {
     if (($jobForStaleTest['task_id'] ?? '') === $staleJob['task_id']) {
         $jobForStaleTest['started_at'] = gmdate(DATE_ATOM, time() - 3600);
         $jobForStaleTest['heartbeat_at'] = gmdate(DATE_ATOM, time() - 3600);
+        $jobForStaleTest['lease_expires_at'] = gmdate(DATE_ATOM, time() - 60);
     }
 }
 unset($jobForStaleTest);
@@ -525,14 +589,77 @@ $response = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'test-version',
     'pc_id' => 'node-interrupt',
+    'capabilities' => reflectionTestCapabilities(),
 ], $interruptStore, ['required_version' => 'test-version']);
-assertSameValue('task_available', $response['status'], 'A worker asking for new work while still assigned should trigger master-side crash recovery.');
+assertSameValue('no_jobs', $response['status'], 'A worker asking for new work must not discard its active lease.');
+assertSameValue('worker_already_has_active_lease', $response['reason'], 'Duplicate work requests should explain that the existing lease remains active.');
 $interruptData = $interruptStore->read();
-assertSameValue('stale', $interruptData['jobs'][0]['status'], 'Interrupted jobs should be marked stale.');
-assertSameValue('queued', $interruptData['jobs'][1]['status'], 'Interrupted jobs should be requeued by stale policy.');
-assertSameValue('worker_requested_new_task_without_completion', $interruptData['jobs'][0]['loss_reason'], 'Interrupted jobs should record why the master marked them lost.');
+assertSameValue('running', $interruptData['jobs'][0]['status'], 'The active job should remain running until its lease expires.');
+assertSameValue(1, count($interruptData['jobs']), 'Duplicate work requests must not create a second assignment.');
+foreach ($interruptData['jobs'] as &$interruptJobForExpiry) {
+    if (($interruptJobForExpiry['task_id'] ?? '') === $interruptJob['task_id']) {
+        $interruptJobForExpiry['lease_expires_at'] = gmdate(DATE_ATOM, time() - 60);
+    }
+}
+unset($interruptJobForExpiry);
+file_put_contents($interruptStorePath, json_encode($interruptData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+assertSameValue(1, $interruptStore->requeueStaleJobs(60), 'Expired leases should be recovered by the authoritative maintenance tick.');
+$interruptData = $interruptStore->read();
+assertSameValue('stale', $interruptData['jobs'][0]['status'], 'Expired lease jobs should be marked stale.');
+assertSameValue('queued', $interruptData['jobs'][1]['status'], 'Expired lease jobs should be requeued by stale policy.');
 @unlink($interruptStorePath);
 @unlink($interruptStorePath . '.lock');
+
+$capabilityStorePath = sys_get_temp_dir() . '/reflection_capability_store_' . bin2hex(random_bytes(6)) . '.json';
+$capabilityStore = new FarmStore($capabilityStorePath);
+$capabilityStore->updateSettings(['ess_soc_url' => '']);
+$capabilityJob = $capabilityStore->createJob(
+    'invert_image',
+    'incoming/capability.jpg',
+    'outputs/capability.png',
+    false,
+    [
+        'required_transfer_scheme' => 'sftp',
+        'minimum_free_temp_bytes' => 1024,
+    ]
+);
+$incompatibleCapabilities = reflectionTestCapabilities();
+$incompatibleCapabilities['tasks'] = ['dummy_task'];
+$incompatibleCapabilities['terminal_available'] = false;
+$incompatibleCapabilities['transfer_schemes'] = ['ftp'];
+$incompatibleCapabilities['free_temp_bytes'] = 0;
+$capabilityRejected = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'test-version',
+    'pc_id' => 'node-incompatible',
+    'capabilities' => $incompatibleCapabilities,
+], $capabilityStore, ['required_version' => 'test-version']);
+assertSameValue('no_jobs', $capabilityRejected['status'], 'Workers must not receive jobs they cannot run.');
+assertSameValue('no_eligible_jobs', $capabilityRejected['reason'], 'Capability mismatches should be distinct from an empty queue.');
+$rejectionReasons = $capabilityRejected['assignment_rejections'][0]['reasons'] ?? [];
+assertSameValue(true, in_array('task is not reported ready on this worker', $rejectionReasons, true), 'Scheduler should reject unavailable task modules.');
+assertSameValue(true, in_array('worker cannot provide the required visible isolated task terminal', $rejectionReasons, true), 'Scheduler should require the always-visible isolated terminal.');
+assertSameValue(true, in_array('worker does not support required transfer scheme sftp', $rejectionReasons, true), 'Scheduler should validate transfer support before claiming.');
+assertSameValue(true, in_array('worker has insufficient temporary disk space', $rejectionReasons, true), 'Scheduler should validate known temporary capacity before claiming.');
+
+$capabilityAccepted = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'test-version',
+    'pc_id' => 'node-compatible',
+    'capabilities' => reflectionTestCapabilities(),
+], $capabilityStore, ['required_version' => 'test-version']);
+assertSameValue('task_available', $capabilityAccepted['status'], 'A capable worker should atomically claim the waiting job.');
+assertSameValue($capabilityJob['task_id'], $capabilityAccepted['task']['task_id'], 'Capability scheduling should preserve queue order among eligible jobs.');
+$capabilitySecondWorker = reflection_handle_farm_api([
+    'action' => 'request_task',
+    'version' => 'test-version',
+    'pc_id' => 'node-compatible-2',
+    'capabilities' => reflectionTestCapabilities(),
+], $capabilityStore, ['required_version' => 'test-version']);
+assertSameValue('no_jobs', $capabilitySecondWorker['status'], 'An atomic claim must prevent the same job being offered to a second worker.');
+assertSameValue('queue_empty', $capabilitySecondWorker['reason'], 'The second worker should see no remaining queued job.');
+@unlink($capabilityStorePath);
+@unlink($capabilityStorePath . '.lock');
 
 $orderStorePath = sys_get_temp_dir() . '/reflection_order_store_' . bin2hex(random_bytes(6)) . '.json';
 $orderStore = new FarmStore($orderStorePath);
@@ -630,6 +757,7 @@ $priorityHighResponse = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'test-version',
     'pc_id' => 'layer1-node',
+    'capabilities' => reflectionTestCapabilities(),
 ], $priorityStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
 assertSameValue('no_jobs', $priorityHighResponse['status'], 'Higher shutdown layers should wait when an eligible idle lower-layer worker is online.');
 assertSameValue('lower_shutdown_layer_idle', $priorityHighResponse['reason'], 'Layer-priority admission should explain why a higher layer did not receive normal work.');
@@ -638,15 +766,24 @@ $priorityLowResponse = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'test-version',
     'pc_id' => 'layer0-node',
+    'capabilities' => reflectionTestCapabilities(),
 ], $priorityStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
 assertSameValue('task_available', $priorityLowResponse['status'], 'Lower shutdown layers should receive normal work first.');
 assertSameValue($priorityJobA['task_id'], $priorityLowResponse['task']['task_id'], 'Layer priority must not change the queued job order.');
-assertSameValue(true, $priorityStore->markJobRunning($priorityJobA['task_id'], 'layer0-node'), 'Layer-priority test should mark the lower-layer job running.');
+$priorityConfirm = reflection_handle_farm_api([
+    'action' => 'confirm_taken',
+    'version' => 'test-version',
+    'pc_id' => 'layer0-node',
+    'task_id' => $priorityJobA['task_id'],
+    'lease_token' => (string) ($priorityLowResponse['task']['lease_token'] ?? ''),
+], $priorityStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
+assertSameValue('acknowledged', $priorityConfirm['status'], 'Layer-priority workers should confirm their exclusive lease.');
 $priorityJobB = $priorityStore->createJob('dummy_task', 'incoming/layer-b.dat', 'outputs/layer-b.txt', false);
 $priorityHighAfterBusy = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'test-version',
     'pc_id' => 'layer1-node',
+    'capabilities' => reflectionTestCapabilities(),
 ], $priorityStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
 assertSameValue('task_available', $priorityHighAfterBusy['status'], 'Higher layers may take normal work when lower layers are already busy.');
 assertSameValue($priorityJobB['task_id'], $priorityHighAfterBusy['task']['task_id'], 'Higher layers still take the next queued job rather than a reserved layer job.');
@@ -709,6 +846,7 @@ $coreUpdateResponse = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'old-version',
     'pc_id' => 'core-update-node',
+    'capabilities' => reflectionTestCapabilities(),
 ], $updateLayerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
 assertSameValue('version_mismatch', $coreUpdateResponse['status'], 'Outdated workers should not accept normal work.');
 assertSameValue('update_now', $coreUpdateResponse['version_policy'], 'Version-follow updates should happen immediately on the worker side.');
@@ -718,6 +856,7 @@ $endpointUpdateResponse = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'old-version',
     'pc_id' => 'endpoint-update-node',
+    'capabilities' => reflectionTestCapabilities(),
 ], $updateLayerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
 assertSameValue('update_now', $endpointUpdateResponse['version_policy'], 'Every mismatched worker should update immediately when enforcement is enabled.');
 $updateLayerStore->recordWorkerCheckIn('endpoint-update-node', 'test-version');
@@ -725,6 +864,7 @@ $coreUpdateAfterEndpoint = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'old-version',
     'pc_id' => 'core-update-node',
+    'capabilities' => reflectionTestCapabilities(),
 ], $updateLayerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
 assertSameValue('update_now', $coreUpdateAfterEndpoint['version_policy'], 'Lower update layers may update after higher online layers match the master commit.');
 @unlink($updateLayerStorePath);
@@ -747,6 +887,7 @@ $coreResponse = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'test-version',
     'pc_id' => 'core-switch-node',
+    'capabilities' => reflectionTestCapabilities(),
 ], $layerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
 assertSameValue(false, $coreResponse['shutdown_after_task'], 'Lower shutdown layers must stay online while higher layers are still online.');
 assertSameValue('shutdown_layer_waiting', $coreResponse['reason'], 'Layer-blocked shutdowns should explain why the worker stays online.');
@@ -754,6 +895,7 @@ $endpointResponse = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'test-version',
     'pc_id' => 'endpoint-node',
+    'capabilities' => reflectionTestCapabilities(),
 ], $layerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
 assertSameValue(true, $endpointResponse['shutdown_after_task'], 'Highest online shutdown layer should be allowed to power off first.');
 $layerData = $layerStore->read();
@@ -762,6 +904,7 @@ $coreResponseBeforeConfirm = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'test-version',
     'pc_id' => 'core-switch-node',
+    'capabilities' => reflectionTestCapabilities(),
 ], $layerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
 assertSameValue(false, $coreResponseBeforeConfirm['shutdown_after_task'], 'Lower layers must still wait until the higher layer confirms the shutdown order.');
 $confirmShutdownResponse = reflection_handle_farm_api([
@@ -775,6 +918,7 @@ $coreResponseAfterEndpoint = reflection_handle_farm_api([
     'action' => 'request_task',
     'version' => 'test-version',
     'pc_id' => 'core-switch-node',
+    'capabilities' => reflectionTestCapabilities(),
 ], $layerStore, ['required_version' => 'test-version', 'stale_after_seconds' => 900]);
 assertSameValue(true, $coreResponseAfterEndpoint['shutdown_after_task'], 'Lower layers should power off after higher online layers have confirmed shutdown.');
 @unlink($layerStorePath);

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import platform
+import random
 import re
 import shlex
 import shutil
@@ -17,11 +18,14 @@ import tempfile
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
 from task_registry import TaskDefinition, discover_task_definitions, normalize_task_result
+from agent_state import AgentStateStore
+from task_readiness import available_terminal, supported_transfer_schemes, task_readiness
 
 # --- CONFIGURATION ---
 DEFAULT_SERVER_URL = "http://your-server-domain.com/farm_api.php"
@@ -65,6 +69,7 @@ def load_agent_config(config_path=None):
     config = {
         "server_url": DEFAULT_SERVER_URL,
         "poll_interval": DEFAULT_POLL_INTERVAL,
+        "heartbeat_interval": DEFAULT_HEARTBEAT_INTERVAL,
         "start_delay_seconds": DEFAULT_START_DELAY_SECONDS,
         "shutdown_delay_seconds": DEFAULT_SHUTDOWN_DELAY_SECONDS,
         "pc_id": DEFAULT_PC_ID,
@@ -140,11 +145,10 @@ def load_agent_config(config_path=None):
             raise ValueError("task_log_tail_bytes must be at least 1024.")
         config["task_log_tail_bytes"] = log_tail_bytes
 
-    if "task_isolation" in loaded:
-        config["task_isolation"] = bool(loaded["task_isolation"])
-
-    if "show_task_terminal" in loaded:
-        config["show_task_terminal"] = bool(loaded["show_task_terminal"])
+    # Visible, isolated execution is a product invariant.  Old configuration
+    # files that disabled either option are upgraded in memory.
+    config["task_isolation"] = True
+    config["show_task_terminal"] = True
 
 
     if "min_free_space_gb" in loaded:
@@ -363,14 +367,17 @@ PC_ID = AGENT_CONFIG["pc_id"]  # Unique identifier for this node
 LOCAL_TRANSFER_AUTH = AGENT_CONFIG.get("transfer_auth", {})
 CLEANUP_ROOTS = tuple(AGENT_CONFIG.get("cleanup_roots", []))
 TASKS_DIR = Path(__file__).with_name("tasks")
+TASKS_LOCAL_DIR = Path(__file__).with_name("tasks_local")
 TASK_TIMEOUT_SECONDS = int(AGENT_CONFIG.get("task_timeout_seconds", DEFAULT_TASK_TIMEOUT_SECONDS))
 TASK_TIMEOUTS = dict(AGENT_CONFIG.get("task_timeouts", {}))
 TASK_LOG_TAIL_BYTES = int(AGENT_CONFIG.get("task_log_tail_bytes", DEFAULT_TASK_LOG_TAIL_BYTES))
-TASK_ISOLATION = bool(AGENT_CONFIG.get("task_isolation", DEFAULT_TASK_ISOLATION))
-SHOW_TASK_TERMINAL = bool(AGENT_CONFIG.get("show_task_terminal", DEFAULT_SHOW_TASK_TERMINAL))
+TASK_ISOLATION = True
+SHOW_TASK_TERMINAL = True
 TASK_RUNNER_PATH = Path(__file__).with_name("task_runner.py")
 TASK_LOG_VIEWER_PATH = Path(__file__).with_name("task_log_viewer.py")
 UPDATE_SCRIPT_PATH = Path(__file__).resolve().parent.parent / "update.sh"
+OUTBOX_PATH = Path(__file__).with_name("reflection_outbox.json")
+AGENT_SESSION_ID = uuid.uuid4().hex
 MIN_FREE_SPACE_BYTES = int(float(AGENT_CONFIG.get("min_free_space_gb", DEFAULT_MIN_FREE_SPACE_GB)) * 1024 * 1024 * 1024)
 MIN_FREE_SPACE_MULTIPLIER = float(AGENT_CONFIG.get("min_free_space_multiplier", DEFAULT_MIN_FREE_SPACE_MULTIPLIER))
 LOCAL_TEMP_MAX_AGE_HOURS = int(AGENT_CONFIG.get("local_temp_max_age_hours", DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS))
@@ -864,11 +871,25 @@ def built_in_tasks():
 
 
 def discover_tasks():
-    """Load standardized task files plus reserved built-in system tasks."""
+    """Load built-in, bundled, and preserved local task modules."""
     registry = discover_task_definitions(
         TASKS_DIR,
         on_error=lambda path, exc: logging.error("Failed to load task file '%s': %s", path, exc),
     )
+
+    if TASKS_LOCAL_DIR.is_dir():
+        local_registry = discover_task_definitions(
+            TASKS_LOCAL_DIR,
+            on_error=lambda path, exc: logging.error("Failed to load local task file '%s': %s", path, exc),
+        )
+        duplicate_local_names = sorted(set(registry) & set(local_registry))
+        for name in duplicate_local_names:
+            logging.error(
+                "Local task '%s' conflicts with a bundled task and was ignored.",
+                name,
+            )
+            local_registry.pop(name, None)
+        registry.update(local_registry)
 
     built_ins = built_in_tasks()
     reserved_names = sorted(set(registry) & set(built_ins))
@@ -1796,7 +1817,16 @@ def _format_isolated_failure(prefix, stdout_path, stderr_path):
     return "\n\n".join(parts)
 
 
-def _run_task_in_subprocess(module_name, source, delivery, overwrite_allowed, task_id, workspace_root, cancellation_event=None):
+def _run_task_in_subprocess(
+    module_name,
+    source,
+    delivery,
+    overwrite_allowed,
+    task_id,
+    workspace_root,
+    cancellation_event=None,
+    tasks_dir=None,
+):
     """Run an external task in an isolated subprocess so the worker survives task crashes."""
     if not TASK_RUNNER_PATH.is_file():
         raise FileNotFoundError(f"Missing task runner: {TASK_RUNNER_PATH}")
@@ -1813,7 +1843,7 @@ def _run_task_in_subprocess(module_name, source, delivery, overwrite_allowed, ta
         sys.executable,
         str(TASK_RUNNER_PATH),
         "--tasks-dir",
-        str(TASKS_DIR),
+        str(tasks_dir or TASKS_DIR),
         "--module",
         str(module_name),
         "--source",
@@ -1840,7 +1870,12 @@ def _run_task_in_subprocess(module_name, source, delivery, overwrite_allowed, ta
             stderr=stderr_file,
             **_process_group_kwargs(),
         )
-        _launch_task_log_terminal(module_name, task_id, stdout_path, stderr_path, done_path)
+        if not _launch_task_log_terminal(module_name, task_id, stdout_path, stderr_path, done_path):
+            _terminate_process_tree(process)
+            done_path.touch()
+            raise RuntimeError(
+                f"Task '{module_name}' was not started because its required visible terminal could not be opened."
+            )
         try:
             started_at = time.monotonic()
             while process.poll() is None:
@@ -2120,6 +2155,8 @@ def _run_task_with_transfer_handling(
         _ACTIVE_TRANSFER_AUTH = dict(transfer_auth or {})
         try:
             if should_isolate:
+                definition = agent.task_registry.get(module_name)
+                source_path = getattr(definition, "source_path", None)
                 task_outcome = _run_task_in_subprocess(
                     module_name,
                     prepared_source,
@@ -2128,6 +2165,7 @@ def _run_task_with_transfer_handling(
                     task_id,
                     workspace_root,
                     cancellation_event,
+                    Path(source_path).parent if source_path is not None else TASKS_DIR,
                 )
             else:
                 task_outcome = agent.run_task(
@@ -2169,12 +2207,14 @@ def _run_task_with_transfer_handling(
 
 
 class TaskHeartbeat:
-    """Send best-effort progress heartbeats while a long task is running."""
+    """Renew a task lease and stop local work before an unconfirmed lease expires."""
 
-    def __init__(self, agent, task_id, interval):
+    def __init__(self, agent, task_id, interval, lease_seconds=180):
         self.agent = agent
         self.task_id = task_id
-        self.interval = max(5, int(interval))
+        self.lease_seconds = max(30, int(lease_seconds))
+        self.interval = max(5, min(int(interval), max(5, self.lease_seconds // 3)))
+        self.last_acknowledged_at = time.monotonic()
         self.stop_event = threading.Event()
         self.cancel_event = threading.Event()
         self.cancel_reason = ""
@@ -2193,6 +2233,7 @@ class TaskHeartbeat:
             try:
                 response = self.agent.heartbeat_task(self.task_id)
                 if response and response.get("status") == "heartbeat_acknowledged":
+                    self.last_acknowledged_at = time.monotonic()
                     continue
 
                 if response and response.get("instruction") == "relinquish_task":
@@ -2205,17 +2246,30 @@ class TaskHeartbeat:
                     )
                     return
 
-                logging.warning(
-                    "Heartbeat for task %s was not acknowledged, but no relinquish instruction was received. Continuing local work: %s",
-                    self.task_id,
-                    response,
-                )
+                self._handle_unacknowledged_heartbeat(response)
             except Exception as exc:
-                logging.warning(
-                    "Heartbeat for task %s could not reach the master. Continuing local work until the master explicitly says to stop: %s",
-                    self.task_id,
-                    exc,
-                )
+                self._handle_unacknowledged_heartbeat(exc)
+
+    def _handle_unacknowledged_heartbeat(self, detail):
+        elapsed = time.monotonic() - self.last_acknowledged_at
+        stop_after = max(10.0, self.lease_seconds * 0.75)
+        if elapsed >= stop_after:
+            self.cancel_reason = "lease_renewal_unconfirmed"
+            self.cancel_event.set()
+            logging.error(
+                "Stopping task %s because the master has not acknowledged its lease for %.1fs: %s",
+                self.task_id,
+                elapsed,
+                detail,
+            )
+            return
+
+        logging.warning(
+            "Heartbeat for task %s was not acknowledged; %.1fs remain before the local lease safety stop: %s",
+            self.task_id,
+            max(0.0, stop_after - elapsed),
+            detail,
+        )
 
 # --- CORE FARM AGENT CLASS ---
 def _command_from_env(env_name):
@@ -2344,32 +2398,53 @@ class FarmAgent:
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
         self.task_registry = discover_tasks()
+        self.task_readiness = task_readiness(self.task_registry)
+        self.state_store = AgentStateStore(OUTBOX_PATH)
+        self.active_task_id = ""
+        self.active_lease_token = ""
 
-    def post_to_server(self, payload):
+    def post_to_server(self, payload, attempts=1):
         """Send a worker request to the master endpoint."""
-        try:
-            response = self.session.post(SERVER_URL, json=payload, timeout=30)
-            if response.status_code == 200:
-                return response.json()
-            logging.error("Server returned status code %s", response.status_code)
-        except self.requests.exceptions.RequestException as e:
-            logging.error("Network error connecting to server: %s", e)
+        request_payload = dict(payload)
+        request_payload.setdefault("version", VERSION)
+        request_payload.setdefault("pc_id", PC_ID)
+        request_payload.setdefault("agent_session_id", AGENT_SESSION_ID)
+        attempts = max(1, int(attempts))
+        for attempt in range(1, attempts + 1):
+            try:
+                response = self.session.post(SERVER_URL, json=request_payload, timeout=30)
+                if response.status_code == 200:
+                    return response.json()
+                logging.error("Server returned status code %s", response.status_code)
+            except self.requests.exceptions.RequestException as exc:
+                logging.error("Network error connecting to server: %s", exc)
+            if attempt < attempts:
+                delay = min(8.0, (2 ** (attempt - 1)) + random.random())
+                time.sleep(delay)
         return None
 
     def worker_capabilities(self):
-        total, used, free = shutil.disk_usage(tempfile.gettempdir())
+        _total, _used, free = shutil.disk_usage(tempfile.gettempdir())
+        readiness = self.task_readiness
+        ready_tasks = sorted(
+            name for name, result in readiness.items() if result.get("ready")
+        )
         return {
-            "tasks": sorted(self.task_registry),
-            "task_specs": {
-                name: definition.spec
-                for name, definition in self.task_registry.items()
-                if getattr(definition, "spec", None)
+            "tasks": ready_tasks,
+            "task_readiness": {
+                name: {
+                    "ready": bool(result.get("ready")),
+                    "reason": str(result.get("reason") or ""),
+                }
+                for name, result in readiness.items()
             },
             "can_send_wol": True,
             "ffmpeg": shutil.which("ffmpeg") is not None,
             "ffprobe": shutil.which("ffprobe") is not None,
             "task_isolation": TASK_ISOLATION,
             "show_task_terminal": SHOW_TASK_TERMINAL,
+            "terminal_available": available_terminal() is not None,
+            "transfer_schemes": supported_transfer_schemes(),
             "free_temp_bytes": int(free),
             "free_disk_bytes": int(free),
             "temp_dir": tempfile.gettempdir(),
@@ -2381,8 +2456,6 @@ class FarmAgent:
         """Step 1 & 2: Connect to server, post status, receive job."""
         payload = {
             "action": "request_task",
-            "version": VERSION,
-            "pc_id": PC_ID,
             "capabilities": self.worker_capabilities(),
         }
         logging.info("Checking server for available tasks...")
@@ -2438,9 +2511,8 @@ class FarmAgent:
         """Step 3: Confirm to the server that we are starting the task."""
         payload = {
             "action": "confirm_taken",
-            "version": VERSION,
-            "pc_id": PC_ID,
             "task_id": task_id,
+            "lease_token": self.active_lease_token,
         }
         res = self.post_to_server(payload)
         return res and res.get("status") == "acknowledged"
@@ -2449,9 +2521,8 @@ class FarmAgent:
         """Tell the master that the current long-running task is still alive."""
         payload = {
             "action": "heartbeat_task",
-            "version": VERSION,
-            "pc_id": PC_ID,
             "task_id": task_id,
+            "lease_token": self.active_lease_token,
         }
         return self.post_to_server(payload)
 
@@ -2459,9 +2530,8 @@ class FarmAgent:
         """Best-effort update for dashboard stage text; task correctness does not depend on it."""
         payload = {
             "action": "task_stage",
-            "version": VERSION,
-            "pc_id": PC_ID,
             "task_id": task_id,
+            "lease_token": self.active_lease_token,
             "stage": str(stage or ""),
             "message": str(message or ""),
         }
@@ -2471,35 +2541,137 @@ class FarmAgent:
         """Tell the master where an overwrite quarantine folder exists."""
         payload = {
             "action": "register_quarantine",
-            "version": VERSION,
-            "pc_id": PC_ID,
             "quarantine": location if isinstance(location, dict) else {},
         }
         return self.post_to_server(payload)
 
-    def report_task_done(self, task_id, success, error_msg="", status=None):
+    def report_task_done(
+        self,
+        task_id,
+        success,
+        error_msg="",
+        status=None,
+        lease_token=None,
+        completion_id=None,
+        attempts=1,
+    ):
         """Step 5 & 6: Report status and wait for server's cleanup greenlight."""
         final_status = status or ("success" if success else "failed")
         payload = {
             "action": "report_done",
-            "version": VERSION,
-            "pc_id": PC_ID,
             "task_id": task_id,
             "status": final_status,
             "error": error_msg,
+            "lease_token": self.active_lease_token if lease_token is None else str(lease_token),
+            "completion_id": str(completion_id or ""),
         }
-        return self.post_to_server(payload)
+        return self.post_to_server(payload, attempts=attempts)
 
     def confirm_shutdown(self, reason="server_shutdown_request"):
         """Tell the master this worker has accepted a shutdown order."""
         payload = {
             "action": "confirm_shutdown",
-            "version": VERSION,
-            "pc_id": PC_ID,
             "reason": str(reason or "server_shutdown_request"),
         }
         res = self.post_to_server(payload)
         return bool(res and res.get("status") == "shutdown_confirmed")
+
+    def _completion_record(self, task_id, task_outcome, source, error_message):
+        """Build the durable final message and its post-acknowledgement actions."""
+        status = "skipped" if task_outcome.skipped else ("success" if task_outcome.success else "failed")
+        return {
+            "completion_id": uuid.uuid4().hex,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "task_id": str(task_id),
+            "lease_token": str(self.active_lease_token or ""),
+            "status": status,
+            "error": str(error_message or ""),
+            "source": str(source or ""),
+            "cleanup_source": bool(task_outcome.success and task_outcome.cleanup_source and source),
+            "reload_tasks": bool(task_outcome.reload_tasks),
+            "reboot_system": bool(task_outcome.reboot_system),
+            "restart_agent": bool(task_outcome.restart_agent),
+            "stop_agent": bool(task_outcome.stop_agent),
+        }
+
+    def _flush_pending_completion(self):
+        """Deliver the durable outbox before this worker asks for more work.
+
+        Return None when the outbox is empty. Otherwise return the lifecycle
+        continuation decision for the acknowledged or still-pending message.
+        """
+        pending = self.state_store.pending_completion()
+        if pending is None:
+            return None
+
+        task_id = str(pending.get("task_id") or "")
+        completion_id = str(pending.get("completion_id") or "")
+        lease_token = str(pending.get("lease_token") or "")
+        self.active_task_id = task_id
+        self.active_lease_token = lease_token
+        response = self.report_task_done(
+            task_id,
+            pending.get("status") in {"success", "skipped"},
+            str(pending.get("error") or ""),
+            str(pending.get("status") or "failed"),
+            lease_token=lease_token,
+            completion_id=completion_id,
+            attempts=5,
+        )
+        if not response or response.get("status") != "confirmed_by_server":
+            logging.error(
+                "Master has not acknowledged completion %s for task %s. The durable outbox is retained and no new job will be requested.",
+                completion_id,
+                task_id,
+            )
+            time.sleep(POLL_INTERVAL)
+            return True
+
+        if not self.state_store.clear_completion(completion_id):
+            raise RuntimeError(
+                f"Completion {completion_id} was acknowledged, but the worker outbox changed before it could be cleared."
+            )
+
+        self.active_task_id = ""
+        self.active_lease_token = ""
+        return self._apply_completion_ack(pending, response)
+
+    def _apply_completion_ack(self, completion, server_response):
+        """Perform actions that are safe only after the master records completion."""
+        task_id = str(completion.get("task_id") or "")
+        source = str(completion.get("source") or "")
+        if completion.get("cleanup_source") and source:
+            self.cleanup_files(source)
+
+        if completion.get("reload_tasks"):
+            self.reload_task_registry()
+
+        if completion.get("reboot_system"):
+            logging.info("Update task %s confirmed by server. Rebooting farm computer.", task_id)
+            _request_system_reboot()
+            return False
+
+        if completion.get("restart_agent"):
+            logging.info("Restart task %s confirmed by server. Restarting agent.", task_id)
+            os.execv(sys.executable, [sys.executable, *sys.argv])
+
+        if completion.get("stop_agent"):
+            return _handle_server_shutdown_request(
+                f"Shutdown task {task_id} confirmed by server",
+                server_response,
+                self,
+            )
+
+        if server_response.get("shutdown_after_task"):
+            return _handle_server_shutdown_request(
+                f"Server requested shutdown after task {task_id} due to SOC policy",
+                server_response,
+                self,
+            )
+
+        logging.info("Lifecycle finished for Task %s. Repeating loop...\n", task_id)
+        time.sleep(2)
+        return True
 
     def cleanup_files(self, source_path):
         """Step 7: Local cleanup of source files if explicitly allowed and safe."""
@@ -2546,6 +2718,7 @@ class FarmAgent:
     def reload_task_registry(self):
         """Refresh the task registry while keeping built-in tasks available."""
         self.task_registry = discover_tasks()
+        self.task_readiness = task_readiness(self.task_registry)
         logging.info("Reloaded task modules: %s", ", ".join(sorted(self.task_registry)) or "none")
 
     def run_lifecycle(self):
@@ -2576,6 +2749,11 @@ class FarmAgent:
 
     def _run_lifecycle_cycle(self):
         """Run one polling/task cycle. Return False when the agent should stop."""
+        if hasattr(self, "state_store"):
+            pending_result = FarmAgent._flush_pending_completion(self)
+            if pending_result is not None:
+                return pending_result
+
         # 1 & 2. Ask for work
         response = self.check_for_task()
 
@@ -2619,6 +2797,8 @@ class FarmAgent:
         # Extract task details
         task = response.get("task", {})
         task_id = task.get("task_id")
+        lease_token = str(task.get("lease_token") or "")
+        lease_seconds = max(30, int(task.get("job_lease_seconds", 180) or 180))
         module_name = task.get("module")
         source = task.get("source")
         delivery = task.get("delivery")
@@ -2641,9 +2821,14 @@ class FarmAgent:
             time.sleep(POLL_INTERVAL)
             return True
 
+        self.active_task_id = str(task_id)
+        self.active_lease_token = lease_token
+
         # 3. Confirm task taken
         if not self.confirm_task_taken(task_id):
             logging.warning("Failed to lock task %s. Skipping.", task_id)
+            self.active_task_id = ""
+            self.active_lease_token = ""
             return True
 
         logging.info("Task %s locked. Starting module: '%s'", task_id, module_name)
@@ -2651,7 +2836,7 @@ class FarmAgent:
         task_outcome = TaskOutcome(success=False)
         error_message = ""
 
-        with TaskHeartbeat(self, task_id, HEARTBEAT_INTERVAL) as heartbeat:
+        with TaskHeartbeat(self, task_id, HEARTBEAT_INTERVAL, lease_seconds) as heartbeat:
             task_outcome = _run_task_with_transfer_handling(
                 self,
                 module_name,
@@ -2671,9 +2856,18 @@ class FarmAgent:
                 task_id,
                 heartbeat.cancel_reason or "relinquish_task",
             )
+            self.active_task_id = ""
+            self.active_lease_token = ""
             return True
 
         # 5 & 6. Report done & get server final confirmation
+        if hasattr(self, "state_store"):
+            completion = FarmAgent._completion_record(self, task_id, task_outcome, source, error_message)
+            self.state_store.save_completion(completion)
+            return FarmAgent._flush_pending_completion(self)
+
+        # Compatibility path for small embedders/tests that provide the worker
+        # protocol methods without the durable FarmAgent state store.
         if task_outcome.skipped:
             server_response = self.report_task_done(task_id, True, error_message, "skipped")
         else:

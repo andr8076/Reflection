@@ -26,6 +26,10 @@ def load_task(name):
 class TaskContractTest(unittest.TestCase):
     def test_task_modules_declare_contracts(self):
         registry = discover_task_definitions(TASKS_DIR)
+        self.assertTrue(registry["compress_archive"].spec["production_ready"])
+        self.assertTrue(registry["invert_image"].spec["production_ready"])
+        self.assertFalse(registry["dummy_task"].spec["production_ready"])
+        self.assertFalse(registry["render_frame"].spec["production_ready"])
         self.assertEqual(registry["compress_archive"].spec["delivery"]["extension"], ".zip")
         self.assertEqual(registry["compress_archive"].spec["delivery"]["mode"], "auto")
         self.assertEqual(registry["h265_encode"].spec["delivery"]["extension"], ".mkv")
@@ -39,6 +43,7 @@ class TaskContractTest(unittest.TestCase):
         self.assertEqual(registry["h265_encode"].spec["output"]["encoded_streams"], ["video:0"])
         self.assertEqual(registry["h265_encode"].spec["encode_profiles"]["default"], "auto")
         self.assertIn("4k", registry["h265_encode"].spec["encode_profiles"])
+        self.assertEqual(registry["h265_encode"].spec["output"]["kind"], "file")
 
     def test_compress_archive_writes_zip_and_rejects_wrong_extension(self):
         module = load_task("compress_archive")
@@ -83,6 +88,14 @@ class TaskContractTest(unittest.TestCase):
                  mock.patch.object(module, "_encode_file"):
                 with self.assertRaisesRegex(ValueError, "must end with .mkv"):
                     module.run(str(source_file), str(bad_delivery), True)
+
+    def test_h265_encode_rejects_directory_jobs(self):
+        module = load_task("h265_encode")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "videos"
+            source_dir.mkdir()
+            with self.assertRaisesRegex(IsADirectoryError, "one video per job"):
+                module.run(str(source_dir), "", False)
 
     def test_h265_encode_auto_profile_selects_4k_settings(self):
         module = load_task("h265_encode")

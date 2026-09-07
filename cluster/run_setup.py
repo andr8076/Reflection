@@ -16,8 +16,14 @@ from urllib.parse import urlparse
 
 from Reflection import (
     DEFAULT_CLEANUP_ROOTS,
+    DEFAULT_HEARTBEAT_INTERVAL,
+    DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS,
+    DEFAULT_MIN_FREE_SPACE_GB,
+    DEFAULT_MIN_FREE_SPACE_MULTIPLIER,
     DEFAULT_PC_ID,
     DEFAULT_POLL_INTERVAL,
+    DEFAULT_QUARANTINE_KEEP_DAYS,
+    DEFAULT_QUARANTINE_MAX_GB,
     DEFAULT_SERVER_URL,
     DEFAULT_START_DELAY_SECONDS,
     DEFAULT_SHUTDOWN_DELAY_SECONDS,
@@ -89,6 +95,23 @@ def _validate_non_negative_seconds(value: str, field_name: str) -> int:
     return seconds
 
 
+def _validate_positive_seconds(value: str, field_name: str) -> int:
+    seconds = _validate_non_negative_seconds(value, field_name)
+    if seconds == 0:
+        raise ValueError(f"{field_name} must be greater than zero.")
+    return seconds
+
+
+def _validate_non_negative_number(value: str, field_name: str) -> float:
+    try:
+        number = float(value)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be a number.") from exc
+    if number < 0:
+        raise ValueError(f"{field_name} must be zero or greater.")
+    return number
+
+
 def _validate_log_tail_bytes(value: str) -> int:
     """Validate how much task output should be retained in error messages."""
     try:
@@ -130,7 +153,7 @@ def _parse_cleanup_roots(value: str | Sequence[str]) -> list[str]:
 
 def _default_transfer_port(scheme: str) -> int:
     """Return the conventional port for a transfer protocol."""
-    return 22 if scheme == "sftp" else 21
+    return 22 if scheme == "sftp" else (990 if scheme == "ftps" else 21)
 
 
 def _validate_transfer_scheme(value: str) -> str:
@@ -138,8 +161,8 @@ def _validate_transfer_scheme(value: str) -> str:
     scheme = value.strip().lower()
     if scheme in {"", "none", "disabled", "off"}:
         return "none"
-    if scheme not in {"ftp", "sftp"}:
-        raise ValueError("Transfer protocol must be ftp, sftp, or none.")
+    if scheme not in {"ftp", "ftps", "sftp"}:
+        raise ValueError("Transfer protocol must be ftp, ftps, sftp, or none.")
     return scheme
 
 
@@ -161,7 +184,7 @@ def _current_transfer_auth(current_config: Mapping[str, Any]) -> dict[str, str |
         configured = {}
 
     scheme = str(configured.get("scheme") or DEFAULT_TRANSFER_AUTH["scheme"]).lower()
-    if scheme not in {"ftp", "sftp"}:
+    if scheme not in {"ftp", "ftps", "sftp"}:
         scheme = DEFAULT_TRANSFER_AUTH["scheme"]
 
     return {
@@ -178,11 +201,11 @@ def collect_transfer_auth(
     *,
     interactive: bool,
 ) -> dict[str, str | int] | None:
-    """Prompt for optional local FTP/SFTP credentials used by file transfers."""
+    """Prompt for optional local FTP/FTPS/SFTP credentials used by file transfers."""
     current_transfer = _current_transfer_auth(current_config)
     scheme = _validate_transfer_scheme(
         _prompt_value(
-            "File transfer protocol (ftp, sftp, or none)",
+            "File transfer protocol (ftp, ftps, sftp, or none)",
             str(current_transfer["scheme"]),
             interactive=interactive,
         )
@@ -237,6 +260,7 @@ def collect_agent_config(
         current_config = {
             "server_url": DEFAULT_SERVER_URL,
             "poll_interval": DEFAULT_POLL_INTERVAL,
+            "heartbeat_interval": DEFAULT_HEARTBEAT_INTERVAL,
             "start_delay_seconds": DEFAULT_START_DELAY_SECONDS,
             "shutdown_delay_seconds": DEFAULT_SHUTDOWN_DELAY_SECONDS,
             "pc_id": DEFAULT_PC_ID,
@@ -246,11 +270,11 @@ def collect_agent_config(
             "task_log_tail_bytes": DEFAULT_TASK_LOG_TAIL_BYTES,
             "task_isolation": DEFAULT_TASK_ISOLATION,
             "show_task_terminal": DEFAULT_SHOW_TASK_TERMINAL,
-            "min_free_space_gb": 5,
-            "min_free_space_multiplier": 2.0,
-            "local_temp_max_age_hours": 24,
-            "quarantine_keep_days": 14,
-            "quarantine_max_gb": 100.0,
+            "min_free_space_gb": DEFAULT_MIN_FREE_SPACE_GB,
+            "min_free_space_multiplier": DEFAULT_MIN_FREE_SPACE_MULTIPLIER,
+            "local_temp_max_age_hours": DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS,
+            "quarantine_keep_days": DEFAULT_QUARANTINE_KEEP_DAYS,
+            "quarantine_max_gb": DEFAULT_QUARANTINE_MAX_GB,
         }
 
     should_prompt = sys.stdin.isatty() if interactive is None else interactive
@@ -273,6 +297,14 @@ def collect_agent_config(
             str(current_config.get("poll_interval") or DEFAULT_POLL_INTERVAL),
             interactive=should_prompt,
         )
+    )
+    heartbeat_interval = _validate_positive_seconds(
+        _prompt_value(
+            "Active job heartbeat interval in seconds",
+            str(current_config.get("heartbeat_interval", DEFAULT_HEARTBEAT_INTERVAL)),
+            interactive=should_prompt,
+        ),
+        "Heartbeat interval",
     )
     pc_id = _validate_pc_id(
         _prompt_value(
@@ -309,20 +341,6 @@ def collect_agent_config(
         )
     )
 
-    task_isolation = _validate_bool(
-        _prompt_value(
-            "Run task modules in an isolated subprocess? (yes/no)",
-            "yes" if bool(current_config.get("task_isolation", DEFAULT_TASK_ISOLATION)) else "no",
-            interactive=should_prompt,
-        )
-    )
-    show_task_terminal = _validate_bool(
-        _prompt_value(
-            "Open a visible terminal window for each isolated task? (yes/no)",
-            "yes" if bool(current_config.get("show_task_terminal", DEFAULT_SHOW_TASK_TERMINAL)) else "no",
-            interactive=should_prompt,
-        )
-    )
     task_timeout_seconds = _validate_non_negative_seconds(
         _prompt_value(
             "Default max task runtime in seconds (0 disables timeout)",
@@ -338,19 +356,65 @@ def collect_agent_config(
             interactive=should_prompt,
         )
     )
+    min_free_space_gb = _validate_non_negative_number(
+        _prompt_value(
+            "Minimum free worker temp space in GiB",
+            str(current_config.get("min_free_space_gb", DEFAULT_MIN_FREE_SPACE_GB)),
+            interactive=should_prompt,
+        ),
+        "Minimum free worker temp space",
+    )
+    min_free_space_multiplier = _validate_non_negative_number(
+        _prompt_value(
+            "Required temp-space multiplier for transferred inputs",
+            str(current_config.get("min_free_space_multiplier", DEFAULT_MIN_FREE_SPACE_MULTIPLIER)),
+            interactive=should_prompt,
+        ),
+        "Temp-space multiplier",
+    )
+    local_temp_max_age_hours = _validate_positive_seconds(
+        _prompt_value(
+            "Maximum age of abandoned worker temp folders in hours",
+            str(current_config.get("local_temp_max_age_hours", DEFAULT_LOCAL_TEMP_MAX_AGE_HOURS)),
+            interactive=should_prompt,
+        ),
+        "Worker temp max age",
+    )
+    quarantine_keep_days = _validate_positive_seconds(
+        _prompt_value(
+            "Overwrite quarantine retention in days",
+            str(current_config.get("quarantine_keep_days", DEFAULT_QUARANTINE_KEEP_DAYS)),
+            interactive=should_prompt,
+        ),
+        "Quarantine retention",
+    )
+    quarantine_max_gb = _validate_non_negative_number(
+        _prompt_value(
+            "Overwrite quarantine size cap in GiB",
+            str(current_config.get("quarantine_max_gb", DEFAULT_QUARANTINE_MAX_GB)),
+            interactive=should_prompt,
+        ),
+        "Quarantine size cap",
+    )
 
     config: dict[str, Any] = {
         "server_url": server_url,
         "poll_interval": poll_interval,
+        "heartbeat_interval": heartbeat_interval,
         "pc_id": pc_id,
         "start_delay_seconds": start_delay_seconds,
         "shutdown_delay_seconds": shutdown_delay_seconds,
         "cleanup_roots": cleanup_roots,
-        "task_isolation": task_isolation,
-        "show_task_terminal": show_task_terminal,
+        "task_isolation": True,
+        "show_task_terminal": True,
         "task_timeout_seconds": task_timeout_seconds,
         "task_timeouts": dict(current_config.get("task_timeouts") or {}),
         "task_log_tail_bytes": task_log_tail_bytes,
+        "min_free_space_gb": min_free_space_gb,
+        "min_free_space_multiplier": min_free_space_multiplier,
+        "local_temp_max_age_hours": local_temp_max_age_hours,
+        "quarantine_keep_days": quarantine_keep_days,
+        "quarantine_max_gb": quarantine_max_gb,
     }
     transfer_auth = collect_transfer_auth(current_config, interactive=should_prompt)
     if transfer_auth is not None:
@@ -394,7 +458,7 @@ def installable_task_names(registry: Mapping[str, TaskDefinition]) -> list[str]:
     return sorted(
         task_name
         for task_name, definition in registry.items()
-        if definition.install is not None
+        if definition.install is not None and definition.spec.get("production_ready", True) is not False
     )
 
 

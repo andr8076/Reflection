@@ -72,3 +72,4 @@ else
 fi
 
 echo "Uninstalled Reflection desktop autostart for this user."
+

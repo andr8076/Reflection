@@ -14,8 +14,20 @@ $config = reflection_master_config();
 $taskSpecs = is_array($config['task_specs'] ?? null) ? $config['task_specs'] : [];
 $farmStore = reflection_farm_store($config);
 $dataDirectory = dirname((string) $config['storage_path']);
-$automationStore = new AutomationStore($dataDirectory, is_array($config['task_specs'] ?? null) ? $config['task_specs'] : []);
 $storageStore = new StorageStore($dataDirectory, $config['transfer_server'] ?? null);
+$storageServers = $storageStore->enabledServers(true);
+$transferServerSchemes = [];
+foreach ($storageServers as $storageServer) {
+    $storageServerId = trim((string) ($storageServer['id'] ?? ''));
+    if ($storageServerId !== '') {
+        $transferServerSchemes[$storageServerId] = (string) ($storageServer['scheme'] ?? 'ftp');
+    }
+}
+$automationStore = new AutomationStore(
+    $dataDirectory,
+    is_array($config['task_specs'] ?? null) ? $config['task_specs'] : [],
+    $transferServerSchemes
+);
 $message = null;
 $error = null;
 $testResult = null;
@@ -144,7 +156,6 @@ function reflection_extension_presets(): array
 
 $selectedId = (string) ($_GET['edit'] ?? '');
 $editingRule = null;
-$storageServers = $storageStore->enabledServers(true);
 $storageServerIds = array_map(static function (array $server): string {
     return (string) ($server['id'] ?? '');
 }, $storageServers);

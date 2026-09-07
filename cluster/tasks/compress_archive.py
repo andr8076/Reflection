@@ -13,6 +13,7 @@ TASK_SPEC_JSON = r'''
 {
   "name": "compress_archive",
   "description": "Compress a file or directory into a .zip archive.",
+  "production_ready": true,
   "source": {
     "mode": "required",
     "label": "Source file or folder",

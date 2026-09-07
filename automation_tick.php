@@ -2,9 +2,7 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/FarmStore.php';
-require_once __DIR__ . '/AutomationStore.php';
+require_once __DIR__ . '/MasterTick.php';
 
 function reflection_tick_output(array $payload, int $statusCode = 200): void
 {
@@ -17,27 +15,8 @@ function reflection_tick_output(array $payload, int $statusCode = 200): void
 
 $config = reflection_master_config();
 try {
-    $farmStore = reflection_farm_store($config);
-    $automationStore = new AutomationStore(dirname((string) $config['storage_path']), is_array($config['task_specs'] ?? null) ? $config['task_specs'] : []);
-    $results = $automationStore->runDueRules($farmStore, false);
-    $queued = 0;
-    foreach ($results as $result) {
-        $queued += (int) ($result['queued'] ?? 0);
-    }
-
-    $autoWake = null;
-    if ($queued > 0) {
-        $farmStore->refreshEssSocFromConfiguredEndpoint();
-        $autoWake = $farmStore->autoWakeForQueuedJobs((int) ($config['stale_after_seconds'] ?? 900), 'automation_tick');
-    }
-
-    reflection_tick_output([
-        'status' => 'ok',
-        'rules_run' => count($results),
-        'jobs_queued' => $queued,
-        'auto_wake' => $autoWake,
-        'results' => $results,
-    ]);
+    $result = reflection_run_master_tick($config);
+    reflection_tick_output($result, ($result['status'] ?? '') === 'busy' ? 409 : 200);
 } catch (Throwable $exception) {
     reflection_tick_output(['status' => 'error', 'error' => $exception->getMessage()], 500);
 }

@@ -11,20 +11,25 @@ final class AutomationStore
     private string $statePath;
     private string $runLogPath;
     private string $lockPath;
-    private string $dueCheckLockPath;
-    private string $dueCheckStatePath;
     private array $taskSpecs;
+    private array $transferServerSchemes;
 
-    public function __construct(string $directory, array $taskSpecs = [])
+    public function __construct(string $directory, array $taskSpecs = [], array $transferServerSchemes = [])
     {
         $this->directory = $directory;
         $this->taskSpecs = $taskSpecs;
+        $this->transferServerSchemes = [];
+        foreach ($transferServerSchemes as $serverId => $scheme) {
+            $serverId = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) $serverId) ?: '';
+            $scheme = strtolower(trim((string) $scheme));
+            if ($serverId !== '' && in_array($scheme, ['ftp', 'ftps', 'sftp'], true)) {
+                $this->transferServerSchemes[$serverId] = $scheme;
+            }
+        }
         $this->rulesPath = $directory . DIRECTORY_SEPARATOR . 'automation_rules.json';
         $this->statePath = $directory . DIRECTORY_SEPARATOR . 'automation_state.json';
         $this->runLogPath = $directory . DIRECTORY_SEPARATOR . 'automation_runs.jsonl';
         $this->lockPath = $directory . DIRECTORY_SEPARATOR . 'automation.lock';
-        $this->dueCheckLockPath = $directory . DIRECTORY_SEPARATOR . 'automation_due_check.lock';
-        $this->dueCheckStatePath = $directory . DIRECTORY_SEPARATOR . 'automation_due_check.json';
 
         if (!is_dir($directory) && !@mkdir($directory, 0775, true) && !is_dir($directory)) {
             throw new RuntimeException(sprintf('Unable to create automation data directory: %s', $directory));
@@ -372,6 +377,10 @@ final class AutomationStore
                 ], static function ($value): bool {
                     return $value !== '' && $value !== null;
                 });
+                $transferServerId = trim((string) ($rule['transfer_server_id'] ?? ''));
+                if ($transferServerId !== '' && isset($this->transferServerSchemes[$transferServerId])) {
+                    $jobExtra['required_transfer_scheme'] = $this->transferServerSchemes[$transferServerId];
+                }
                 $workerCommandFilter = $this->workerCommandFilterPayload($rule);
                 if ($workerCommandFilter !== null) {
                     $jobExtra['worker_command_filter'] = $workerCommandFilter;
@@ -416,78 +425,6 @@ final class AutomationStore
         }
 
         return $results;
-    }
-
-    public function runDueRulesForWorkerCheckin(FarmStore $farmStore, bool $dryRun = false, int $cooldownSeconds = 60): array
-    {
-        if ($dryRun) {
-            return $this->runDueRules($farmStore, true);
-        }
-
-        $cooldownSeconds = max(0, $cooldownSeconds);
-        $lockHandle = @fopen($this->dueCheckLockPath, 'c+');
-        if ($lockHandle === false) {
-            // If the coordination lock cannot be opened, fall back to the
-            // normal due-rule logic rather than preventing workers from using
-            // the farm. The error will be visible in the PHP error log.
-            error_log('Reflection automation due-check lock could not be opened: ' . $this->dueCheckLockPath);
-            return $this->runDueRules($farmStore, false);
-        }
-
-        if (!@flock($lockHandle, LOCK_EX | LOCK_NB)) {
-            fclose($lockHandle);
-            return [[
-                'status' => 'skipped',
-                'reason' => 'automation_check_already_running',
-                'trigger' => 'worker_checkin',
-                'started_at' => gmdate(DATE_ATOM),
-            ]];
-        }
-
-        try {
-            $now = time();
-            $state = $this->readJson($this->dueCheckStatePath, []);
-            $lastFinished = strtotime((string) ($state['last_finished_at'] ?? ''));
-            $lastStarted = strtotime((string) ($state['last_started_at'] ?? ''));
-            $lastCheck = $lastFinished !== false ? $lastFinished : ($lastStarted !== false ? $lastStarted : null);
-
-            if ($cooldownSeconds > 0 && $lastCheck !== null && ($now - $lastCheck) < $cooldownSeconds) {
-                return [[
-                    'status' => 'skipped',
-                    'reason' => 'automation_check_cooldown',
-                    'trigger' => 'worker_checkin',
-                    'cooldown_seconds' => $cooldownSeconds,
-                    'seconds_remaining' => max(0, $cooldownSeconds - ($now - $lastCheck)),
-                    'last_finished_at' => (string) ($state['last_finished_at'] ?? ''),
-                ]];
-            }
-
-            $state['last_started_at'] = gmdate(DATE_ATOM);
-            $state['last_trigger'] = 'worker_checkin';
-            $state['last_status'] = 'running';
-            $this->atomicWriteJson($this->dueCheckStatePath, $state);
-
-            try {
-                $results = $this->runDueRules($farmStore, false);
-                $state['last_finished_at'] = gmdate(DATE_ATOM);
-                $state['last_status'] = 'complete';
-                $state['last_result_count'] = count(array_filter($results, static function ($result): bool {
-                    return is_array($result) && (($result['status'] ?? '') !== 'skipped');
-                }));
-                $state['last_error'] = '';
-                $this->atomicWriteJson($this->dueCheckStatePath, $state);
-                return $results;
-            } catch (Throwable $exception) {
-                $state['last_finished_at'] = gmdate(DATE_ATOM);
-                $state['last_status'] = 'failed';
-                $state['last_error'] = $this->limitString($exception->getMessage(), 500);
-                $this->atomicWriteJson($this->dueCheckStatePath, $state);
-                throw $exception;
-            }
-        } finally {
-            @flock($lockHandle, LOCK_UN);
-            fclose($lockHandle);
-        }
     }
 
     public function ruleIsDue(array $rule): bool
@@ -1494,20 +1431,27 @@ final class AutomationStore
         if (!is_file($path)) {
             return $default;
         }
-        $contents = (string) file_get_contents($path);
+        $contents = file_get_contents($path);
+        if ($contents === false) {
+            throw new RuntimeException('Automation JSON could not be read: ' . $path);
+        }
         if (trim($contents) === '') {
-            return $default;
+            $corruptPath = $path . '.corrupt-' . gmdate('Ymd-His') . '-' . bin2hex(random_bytes(3));
+            @file_put_contents($corruptPath, $contents, LOCK_EX);
+            throw new RuntimeException('Automation JSON is empty. A corrupt copy was preserved beside it: ' . $path);
         }
         $decoded = json_decode($contents, true);
-        return is_array($decoded) ? $decoded : $default;
+        if (!is_array($decoded)) {
+            $corruptPath = $path . '.corrupt-' . gmdate('Ymd-His') . '-' . bin2hex(random_bytes(3));
+            @file_put_contents($corruptPath, $contents, LOCK_EX);
+            throw new RuntimeException('Automation JSON is invalid. A corrupt copy was preserved beside it: ' . $path);
+        }
+        return $decoded;
     }
 
     private function atomicWriteJson(string $path, array $data): void
     {
-        $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-        if ($json === false) {
-            throw new RuntimeException('Unable to encode automation JSON data.');
-        }
+        $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
         $directory = dirname($path);
         if (!is_dir($directory) && !@mkdir($directory, 0775, true) && !is_dir($directory)) {
             throw new RuntimeException(sprintf('Unable to create JSON directory: %s', $directory));
@@ -1521,12 +1465,25 @@ final class AutomationStore
             if ($handle === false) {
                 throw new RuntimeException(sprintf('Unable to open temporary JSON file: %s', $temporaryPath));
             }
-            fwrite($handle, $json . PHP_EOL);
+            $payload = $json . PHP_EOL;
+            $written = fwrite($handle, $payload);
+            if ($written === false || $written !== strlen($payload)) {
+                throw new RuntimeException(sprintf('Unable to write complete automation JSON file: %s', $temporaryPath));
+            }
             fflush($handle);
             if (function_exists('fsync')) {
                 fsync($handle);
             }
             fclose($handle);
+            if (is_file($path)) {
+                $backupTemporaryPath = tempnam($directory, basename($path) . '.bak.tmp.');
+                if ($backupTemporaryPath === false || !@copy($path, $backupTemporaryPath) || !@rename($backupTemporaryPath, $path . '.bak')) {
+                    if (is_string($backupTemporaryPath) && is_file($backupTemporaryPath)) {
+                        @unlink($backupTemporaryPath);
+                    }
+                    throw new RuntimeException(sprintf('Unable to update automation JSON backup: %s.bak', $path));
+                }
+            }
             if (!@rename($temporaryPath, $path)) {
                 throw new RuntimeException(sprintf('Unable to replace JSON file atomically: %s', $path));
             }

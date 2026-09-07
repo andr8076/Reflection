@@ -39,6 +39,10 @@ class AutostartPaths:
     def reflection_script(self) -> Path:
         return self.repo_dir / "Reflection.py"
 
+    @property
+    def python_executable(self) -> Path:
+        return self.repo_dir / ".venv" / "bin" / "python"
+
 
 def xdg_config_home() -> Path:
     configured = os.environ.get("XDG_CONFIG_HOME")
@@ -88,9 +92,16 @@ def write_executable(path: Path, content: str) -> None:
 def run_script_content(paths: AutostartPaths) -> str:
     repo_dir = shlex.quote(str(paths.repo_dir))
     reflection_script = shlex.quote(str(paths.reflection_script))
+    python_executable = shlex.quote(str(paths.python_executable))
     return f"""#!/bin/sh
 cd {repo_dir} || exit 1
-python3 {reflection_script}
+if [ ! -x {python_executable} ]; then
+    printf 'Reflection virtual environment is missing: %s\n' {python_executable} >&2
+    printf 'Run ./install.sh again. Press Enter to close this terminal...'
+    read _
+    exit 1
+fi
+{python_executable} {reflection_script}
 status=$?
 printf '\nReflection stopped with exit code %s. Press Enter to close this terminal...' "$status"
 read _

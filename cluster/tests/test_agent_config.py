@@ -35,6 +35,7 @@ class AgentConfigTest(unittest.TestCase):
                 {
                     "server_url": "https://farm.example.test/farm_api.php",
                     "poll_interval": 15,
+                    "heartbeat_interval": Reflection.DEFAULT_HEARTBEAT_INTERVAL,
                     "start_delay_seconds": Reflection.DEFAULT_START_DELAY_SECONDS,
                     "shutdown_delay_seconds": Reflection.DEFAULT_SHUTDOWN_DELAY_SECONDS,
                     "pc_id": "worker-01",
@@ -59,6 +60,7 @@ class AgentConfigTest(unittest.TestCase):
                 {
                     "server_url": "http://localhost/farm_api.php",
                     "poll_interval": 5,
+                    "heartbeat_interval": Reflection.DEFAULT_HEARTBEAT_INTERVAL,
                     "start_delay_seconds": Reflection.DEFAULT_START_DELAY_SECONDS,
                     "shutdown_delay_seconds": Reflection.DEFAULT_SHUTDOWN_DELAY_SECONDS,
                     "pc_id": "local-worker",
@@ -72,6 +74,7 @@ class AgentConfigTest(unittest.TestCase):
                 {
                     "server_url": "http://localhost/farm_api.php",
                     "poll_interval": 5,
+                    "heartbeat_interval": Reflection.DEFAULT_HEARTBEAT_INTERVAL,
                     "start_delay_seconds": Reflection.DEFAULT_START_DELAY_SECONDS,
                     "shutdown_delay_seconds": Reflection.DEFAULT_SHUTDOWN_DELAY_SECONDS,
                     "pc_id": "local-worker",
@@ -89,7 +92,7 @@ class AgentConfigTest(unittest.TestCase):
                 },
             )
 
-    def test_load_agent_config_can_disable_visible_task_terminal(self):
+    def test_load_agent_config_upgrades_disabled_visible_task_terminal(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "agent.json"
             config_path.write_text(
@@ -97,7 +100,9 @@ class AgentConfigTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            self.assertFalse(Reflection.load_agent_config(config_path)["show_task_terminal"])
+            loaded = Reflection.load_agent_config(config_path)
+            self.assertTrue(loaded["show_task_terminal"])
+            self.assertTrue(loaded["task_isolation"])
 
     def test_load_agent_config_accepts_cleanup_roots(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -601,6 +606,21 @@ class TaskHeartbeatTest(unittest.TestCase):
         finally:
             heartbeat.__exit__(None, None, None)
 
+    def test_heartbeat_network_error_stops_before_lease_expiry(self):
+        class FakeAgent:
+            def heartbeat_task(self, task_id):
+                raise OSError("network unreachable")
+
+        heartbeat = Reflection.TaskHeartbeat(FakeAgent(), "job-expiring", 5, lease_seconds=30)
+        heartbeat.last_acknowledged_at = time.monotonic() - 25
+        heartbeat.interval = 0.01
+        heartbeat.__enter__()
+        try:
+            self.assertTrue(heartbeat.cancel_event.wait(1))
+            self.assertEqual(heartbeat.cancel_reason, "lease_renewal_unconfirmed")
+        finally:
+            heartbeat.__exit__(None, None, None)
+
     def test_unexpected_heartbeat_response_without_instruction_does_not_relinquish(self):
         class FakeAgent:
             def __init__(self):
@@ -633,8 +653,10 @@ class TaskHeartbeatTest(unittest.TestCase):
             )
             cancel_event = threading.Event()
             original_tasks_dir = Reflection.TASKS_DIR
+            original_terminal_launcher = Reflection._launch_task_log_terminal
             try:
                 Reflection.TASKS_DIR = tasks_dir
+                Reflection._launch_task_log_terminal = lambda *args, **kwargs: True
                 timer = threading.Timer(0.1, cancel_event.set)
                 timer.start()
                 outcome = Reflection._run_task_in_subprocess(
@@ -642,6 +664,7 @@ class TaskHeartbeatTest(unittest.TestCase):
                 )
             finally:
                 Reflection.TASKS_DIR = original_tasks_dir
+                Reflection._launch_task_log_terminal = original_terminal_launcher
                 timer.cancel()
 
         self.assertFalse(outcome.success)

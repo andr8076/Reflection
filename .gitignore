@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 reflection_config.json
+reflection_outbox.json
+.venv/
 
 # Master website runtime/local files
 /data/*
@@ -14,3 +16,4 @@ farm_settings.local.php
 __MACOSX/
 
 /cluster/output
+/cluster/tasks_local/__pycache__/

@@ -10,6 +10,8 @@ TASK_SPEC_JSON = r'''
 {
   "name": "dummy_task",
   "description": "Placeholder pipeline test task.",
+  "production_ready": false,
+  "unavailable_reason": "dummy_task is a development pipeline fixture and is not available for production scheduling.",
   "source": {
     "mode": "required",
     "label": "Source value",

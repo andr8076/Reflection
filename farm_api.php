@@ -5,7 +5,6 @@ declare(strict_types=1);
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/FarmStore.php';
 require_once __DIR__ . '/StorageStore.php';
-require_once __DIR__ . '/AutomationStore.php';
 
 function reflection_json_response(array $payload, int $statusCode = 200): void
 {
@@ -73,13 +72,25 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
 
     $capabilities = is_array($payload['capabilities'] ?? null) ? $payload['capabilities'] : [];
     $store->recordWorkerCheckIn($pcId, $version, $capabilities);
-    $store->refreshEssSocFromConfiguredEndpoint(false);
 
     $settings = $store->effectiveSettings();
     $masterCommit = reflection_api_master_commit($config);
     $versionMismatch = !empty($settings['enforce_version'])
         && $masterCommit !== ''
         && !reflection_api_versions_match($version, $masterCommit);
+
+    if ($action === 'system_check') {
+        return reflection_api_with_version_metadata(
+            [
+                'status' => 'ready',
+                'server_time' => gmdate(DATE_ATOM),
+                'job_lease_seconds' => max(30, (int) ($settings['job_lease_seconds'] ?? 180)),
+            ],
+            $config,
+            $settings,
+            'ok'
+        );
+    }
 
     if ($action === 'confirm_shutdown') {
         return reflection_api_confirm_shutdown($payload, $store, $config, $pcId);
@@ -107,13 +118,13 @@ function reflection_handle_farm_api(array $payload, FarmStore $store, array $con
         case 'request_task':
             return reflection_api_request_task($store, $config, $pcId);
         case 'confirm_taken':
-            return reflection_api_confirm_taken($payload, $store, $pcId);
+            return reflection_api_confirm_taken($payload, $store, $config, $pcId);
         case 'heartbeat_task':
-            return reflection_api_heartbeat_task($payload, $store, $pcId);
+            return reflection_api_heartbeat_task($payload, $store, $config, $pcId);
         case 'task_stage':
             return reflection_api_task_stage($payload, $store, $pcId);
         case 'report_done':
-            return reflection_api_report_done($payload, $store, $pcId);
+            return reflection_api_report_done($payload, $store, $config, $pcId);
         default:
             return reflection_api_with_version_metadata(
                 ['status' => 'error', 'error' => 'Unknown action.'],
@@ -216,29 +227,6 @@ function reflection_is_control_task(string $module): bool
     return in_array($module, ['noop', 'status', 'reload_tasks', 'shutdown', 'update_worker', 'wake_farm', 'storage_test', 'purge_quarantine'], true);
 }
 
-function reflection_run_due_automation_on_worker_checkin(FarmStore $store, array $config): array
-{
-    $settings = $store->effectiveSettings();
-    if (empty($settings['automation_run_due_on_worker_checkin'])) {
-        return [];
-    }
-
-    $storagePath = (string) ($config['storage_path'] ?? '');
-    if ($storagePath === '') {
-        return [];
-    }
-
-    try {
-        $automationStore = new AutomationStore(dirname($storagePath), is_array($config['task_specs'] ?? null) ? $config['task_specs'] : []);
-        $cooldownSeconds = max(0, (int) ($settings['automation_checkin_cooldown_seconds'] ?? 60));
-        return $automationStore->runDueRulesForWorkerCheckin($store, false, $cooldownSeconds);
-    } catch (Throwable $exception) {
-        // A broken automation rule must not stop workers from checking in.
-        error_log('Reflection automation check-in scan failed: ' . $exception->getMessage());
-        return [];
-    }
-}
-
 function reflection_api_allows_mismatched_version_action(array $payload, FarmStore $store): bool
 {
     $action = (string) ($payload['action'] ?? '');
@@ -336,6 +324,9 @@ function reflection_api_task_payload(array $job, array $config, array $settings,
         'quarantine_keep_days' => max(1, (int) ($settings['quarantine_keep_days'] ?? 14)),
         'quarantine_max_gb' => max(0.0, (float) ($settings['quarantine_max_gb'] ?? 100)),
         'worker_temp_max_age_hours' => max(1, (int) ($settings['worker_temp_max_age_hours'] ?? 24)),
+        'lease_token' => (string) ($job['lease_token'] ?? ''),
+        'lease_expires_at' => (string) ($job['lease_expires_at'] ?? ''),
+        'job_lease_seconds' => max(30, (int) ($settings['job_lease_seconds'] ?? 180)),
     ];
 
     $transferServer = reflection_worker_transfer_server_for_job($job, $config);
@@ -380,18 +371,49 @@ function reflection_api_request_self_update_for_version_mismatch(FarmStore $stor
 function reflection_api_request_task(FarmStore $store, array $config, string $pcId): array
 {
     $staleAfterSeconds = (int) ($config['stale_after_seconds'] ?? 900);
-    $store->requeueStaleJobs($staleAfterSeconds);
-
-    // If this worker already had a running job and is now asking for new work,
-    // the master treats the old job as lost/crashed. The worker does not need
-    // local recovery state or a special crash-report action; the request itself
-    // is enough information.
-    $store->recoverInterruptedJobForWorker($pcId);
-
-    reflection_run_due_automation_on_worker_checkin($store, $config);
-
-    $allowedWorkers = $store->allowedActiveWorkers();
     $settings = $store->effectiveSettings();
+    $leaseSeconds = max(30, min(3600, (int) ($settings['job_lease_seconds'] ?? 180)));
+    $allowedWorkers = $store->allowedActiveWorkers();
+
+    // Re-deliver an unconfirmed claim before applying new-work admission
+    // policy. This covers a lost request_task response without allocating a
+    // second job. A confirmed lease remains exclusive until completion or
+    // expiry; asking for more work never abandons it.
+    $existingClaim = $store->claimNextQueuedJobForWorker(
+        $pcId,
+        $staleAfterSeconds,
+        $leaseSeconds,
+        false,
+        $allowedWorkers
+    );
+    if (is_array($existingClaim['job'] ?? null)) {
+        $store->resetWorkerNoJobCheckIns($pcId);
+        return reflection_api_with_version_metadata(
+            [
+                'status' => 'task_available',
+                'claim_replayed' => true,
+                'task' => reflection_api_task_payload($existingClaim['job'], $config, $settings, $allowedWorkers, $store, $pcId),
+            ],
+            $config,
+            $settings,
+            'ok'
+        );
+    }
+    if (!empty($existingClaim['busy'])) {
+        return reflection_api_with_version_metadata(
+            [
+                'status' => 'no_jobs',
+                'reason' => 'worker_already_has_active_lease',
+                'shutdown_after_task' => false,
+                'idle_no_job_checkins' => 0,
+                'idle_shutdown_after_no_job_checks' => max(0, (int) ($settings['idle_shutdown_after_no_job_checks'] ?? 0)),
+            ],
+            $config,
+            $settings,
+            'ok'
+        );
+    }
+
     $masterCommit = reflection_api_master_commit($config);
     if (!$store->workerFitsCurrentSoc($pcId)) {
         return reflection_api_no_jobs_response($store, $pcId, $settings, 'ess_soc_below_worker_minimum', !empty($settings['ess_shutdown_below_minimum']), $config);
@@ -399,14 +421,6 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
 
     if ($allowedWorkers <= 0) {
         return reflection_api_no_jobs_response($store, $pcId, $settings, 'ess_soc_below_minimum', !empty($settings['ess_shutdown_below_minimum']), $config);
-    }
-
-    if ($allowedWorkers !== PHP_INT_MAX && $store->runningWorkerCount() >= $allowedWorkers) {
-        return reflection_api_no_jobs_response($store, $pcId, $settings, 'ess_worker_limit', false, $config);
-    }
-
-    if (!empty($settings['auto_wake_for_queued_jobs'])) {
-        $store->autoWakeForQueuedJobs($staleAfterSeconds, 'worker_checkin');
     }
 
     $layerAdmission = $store->normalWorkLayerAdmissionStatus(
@@ -421,10 +435,21 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
         ]);
     }
 
-    $job = $store->nextQueuedJobForWorker($pcId, $staleAfterSeconds);
+    $claim = $store->claimNextQueuedJobForWorker(
+        $pcId,
+        $staleAfterSeconds,
+        $leaseSeconds,
+        true,
+        $allowedWorkers
+    );
+    $job = is_array($claim['job'] ?? null) ? $claim['job'] : null;
     if ($job === null) {
-        return reflection_api_no_jobs_response($store, $pcId, $settings, 'queue_empty', false, $config, [
+        $reason = !empty($claim['capacity_limited'])
+            ? 'ess_worker_limit'
+            : ((is_array($claim['rejections'] ?? null) && $claim['rejections'] !== []) ? 'no_eligible_jobs' : 'queue_empty');
+        return reflection_api_no_jobs_response($store, $pcId, $settings, $reason, false, $config, [
             'work_layer_priority' => $layerAdmission,
+            'assignment_rejections' => is_array($claim['rejections'] ?? null) ? $claim['rejections'] : [],
         ]);
     }
 
@@ -433,6 +458,7 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
     return reflection_api_with_version_metadata(
         [
             'status' => 'task_available',
+            'claim_replayed' => !empty($claim['replayed']),
             'task' => reflection_api_task_payload($job, $config, $settings, $allowedWorkers, $store, $pcId),
         ],
         $config,
@@ -479,30 +505,46 @@ function reflection_api_no_jobs_response(FarmStore $store, string $pcId, array $
     );
 }
 
-function reflection_api_confirm_taken(array $payload, FarmStore $store, string $pcId): array
+function reflection_api_confirm_taken(array $payload, FarmStore $store, array $config, string $pcId): array
 {
     $taskId = trim((string) ($payload['task_id'] ?? ''));
+    $leaseToken = trim((string) ($payload['lease_token'] ?? ''));
     if ($taskId === '') {
         return ['status' => 'error', 'error' => 'Missing task_id.'];
     }
 
-    if (!$store->markJobRunning($taskId, $pcId)) {
+    $settings = $store->effectiveSettings();
+    $leaseSeconds = max(30, min(3600, (int) ($settings['job_lease_seconds'] ?? 180)));
+    if (!$store->markJobRunning($taskId, $pcId, $leaseToken, $leaseSeconds)) {
         return ['status' => 'not_available'];
     }
 
-    return ['status' => 'acknowledged'];
+    return reflection_api_with_version_metadata(
+        ['status' => 'acknowledged', 'job_lease_seconds' => $leaseSeconds],
+        $config,
+        $settings,
+        'ok'
+    );
 }
 
 
-function reflection_api_heartbeat_task(array $payload, FarmStore $store, string $pcId): array
+function reflection_api_heartbeat_task(array $payload, FarmStore $store, array $config, string $pcId): array
 {
     $taskId = trim((string) ($payload['task_id'] ?? ''));
+    $leaseToken = trim((string) ($payload['lease_token'] ?? ''));
     if ($taskId === '') {
         return ['status' => 'error', 'error' => 'Missing task_id.'];
     }
 
-    if ($store->heartbeatJob($taskId, $pcId)) {
-        return ['status' => 'heartbeat_acknowledged'];
+    $settings = $store->effectiveSettings();
+    $leaseSeconds = max(30, min(3600, (int) ($settings['job_lease_seconds'] ?? 180)));
+    if ($store->heartbeatJob($taskId, $pcId, $leaseToken, $leaseSeconds)) {
+        return reflection_api_with_version_metadata(
+            ['status' => 'heartbeat_acknowledged', 'job_lease_seconds' => $leaseSeconds],
+            $config,
+            $settings,
+            'ok'
+        );
     }
 
     if ($store->heldJobBelongsToWorker($taskId, $pcId)) {
@@ -517,12 +559,13 @@ function reflection_api_task_stage(array $payload, FarmStore $store, string $pcI
     $taskId = trim((string) ($payload['task_id'] ?? ''));
     $stage = trim((string) ($payload['stage'] ?? ''));
     $message = trim((string) ($payload['message'] ?? ''));
+    $leaseToken = trim((string) ($payload['lease_token'] ?? ''));
 
     if ($taskId === '' || $stage === '') {
         return ['status' => 'error', 'error' => 'Missing task_id or stage.'];
     }
 
-    if (!$store->updateJobStage($taskId, $pcId, $stage, $message)) {
+    if (!$store->updateJobStage($taskId, $pcId, $stage, $message, $leaseToken)) {
         return ['status' => 'not_available', 'instruction' => 'relinquish_task'];
     }
 
@@ -530,11 +573,13 @@ function reflection_api_task_stage(array $payload, FarmStore $store, string $pcI
 }
 
 
-function reflection_api_report_done(array $payload, FarmStore $store, string $pcId): array
+function reflection_api_report_done(array $payload, FarmStore $store, array $config, string $pcId): array
 {
     $taskId = trim((string) ($payload['task_id'] ?? ''));
     $status = (string) ($payload['status'] ?? 'failed');
     $error = (string) ($payload['error'] ?? '');
+    $leaseToken = trim((string) ($payload['lease_token'] ?? ''));
+    $completionId = trim((string) ($payload['completion_id'] ?? ''));
 
     if ($taskId === '') {
         return ['status' => 'error', 'error' => 'Missing task_id.'];
@@ -544,13 +589,13 @@ function reflection_api_report_done(array $payload, FarmStore $store, string $pc
         return ['status' => 'error', 'error' => 'Invalid completion status.'];
     }
 
-    if (!$store->finishJob($taskId, $pcId, $status, $error)) {
+    if (!$store->finishJob($taskId, $pcId, $status, $error, $leaseToken, $completionId)) {
         return ['status' => 'not_available'];
     }
 
     $settings = $store->effectiveSettings();
     $shutdownRequested = !empty($settings['ess_shutdown_below_minimum']) && !$store->workerFitsCurrentSoc($pcId);
-    $shutdownLayer = reflection_api_shutdown_layer_payload($store, $pcId, $GLOBALS['config'] ?? []);
+    $shutdownLayer = reflection_api_shutdown_layer_payload($store, $pcId, $config);
     $shutdownAfterTask = $shutdownRequested && !empty($shutdownLayer['allowed']);
 
     return reflection_api_with_version_metadata(
@@ -561,7 +606,7 @@ function reflection_api_report_done(array $payload, FarmStore $store, string $pc
             'shutdown_layer' => $shutdownLayer,
             'shutdown_blocked_by_layer' => $shutdownRequested && !$shutdownAfterTask,
         ],
-        $GLOBALS['config'] ?? [],
+        $config,
         $settings,
         'ok'
     );
