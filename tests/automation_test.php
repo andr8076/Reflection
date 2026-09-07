@@ -97,7 +97,6 @@ $siblingRule = $automationStore->saveRule([
 $siblingTest = $automationStore->testRule($siblingRule, $scanDir . DIRECTORY_SEPARATOR . 'one.txt', 10);
 assertSameValue($scanDir . DIRECTORY_SEPARATOR . 'one_converted.txt', $siblingTest['rows'][0]['delivery'], 'Same-as-source without overwrite should add the configured suffix.');
 
-
 $invalidErrors = $automationStore->validateRule($automationStore->normalizeRule([
     'name' => 'Invalid placeholder',
     'enabled' => false,
@@ -108,17 +107,6 @@ $invalidErrors = $automationStore->validateRule($automationStore->normalizeRule(
 assertSameValue(true, count($invalidErrors) > 0, 'Invalid template placeholders should be rejected.');
 assertSameValue(true, strpos(implode(' ', $invalidErrors), '{relatiive}') !== false, 'Invalid placeholder error should include the bad placeholder name.');
 
-$commandPlaceholderErrors = $automationStore->validateRule($automationStore->normalizeRule([
-    'name' => 'Command task placeholder',
-    'enabled' => false,
-    'module' => 'dummy_task',
-    'scan_roots' => $scanDir,
-    'source_template' => '{path}',
-    'command_filter_mode' => 'exit_zero',
-    'command_filter_command' => 'python3 {task_file} --preflight {path}',
-]), ['dummy_task' => 'dummy']);
-assertSameValue(false, strpos(implode(' ', $commandPlaceholderErrors), '{task_file}') !== false, 'Command templates should allow task-owned placeholders like {task_file}.');
-
 $pathTaskPlaceholderErrors = $automationStore->validateRule($automationStore->normalizeRule([
     'name' => 'Path task placeholder invalid',
     'enabled' => false,
@@ -126,35 +114,22 @@ $pathTaskPlaceholderErrors = $automationStore->validateRule($automationStore->no
     'scan_roots' => $scanDir,
     'source_template' => '{task_file}',
 ]), ['dummy_task' => 'dummy']);
-assertSameValue(true, strpos(implode(' ', $pathTaskPlaceholderErrors), '{task_file}') !== false, 'Path templates should still reject command-only placeholders like {task_file}.');
+assertSameValue(true, strpos(implode(' ', $pathTaskPlaceholderErrors), '{task_file}') !== false, 'Path templates should reject removed command-only placeholders like {task_file}.');
 
-file_put_contents($scanDir . DIRECTORY_SEPARATOR . 'candidate.cmd', 'candidate');
-touch($scanDir . DIRECTORY_SEPARATOR . 'candidate.cmd', time() - 3600);
-$workerFilterRule = $automationStore->saveRule([
-    'name' => 'Worker preflight candidates',
+$legacyCommandRule = $automationStore->normalizeRule([
+    'name' => 'Legacy command fields',
     'enabled' => false,
     'module' => 'dummy_task',
-    'scan_roots' => $scanDir . DIRECTORY_SEPARATOR . 'candidate.cmd',
-    'recursive' => false,
+    'scan_roots' => $scanDir,
     'source_template' => '{path}',
-    'extensions' => 'cmd',
-    'require_unchanged_seconds' => 0,
-    'max_files_per_scan' => 10,
-    'max_jobs_per_scan' => 10,
     'command_filter_mode' => 'exit_zero',
     'command_filter_command' => 'python3 {task_file} --preflight {path}',
+    'command_filter_regex' => '/queue/',
     'command_timeout_seconds' => 900,
-], ['dummy_task' => 'dummy']);
-$workerFilterDryRun = $automationStore->runRule($workerFilterRule, $farmStore, true);
-assertSameValue('would_queue_candidate', $workerFilterDryRun['rows'][0]['status'] ?? '', 'Dry run should show worker-filtered items as queued candidates, without running the command on the master.');
-$workerFilterRun = $automationStore->runRule($workerFilterRule, $farmStore, false);
-assertSameValue(1, $workerFilterRun['queued'], 'Worker command filters should queue candidate jobs for farms to evaluate.');
-$data = $farmStore->read();
-$candidateJob = end($data['jobs']);
-assertSameValue(true, is_array($candidateJob['worker_command_filter'] ?? null), 'Candidate job should carry the worker command filter payload.');
-assertSameValue(true, !empty($candidateJob['candidate_job']), 'Candidate job should be marked as a candidate instead of a separate filter-test job.');
-assertSameValue('pending', $candidateJob['worker_preflight_status'] ?? '', 'Candidate jobs should wait for worker-side preflight.');
-
+]);
+foreach (['command_filter_mode', 'command_filter_command', 'command_filter_regex', 'command_timeout_seconds'] as $removedField) {
+    assertSameValue(false, array_key_exists($removedField, $legacyCommandRule), 'Legacy worker-command field should be stripped from normalized automation rules: ' . $removedField);
+}
 
 $mappedRule = $automationStore->saveRule([
     'name' => 'Mapped worker paths',
@@ -185,7 +160,6 @@ $mappedInvalid = $automationStore->validateRule($automationStore->normalizeRule(
 ]), ['dummy_task' => 'dummy']);
 assertSameValue(true, count($mappedInvalid) > 0, 'Invalid worker path mappings should be rejected.');
 
-
 $result = $automationStore->runRule($automationStore->rule($rule['id']), $farmStore, false);
 assertSameValue(0, $result['queued'], 'Unchanged files should not be queued twice.');
 
@@ -193,7 +167,7 @@ $rule = $automationStore->saveRule(array_merge($rule, ['requeue_unchanged' => tr
 $result = $automationStore->runRule($rule, $farmStore, false);
 assertSameValue(1, $result['queued'], 'Requeue override should queue an unchanged file even while an equivalent job is already open.');
 $data = $farmStore->read();
-assertSameValue(3, count($data['jobs']), 'Requeue override should allow concurrent duplicate jobs without disturbing candidate jobs.');
+assertSameValue(2, count($data['jobs']), 'Requeue override should allow concurrent duplicate jobs.');
 
 $due = $automationStore->runDueRules($farmStore, true);
 assertSameValue(0, count($due), 'Recently scanned rule should not be due yet.');
@@ -261,7 +235,6 @@ $badTemplateErrors = $contractStore->validateRule($contractStore->normalizeRule(
     'delivery_template' => '{dir}/{name}.mp4',
 ]), ['h265_encode' => 'H265']);
 assertSameValue(true, strpos(implode(' ', $badTemplateErrors), '.mkv') !== false, 'Custom h265 delivery templates must be validated against the task extension.');
-
 
 array_map('unlink', glob($dataDir . DIRECTORY_SEPARATOR . '*') ?: []);
 array_map('unlink', glob($scanDir . DIRECTORY_SEPARATOR . '*') ?: []);
