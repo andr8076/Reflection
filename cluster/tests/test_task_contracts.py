@@ -34,6 +34,7 @@ class TaskContractTest(unittest.TestCase):
         self.assertEqual(registry["compress_archive"].spec["delivery"]["mode"], "auto")
         self.assertEqual(registry["h265_encode"].spec["delivery"]["extension"], ".mkv")
         self.assertEqual(registry["h265_encode"].spec["delivery"]["mode"], "auto")
+        self.assertNotIn("preflight", registry["h265_encode"].spec)
         self.assertEqual(registry["h265_encode"].spec["output"]["container"], "mkv")
         self.assertTrue(registry["h265_encode"].spec["output"]["preserve_audio"])
         self.assertTrue(registry["h265_encode"].spec["output"]["preserve_subtitles"])
