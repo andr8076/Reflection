@@ -57,10 +57,6 @@ function reflection_rule_from_post(AutomationStore $automationStore): array
         'min_size_mb' => (string) ($_POST['min_size_mb'] ?? ''),
         'max_size_mb' => (string) ($_POST['max_size_mb'] ?? ''),
         'require_unchanged_seconds' => (string) ($_POST['require_unchanged_seconds'] ?? '0'),
-        'command_filter_mode' => (string) ($_POST['command_filter_mode'] ?? 'disabled'),
-        'command_filter_command' => (string) ($_POST['command_filter_command'] ?? ''),
-        'command_filter_regex' => (string) ($_POST['command_filter_regex'] ?? ''),
-        'command_timeout_seconds' => (string) ($_POST['command_timeout_seconds'] ?? '20'),
         'max_files_per_scan' => (string) ($_POST['max_files_per_scan'] ?? '500'),
         'max_jobs_per_scan' => (string) ($_POST['max_jobs_per_scan'] ?? '25'),
         'scan_interval_minutes' => (string) ($_POST['scan_interval_minutes'] ?? '60'),
@@ -98,7 +94,6 @@ function reflection_auto_summary(array $summary): string
         (int) ($summary['errors'] ?? 0)
     );
 }
-
 
 function reflection_auto_append(?string $message, string $addition): string
 {
@@ -176,7 +171,7 @@ try {
                 throw new InvalidArgumentException(implode(' ', $errors));
             }
             $testResult = $automationStore->testRule($editingRule, (string) ($_POST['sample_paths'] ?? ''), 80);
-            $message = 'Filter test complete. Worker command filters were not executed by the webserver.';
+            $message = 'Filter test complete.';
         } elseif ($action === 'dry_run_rule') {
             $editingRule = reflection_rule_from_post($automationStore);
             $errors = $automationStore->validateRule($editingRule, $config['allowed_tasks'], $storageServerIds);
@@ -184,7 +179,7 @@ try {
                 throw new InvalidArgumentException(implode(' ', $errors));
             }
             $runResult = $automationStore->runRule($editingRule, $farmStore, true);
-            $message = 'Dry run complete. No jobs were queued and worker command filters were not executed.';
+            $message = 'Dry run complete. No jobs were queued.';
         } elseif ($action === 'run_rule') {
             $id = (string) ($_POST['rule_id'] ?? '');
             $rule = $automationStore->rule($id);
@@ -580,57 +575,8 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                     </div>
                 </details>
 
-                <details class="form-block d-grid gap-2 mb-3 collapsible-form-block" data-section-key="command-filter">
-                    <summary class="form-section-header"><span class="section-number">5</span><div><h3>Optional worker command filter</h3><p>Run a custom preflight on a farm computer before the real task starts.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
-                    <p class="api-note text-secondary small">The webserver never executes this command. Automation can queue a candidate queue item. When a farm computer receives that normal task, it downloads/prepares the source and runs this command locally. If it does not pass, the job is marked skipped instead of failed.</p>
-                    <div class="settings-grid row g-3">
-                        <label>
-                            Command mode
-                            <select class="form-select" id="command-mode-input" name="command_filter_mode">
-                                <?php foreach ([
-                                    'disabled' => 'Disabled',
-                                    'exit_zero' => 'Include if command exits 0',
-                                    'output_matches' => 'Include if output matches regex',
-                                    'output_not_matches' => 'Include if output does not match regex',
-                                ] as $mode => $label): ?>
-                                    <option value="<?= reflection_h($mode) ?>" <?= ($editingRule['command_filter_mode'] ?? '') === $mode ? 'selected' : '' ?>><?= reflection_h($label) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </label>
-                        <label>
-                            Timeout seconds
-                            <input name="command_timeout_seconds" value="<?= (int) ($editingRule['command_timeout_seconds'] ?? 20) ?>" class="form-control" inputmode="numeric">
-                        </label>
-                    </div>
-                    <label>
-                        Command
-                        <input id="command-template-input" class="template-input form-control" data-template-label="Command template" name="command_filter_command" value="<?= reflection_h($editingRule['command_filter_command'] ?? '') ?>" placeholder="ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 {path}">
-                        <small>Placeholders are shell-escaped by the worker before being inserted. <code>{path}</code> is the worker-local prepared source path.</small>
-                        <output class="inline-template-preview text-secondary small" id="command-template-preview">—</output>
-                        <div class="field-status text-secondary small" id="command-template-status"></div>
-                    </label>
-                    <label>
-                        Command output regex
-                        <input name="command_filter_regex" value="<?= reflection_h($editingRule['command_filter_regex'] ?? '') ?>" class="form-control" placeholder="/^hevc$/i">
-                    </label>
-                    <details class="example-box bg-light border rounded-3 p-3">
-                        <summary>H.265 task preflight examples</summary>
-                        <p>The <code>h265_encode</code> task owns its preflight helper, but it only runs when this worker command filter calls it. Use command mode <code>Include if command exits 0</code> and leave the regex field blank.</p>
-                        <p>Default profile:</p>
-                        <pre>python3 {task_file} --preflight {path}</pre>
-                        <p>More conservative profile, requiring at least 30% sample saving:</p>
-                        <pre>python3 {task_file} --preflight {path} --min-saving-percent 30</pre>
-                        <p>4K-only profile, skipping anything below 4K and testing with the task's 4K encoder profile:</p>
-                        <pre>python3 {task_file} --preflight {path} --only-4k --encode-profile 4k --min-saving-percent 30</pre>
-                        <p>High-quality 4K profile:</p>
-                        <pre>python3 {task_file} --preflight {path} --only-4k --encode-profile 4k_quality --min-saving-percent 25</pre>
-                        <p>Advanced JSON profile override:</p>
-                        <pre>python3 {task_file} --preflight {path} --profile '{"min_saving_percent":30,"sample_seconds":30,"quality_metric":"auto","encode_profile":"auto"}'</pre>
-                    </details>
-                </details>
-
                 <details class="form-block d-grid gap-2 mb-3 collapsible-form-block" data-section-key="limits-schedule">
-                    <summary class="form-section-header"><span class="section-number">6</span><div><h3>Limits and schedule</h3><p>Control how much work a scan can create and how often scheduled scans are due.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
+                    <summary class="form-section-header"><span class="section-number">5</span><div><h3>Limits and schedule</h3><p>Control how much work a scan can create and how often scheduled scans are due.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
                     <div class="settings-grid row g-3">
                         <label>
                             Max files checked per scan
@@ -654,7 +600,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                 </details>
 
                 <details class="form-block d-grid gap-2 mb-3 collapsible-form-block" data-section-key="test-filter">
-                    <summary class="form-section-header"><span class="section-number">7</span><div><h3>Test filter</h3><p>Paste examples or scan the configured roots before creating real jobs.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
+                    <summary class="form-section-header"><span class="section-number">6</span><div><h3>Test filter</h3><p>Paste examples or scan the configured roots before creating real jobs.</p></div><span class="section-toggle-text" aria-hidden="true"></span></summary>
                     <label>
                         Optional sample paths
                         <textarea class="form-control" name="sample_paths" rows="5" placeholder="Leave blank to test by scanning the configured roots. Or paste a few paths here, one per line."><?= reflection_h((string) ($_POST['sample_paths'] ?? '')) ?></textarea>
@@ -681,7 +627,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
             </div>
             <div class="table-wrap table-responsive compact-table">
                 <table class="table table-sm table-hover align-middle mb-0">
-                    <thead><tr><th>Result</th><th>Path</th><th>Reason</th><th>Source</th><th>Delivery</th><th>Command output</th></tr></thead>
+                    <thead><tr><th>Result</th><th>Path</th><th>Reason</th><th>Source</th><th>Delivery</th></tr></thead>
                     <tbody>
                         <?php foreach ($testResult['rows'] as $row): ?>
                             <tr>
@@ -690,7 +636,6 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                                 <td><?= reflection_h($row['reason'] ?? '') ?></td>
                                 <td class="path-cell text-break"><code><?= reflection_h(reflection_short_auto_value($row['source'] ?? '', 90)) ?></code></td>
                                 <td class="path-cell text-break"><code><?= reflection_h(reflection_short_auto_value($row['delivery'] ?? '', 90)) ?></code></td>
-                                <td><?= reflection_h(reflection_short_auto_value($row['command_output'] ?? '', 120)) ?></td>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -713,7 +658,7 @@ $tickPath = ($scriptDirectory === '' ? '' : $scriptDirectory) . '/automation_tic
                     <tbody>
                         <?php foreach (($runResult['rows'] ?? []) as $row): ?>
                             <tr>
-                                <td><span class="badge <?= reflection_h(reflection_status_class(in_array(($row['status'] ?? ''), ['queued', 'would_queue', 'would_queue_candidate'], true) ? 'success' : (($row['status'] ?? '') === 'error' ? 'failed' : 'configured'))) ?>"><?= reflection_h($row['status'] ?? '') ?></span></td>
+                                <td><span class="badge <?= reflection_h(reflection_status_class(in_array(($row['status'] ?? ''), ['queued', 'would_queue'], true) ? 'success' : (($row['status'] ?? '') === 'error' ? 'failed' : 'configured'))) ?>"><?= reflection_h($row['status'] ?? '') ?></span></td>
                                 <td class="path-cell text-break"><code><?= reflection_h(reflection_short_auto_value($row['path'] ?? '', 130)) ?></code></td>
                                 <td><?= reflection_h($row['reason'] ?? '') ?></td>
                                 <td class="path-cell text-break"><code><?= reflection_h(reflection_short_auto_value($row['source'] ?? '', 90)) ?></code></td>
