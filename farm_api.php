@@ -161,7 +161,6 @@ function reflection_worker_transfer_auth(array $config): ?array
     ];
 }
 
-
 function reflection_clean_transfer_server_payload(?array $server): ?array
 {
     if (!is_array($server)) {
@@ -342,10 +341,6 @@ function reflection_api_task_payload(array $job, array $config, array $settings,
         }
     }
 
-    if (is_array($job['worker_command_filter'] ?? null)) {
-        $task['worker_command_filter'] = $job['worker_command_filter'];
-    }
-
     return $task;
 }
 
@@ -467,7 +462,6 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
     );
 }
 
-
 function reflection_api_no_jobs_response(FarmStore $store, string $pcId, array $settings, string $reason, bool $forceShutdown = false, array $config = [], array $extra = []): array
 {
     $shutdownLimit = max(0, (int) ($settings['idle_shutdown_after_no_job_checks'] ?? 0));
@@ -527,7 +521,6 @@ function reflection_api_confirm_taken(array $payload, FarmStore $store, array $c
     );
 }
 
-
 function reflection_api_heartbeat_task(array $payload, FarmStore $store, array $config, string $pcId): array
 {
     $taskId = trim((string) ($payload['task_id'] ?? ''));
@@ -571,7 +564,6 @@ function reflection_api_task_stage(array $payload, FarmStore $store, string $pcI
 
     return ['status' => 'stage_acknowledged'];
 }
-
 
 function reflection_api_report_done(array $payload, FarmStore $store, array $config, string $pcId): array
 {
