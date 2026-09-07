@@ -21,10 +21,7 @@
         worker_basename: { label: 'Worker filename', description: 'The mapped filename including the extension.' },
         worker_name: { label: 'Worker name only', description: 'The mapped filename without the final extension.' },
         worker_ext: { label: 'Worker extension', description: 'The mapped final extension without the dot.' },
-        worker_dot_ext: { label: 'Worker dot extension', description: 'The mapped final extension including the dot.' },
-        farm_root: { label: 'Farm root', description: 'The folder where the master website is installed.' },
-        task_dir: { label: 'Task folder', description: 'The folder containing worker task modules.' },
-        task_file: { label: 'Selected task file', description: 'The Python task module for the selected task. Useful for task-owned optional command filters.' }
+        worker_dot_ext: { label: 'Worker dot extension', description: 'The mapped final extension including the dot.' }
     };
 
     function byId(id) {
@@ -113,10 +110,7 @@
             '{worker_basename}': base,
             '{worker_name}': parts.name || base,
             '{worker_ext}': parts.ext,
-            '{worker_dot_ext}': parts.ext ? '.' + parts.ext : '',
-            '{farm_root}': '/volume1/web/api/farm',
-            '{task_dir}': '/volume1/web/api/farm/cluster/tasks',
-            '{task_file}': '/volume1/web/api/farm/cluster/tasks/' + selectedModule() + '.py'
+            '{worker_dot_ext}': parts.ext ? '.' + parts.ext : ''
         };
     }
 
@@ -173,10 +167,6 @@
                 "'": '&#039;'
             }[character];
         });
-    }
-
-    function shellQuote(value) {
-        return "'" + String(value || '').replace(/'/g, "'\\''") + "'";
     }
 
     function formatBytes(bytes) {
@@ -292,21 +282,17 @@
             '{worker_basename}': workerBase,
             '{worker_name}': workerParts.name,
             '{worker_ext}': workerParts.ext,
-            '{worker_dot_ext}': workerParts.ext ? '.' + workerParts.ext : '',
-            '{farm_root}': '/volume1/web/api/farm',
-            '{task_dir}': '/volume1/web/api/farm/cluster/tasks',
-            '{task_file}': '/volume1/web/api/farm/cluster/tasks/' + selectedModule() + '.py'
+            '{worker_dot_ext}': workerParts.ext ? '.' + workerParts.ext : ''
         };
     }
 
-    function applyTemplate(template, candidate, shellEscaped) {
+    function applyTemplate(template, candidate) {
         template = String(template || '').trim();
         if (template === '') {
             return '';
         }
         Object.keys(candidate).forEach(function (key) {
-            var replacement = shellEscaped ? shellQuote(candidate[key]) : candidate[key];
-            template = template.split(key).join(replacement);
+            template = template.split(key).join(candidate[key]);
         });
         return template;
     }
@@ -386,9 +372,6 @@
     function fieldIsActive(fieldId) {
         if (fieldId === 'delivery-template-input') {
             return valueOf('delivery-mode-input') === 'template' && !taskAutoDeliveryActive();
-        }
-        if (fieldId === 'command-template-input') {
-            return valueOf('command-mode-input') !== 'disabled';
         }
         return true;
     }
@@ -487,22 +470,21 @@
 
     function updateTemplatePreview() {
         var candidate = candidateFromExample();
-        var source = applyTemplate(valueOf('source-template-input') || '{path}', candidate, false) || candidate['{path}'];
+        var source = applyTemplate(valueOf('source-template-input') || '{path}', candidate) || candidate['{path}'];
         var deliveryMode = valueOf('delivery-mode-input') || 'template';
         var delivery = '';
         var autoTemplate = selectedTaskAutoTemplate();
         var autoActive = taskAutoDeliveryActive();
         if (autoActive) {
-            delivery = applyTemplate(autoTemplate, candidateFromPath(source), false);
+            delivery = applyTemplate(autoTemplate, candidateFromPath(source));
         } else if (deliveryMode === 'same_as_source') {
             delivery = checked('overwrite-allowed-input')
                 ? source
                 : appendSuffixToPath(source, valueOf('output-suffix-input'));
         } else {
-            delivery = applyTemplate(valueOf('delivery-template-input'), candidate, false);
+            delivery = applyTemplate(valueOf('delivery-template-input'), candidate);
         }
         var suffixExample = appendSuffixToPath(source, valueOf('output-suffix-input'));
-        var command = applyTemplate(valueOf('command-template-input'), candidate, true);
 
         setCode('preview-root', candidate['{root}']);
         setCode('preview-relative', candidate['{relative}']);
@@ -516,7 +498,6 @@
                 ? 'Example: ' + (delivery || 'No delivery target configured')
                 : 'Ignored while delivery target is “same as source location”'));
         setCode('suffix-template-preview', 'Example if not overwriting: ' + suffixExample);
-        setCode('command-template-preview', command ? 'Example command: ' + command : 'No command template configured');
 
         var contractSummary = byId('automation-task-contract-summary');
         var contractNote = byId('task-delivery-contract-note');
@@ -528,9 +509,6 @@
         }
         if (extension) {
             summaryText += ' · required output ' + extension;
-        }
-        if (selectedTaskSpec().preflight && selectedTaskSpec().preflight.command) {
-            summaryText += ' · optional preflight available';
         }
         if (contractSummary) {
             contractSummary.textContent = summaryText;
@@ -586,9 +564,7 @@
         'delivery-mode-input',
         'delivery-template-input',
         'output-suffix-input',
-        'overwrite-allowed-input',
-        'command-mode-input',
-        'command-template-input'
+        'overwrite-allowed-input'
     ].forEach(function (id) {
         var element = byId(id);
         if (!element) {
