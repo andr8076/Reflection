@@ -299,7 +299,7 @@ function reflection_api_register_quarantine(array $payload, FarmStore $store, ar
 function reflection_api_priority_layer_payload(FarmStore $store, string $pcId, array $config): array
 {
     $staleAfterSeconds = (int) ($config['stale_after_seconds'] ?? 900);
-    return $store->shutdownLayerStatus($pcId, $staleAfterSeconds);
+    return $store->priorityLayerStatus($pcId, $staleAfterSeconds);
 }
 
 function reflection_api_priority_shutdown_allowed(FarmStore $store, string $pcId, array $config): bool

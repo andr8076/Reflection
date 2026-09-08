@@ -663,7 +663,7 @@ final class FarmStore
                         $rejections[] = [
                             'task_id' => (string) ($job['task_id'] ?? ''),
                             'module' => (string) ($job['module'] ?? ''),
-                            'reasons' => ['shutdown layer is not currently allowed'],
+                            'reasons' => ['priority layer is not currently allowed'],
                         ];
                         continue;
                     }
@@ -2859,11 +2859,18 @@ final class FarmStore
                 continue;
             }
 
-            $canRunQueuedWork = false;
-            foreach ($queuedNormalJobs as $queuedJob) {
-                if ($this->jobEligibilityReasonsFromData($data, $queuedJob, $workerId) === []) {
-                    $canRunQueuedWork = true;
-                    break;
+            // Workers from older check-ins may not have a capability snapshot yet.
+            // Preserve their priority rather than assuming they are incapable. Once
+            // capabilities are known, only block overflow workers for jobs the
+            // higher-priority idle worker can actually execute.
+            $workerCapabilities = $worker['capabilities'] ?? null;
+            $canRunQueuedWork = !is_array($workerCapabilities) || $workerCapabilities === [];
+            if (!$canRunQueuedWork) {
+                foreach ($queuedNormalJobs as $queuedJob) {
+                    if ($this->jobEligibilityReasonsFromData($data, $queuedJob, $workerId) === []) {
+                        $canRunQueuedWork = true;
+                        break;
+                    }
                 }
             }
             if (!$canRunQueuedWork) {
