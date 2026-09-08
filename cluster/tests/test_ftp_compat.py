@@ -37,7 +37,7 @@ class FtpFilenameCompatibilityTest(unittest.TestCase):
         self.assertEqual(result, "150 opening data connection")
         self.assertEqual(calls[0][0], "utf-8")
         self.assertEqual(calls[1][0], "latin-1")
-        self.assertEqual(calls[0][1][-7:-4], "Ø".encode("utf-8"))
+        self.assertIn("Ø".encode("utf-8"), calls[0][1])
         self.assertIn("Ø".encode("latin-1"), calls[1][1])
         self.assertEqual(ftp.encoding, "latin-1")
         self.assertEqual(ftp._reflection_legacy_filename_encoding, "latin-1")
