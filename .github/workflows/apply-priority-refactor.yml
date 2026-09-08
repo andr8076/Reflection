@@ -4,14 +4,13 @@ on:
   push:
     branches:
       - refactor/worker-priority-layers
-    paths:
-      - .github/workflows/apply-priority-refactor.yml
 
 permissions:
   contents: write
 
 jobs:
   apply:
+    if: github.event.head_commit.message != 'Rename shutdown layers to worker priority layers'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
