@@ -1,0 +1,29 @@
+name: Apply worker priority layer refactor
+
+on:
+  push:
+    branches:
+      - refactor/worker-priority-layers
+    paths:
+      - .github/workflows/apply-priority-refactor.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/worker-priority-layers
+      - name: Apply refactor
+        run: python tools/refactor_priority_layers.py
+      - name: Commit refactor
+        run: |
+          git config user.name "andr8076"
+          git config user.email "17514629+andr8076@users.noreply.github.com"
+          git add FarmStore.php farm_api.php config.php settings.php ui_helpers.php index.php assets/js/settings.js tests/farm_master_test.php tests/ui_helpers_test.php
+          git diff --cached --check
+          git commit -m "Rename shutdown layers to worker priority layers"
+          git push origin HEAD:refactor/worker-priority-layers
