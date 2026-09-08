@@ -477,16 +477,27 @@ final class FarmStore
         ]);
     }
 
-    public function shutdownLayerStatus(string $pcId, int $staleAfterSeconds): array
+    public function priorityLayerStatus(string $pcId, int $staleAfterSeconds): array
     {
         $data = $this->read();
-        return $this->shutdownLayerStatusFromData($data, $pcId, $staleAfterSeconds);
+        return $this->priorityLayerStatusFromData($data, $pcId, $staleAfterSeconds);
+    }
+
+    public function workerMayShutdownByPriority(string $pcId, int $staleAfterSeconds): bool
+    {
+        $status = $this->priorityLayerStatus($pcId, $staleAfterSeconds);
+        return !empty($status['allowed']);
+    }
+
+    // Compatibility aliases for integrations using the pre-priority-layer API.
+    public function shutdownLayerStatus(string $pcId, int $staleAfterSeconds): array
+    {
+        return $this->priorityLayerStatus($pcId, $staleAfterSeconds);
     }
 
     public function workerMayShutdownByLayer(string $pcId, int $staleAfterSeconds): bool
     {
-        $status = $this->shutdownLayerStatus($pcId, $staleAfterSeconds);
-        return !empty($status['allowed']);
+        return $this->workerMayShutdownByPriority($pcId, $staleAfterSeconds);
     }
 
     public function versionUpdateLayerStatus(string $pcId, string $targetVersion, int $staleAfterSeconds): array
@@ -510,16 +521,6 @@ final class FarmStore
     {
         $data = $this->read();
         $settings = array_merge($this->defaultSettings(), $data['settings'] ?? []);
-        if (empty($settings['prefer_lower_shutdown_layers_for_work'])) {
-            return [
-                'allowed' => true,
-                'reason' => 'layer_priority_disabled',
-                'pc_id' => trim($pcId),
-                'shutdown_layer' => $this->machineShutdownLayerByPcId($data, trim($pcId)),
-                'lower_idle_workers' => [],
-            ];
-        }
-
         return $this->normalWorkLayerAdmissionStatusFromData($data, $settings, $pcId, $staleAfterSeconds, $targetVersion, $enforceVersion);
     }
 
@@ -531,7 +532,7 @@ final class FarmStore
                     continue;
                 }
                 if (($job['module'] ?? '') === 'shutdown' && $pcId !== '') {
-                    $layer = $this->shutdownLayerStatusFromData($data, $pcId, $staleAfterSeconds);
+                    $layer = $this->priorityLayerStatusFromData($data, $pcId, $staleAfterSeconds);
                     if (empty($layer['allowed'])) {
                         continue;
                     }
@@ -657,7 +658,7 @@ final class FarmStore
             foreach ($orderedIndexes as $index) {
                 $job = $data['jobs'][$index];
                 if (($job['module'] ?? '') === 'shutdown') {
-                    $layer = $this->shutdownLayerStatusFromData($data, $pcId, $staleAfterSeconds);
+                    $layer = $this->priorityLayerStatusFromData($data, $pcId, $staleAfterSeconds);
                     if (empty($layer['allowed'])) {
                         $rejections[] = [
                             'task_id' => (string) ($job['task_id'] ?? ''),
@@ -1737,7 +1738,7 @@ final class FarmStore
                     );
                 }
             }
-            $data['settings']['prefer_lower_shutdown_layers_for_work'] = !empty($data['settings']['prefer_lower_shutdown_layers_for_work']);
+            unset($data['settings']['prefer_lower_shutdown_layers_for_work']);
             $data['settings']['shutdown_debug_mode'] = !empty($data['settings']['shutdown_debug_mode']);
             $data['settings']['auto_wake_for_queued_jobs'] = !empty($data['settings']['auto_wake_for_queued_jobs']);
             $dispatchMode = (string) ($data['settings']['wake_dispatch_mode'] ?? 'worker_relay');
@@ -1784,7 +1785,7 @@ final class FarmStore
                     'pc_id' => $pcId !== '' ? $pcId : $mac,
                     'mac' => $mac,
                     'wake_enabled' => !empty($machine['wake_enabled']),
-                    'shutdown_layer' => max(0, (int) ($machine['shutdown_layer'] ?? 0)),
+                    'priority_layer' => max(0, (int) ($machine['priority_layer'] ?? ($machine['shutdown_layer'] ?? 0))),
                 ];
                 if ($minSoc !== null) {
                     $cleanMachine['min_soc_percent'] = $minSoc;
@@ -1953,17 +1954,9 @@ final class FarmStore
         $data = $this->read();
         $settings = array_merge($this->defaultSettings(), $data['settings'] ?? []);
         $queuedWork = 0;
-        $queuedCandidateWork = 0;
-        $queuedConfirmedWork = 0;
         foreach ($data['jobs'] as $job) {
-            if (($job['status'] ?? '') !== 'queued' || $this->isControlModule((string) ($job['module'] ?? ''))) {
-                continue;
-            }
-            $queuedWork++;
-            if (is_array($job['worker_command_filter'] ?? null)) {
-                $queuedCandidateWork++;
-            } else {
-                $queuedConfirmedWork++;
+            if (($job['status'] ?? '') === 'queued' && !$this->isControlModule((string) ($job['module'] ?? ''))) {
+                $queuedWork++;
             }
         }
 
@@ -1975,27 +1968,25 @@ final class FarmStore
             }
         }
 
-        // Jobs with a worker command filter are candidate work: the server can
-        // list them, but a farm PC still has to run the local preflight before
-        // we know whether there is real encoding/compression work. Count all
-        // normal jobs, but let candidate-only backlogs wake conservatively.
-        $effectiveQueuedWork = $queuedConfirmedWork + ($queuedCandidateWork > 0 ? 1 : 0);
-        $needed = max(0, $effectiveQueuedWork - $idleOnlineWorkers);
+        $needed = max(0, $queuedWork - $idleOnlineWorkers);
         $eligibleTargets = $this->wakeTargetsFromData($data, $settings, $staleAfterSeconds, true, false);
         $cooldownSeconds = max(0, (int) ($settings['auto_wake_cooldown_seconds'] ?? 300));
         $readyTargets = $this->filterWakeTargetsByCooldown($eligibleTargets, $data['wake_history'] ?? [], $cooldownSeconds);
+        $pendingWakeTargets = max(0, count($eligibleTargets) - count($readyTargets));
+        $neededAfterPendingWake = max(0, $needed - $pendingWakeTargets);
         $maxTargets = max(0, (int) ($settings['auto_wake_max_targets_per_run'] ?? 20));
-        $targets = array_slice($readyTargets, 0, $maxTargets > 0 ? min($needed, $maxTargets) : 0);
+        $targetLimit = $maxTargets > 0 ? min($neededAfterPendingWake, $maxTargets) : 0;
+        $targets = array_slice($readyTargets, 0, $targetLimit);
 
         return [
             'enabled' => !empty($settings['auto_wake_for_queued_jobs']),
             'queued_work' => $queuedWork,
-            'queued_candidate_work' => $queuedCandidateWork,
-            'queued_confirmed_work' => $queuedConfirmedWork,
-            'effective_queued_work' => $effectiveQueuedWork,
+            'effective_queued_work' => $queuedWork,
             'online_workers' => count($onlineWorkers),
             'idle_online_workers' => $idleOnlineWorkers,
             'needed' => $needed,
+            'pending_wake_targets' => $pendingWakeTargets,
+            'needed_after_pending_wake' => $neededAfterPendingWake,
             'eligible_targets' => count($eligibleTargets),
             'ready_targets' => count($readyTargets),
             'cooldown_seconds' => $cooldownSeconds,
@@ -2757,149 +2748,145 @@ final class FarmStore
     }
 
 
-    private function machineShutdownLayerByPcId(array $data, string $pcId): int
+    private function machinePriorityLayerByPcId(array $data, string $pcId): int
     {
         foreach (($data['machines'] ?? []) as $machine) {
             if (!is_array($machine)) {
                 continue;
             }
             if ((string) ($machine['pc_id'] ?? '') === $pcId) {
-                return max(0, (int) ($machine['shutdown_layer'] ?? 0));
+                return max(0, (int) ($machine['priority_layer'] ?? ($machine['shutdown_layer'] ?? 0)));
             }
         }
 
         return 0;
     }
 
-    private function shutdownLayerStatusFromData(array $data, string $pcId, int $staleAfterSeconds): array
+    private function priorityLayerStatusFromData(array $data, string $pcId, int $staleAfterSeconds): array
     {
         $pcId = trim($pcId);
-        $ownLayer = $this->machineShutdownLayerByPcId($data, $pcId);
+        $ownLayer = $this->machinePriorityLayerByPcId($data, $pcId);
         $onlineWorkers = $this->onlineWorkersFromData($data, $staleAfterSeconds);
         $highestOnlineLayer = $ownLayer;
-        $higherOnline = [];
+        $lowerPriorityOnline = [];
 
         foreach ($onlineWorkers as $workerId => $worker) {
-            $workerLayer = $this->machineShutdownLayerByPcId($data, (string) $workerId);
+            $workerLayer = $this->machinePriorityLayerByPcId($data, (string) $workerId);
             $highestOnlineLayer = max($highestOnlineLayer, $workerLayer);
             if ($workerLayer > $ownLayer) {
-                $higherOnline[] = [
+                $lowerPriorityOnline[] = [
                     'pc_id' => (string) $workerId,
-                    'shutdown_layer' => $workerLayer,
+                    'priority_layer' => $workerLayer,
                 ];
             }
         }
 
         return [
-            'allowed' => $higherOnline === [],
+            'allowed' => $lowerPriorityOnline === [],
             'pc_id' => $pcId,
-            'shutdown_layer' => $ownLayer,
-            'highest_online_layer' => $highestOnlineLayer,
-            'higher_online_workers' => $higherOnline,
+            'priority_layer' => $ownLayer,
+            'highest_online_priority_layer' => $highestOnlineLayer,
+            'lower_priority_online_workers' => $lowerPriorityOnline,
         ];
     }
 
     private function normalWorkLayerAdmissionStatusFromData(array $data, array $settings, string $pcId, int $staleAfterSeconds, string $targetVersion, bool $enforceVersion): array
     {
         $pcId = trim($pcId);
-        $ownLayer = $this->machineShutdownLayerByPcId($data, $pcId);
-
-        $hasNormalQueuedWork = false;
+        $ownLayer = $this->machinePriorityLayerByPcId($data, $pcId);
+        $queuedNormalJobs = [];
         foreach (($data['jobs'] ?? []) as $job) {
-            if (($job['status'] ?? '') !== 'queued') {
-                continue;
-            }
-            if (!$this->isControlModule((string) ($job['module'] ?? ''))) {
-                $hasNormalQueuedWork = true;
-                break;
+            if (($job['status'] ?? '') === 'queued' && !$this->isControlModule((string) ($job['module'] ?? ''))) {
+                $queuedNormalJobs[] = $job;
             }
         }
 
-        if (!$hasNormalQueuedWork) {
+        if ($queuedNormalJobs === []) {
             return [
                 'allowed' => true,
                 'reason' => 'no_normal_work_queued',
                 'pc_id' => $pcId,
-                'shutdown_layer' => $ownLayer,
-                'lower_idle_workers' => [],
+                'priority_layer' => $ownLayer,
+                'higher_priority_idle_workers' => [],
             ];
         }
 
+        // Control jobs must remain claimable even when normal work is waiting.
         foreach (($data['jobs'] ?? []) as $job) {
             if (($job['status'] ?? '') !== 'queued' || !$this->isControlModule((string) ($job['module'] ?? ''))) {
                 continue;
             }
-
             if (($job['module'] ?? '') !== 'shutdown') {
                 return [
                     'allowed' => true,
                     'reason' => 'control_task_pending',
                     'pc_id' => $pcId,
-                    'shutdown_layer' => $ownLayer,
-                    'lower_idle_workers' => [],
+                    'priority_layer' => $ownLayer,
+                    'higher_priority_idle_workers' => [],
                 ];
             }
-
-            $layer = $this->shutdownLayerStatusFromData($data, $pcId, $staleAfterSeconds);
+            $layer = $this->priorityLayerStatusFromData($data, $pcId, $staleAfterSeconds);
             if (!empty($layer['allowed'])) {
                 return [
                     'allowed' => true,
                     'reason' => 'control_task_pending',
                     'pc_id' => $pcId,
-                    'shutdown_layer' => $ownLayer,
-                    'lower_idle_workers' => [],
+                    'priority_layer' => $ownLayer,
+                    'higher_priority_idle_workers' => [],
                 ];
             }
         }
 
         $onlineWorkers = $this->onlineWorkersFromData($data, $staleAfterSeconds);
-        $lowerIdle = [];
+        $preferredIdle = [];
         foreach ($onlineWorkers as $workerId => $worker) {
             $workerId = trim((string) $workerId);
-            if ($workerId === '' || $workerId === $pcId) {
+            if ($workerId === '' || $workerId === $pcId || trim((string) ($worker['current_job'] ?? '')) !== '') {
                 continue;
             }
 
-            if (trim((string) ($worker['current_job'] ?? '')) !== '') {
-                continue;
-            }
-
-            $workerLayer = $this->machineShutdownLayerByPcId($data, $workerId);
+            $workerLayer = $this->machinePriorityLayerByPcId($data, $workerId);
             if ($workerLayer >= $ownLayer) {
                 continue;
             }
-
             if ($enforceVersion && $targetVersion !== '') {
                 $workerVersion = trim((string) ($worker['version'] ?? ''));
                 if (!$this->versionsMatch($workerVersion, $targetVersion)) {
                     continue;
                 }
             }
-
             if (!$this->workerFitsCurrentSocFromData($data, $settings, $workerId)) {
                 continue;
             }
 
-            $lowerIdle[] = [
+            $canRunQueuedWork = false;
+            foreach ($queuedNormalJobs as $queuedJob) {
+                if ($this->jobEligibilityReasonsFromData($data, $queuedJob, $workerId) === []) {
+                    $canRunQueuedWork = true;
+                    break;
+                }
+            }
+            if (!$canRunQueuedWork) {
+                continue;
+            }
+
+            $preferredIdle[] = [
                 'pc_id' => $workerId,
-                'shutdown_layer' => $workerLayer,
+                'priority_layer' => $workerLayer,
             ];
         }
 
-        usort($lowerIdle, static function (array $a, array $b): int {
-            $layerComparison = ((int) ($a['shutdown_layer'] ?? 0)) <=> ((int) ($b['shutdown_layer'] ?? 0));
-            if ($layerComparison !== 0) {
-                return $layerComparison;
-            }
-            return strcmp((string) ($a['pc_id'] ?? ''), (string) ($b['pc_id'] ?? ''));
+        usort($preferredIdle, static function (array $a, array $b): int {
+            $layerComparison = ((int) ($a['priority_layer'] ?? 0)) <=> ((int) ($b['priority_layer'] ?? 0));
+            return $layerComparison !== 0 ? $layerComparison : strcmp((string) ($a['pc_id'] ?? ''), (string) ($b['pc_id'] ?? ''));
         });
 
         return [
-            'allowed' => $lowerIdle === [],
-            'reason' => $lowerIdle === [] ? 'no_lower_idle_worker' : 'lower_shutdown_layer_idle',
+            'allowed' => $preferredIdle === [],
+            'reason' => $preferredIdle === [] ? 'no_higher_priority_idle_worker' : 'higher_priority_worker_idle',
             'pc_id' => $pcId,
-            'shutdown_layer' => $ownLayer,
-            'lower_idle_workers' => $lowerIdle,
+            'priority_layer' => $ownLayer,
+            'higher_priority_idle_workers' => $preferredIdle,
         ];
     }
 
@@ -2907,7 +2894,7 @@ final class FarmStore
     {
         $pcId = trim($pcId);
         $targetVersion = trim($targetVersion);
-        $ownLayer = $this->machineShutdownLayerByPcId($data, $pcId);
+        $ownLayer = $this->machinePriorityLayerByPcId($data, $pcId);
         $onlineWorkers = $this->onlineWorkersFromData($data, $staleAfterSeconds);
         $highestMismatchedLayer = $ownLayer;
         $higherMismatched = [];
@@ -2918,14 +2905,14 @@ final class FarmStore
                 continue;
             }
 
-            $workerLayer = $this->machineShutdownLayerByPcId($data, $workerId);
+            $workerLayer = $this->machinePriorityLayerByPcId($data, $workerId);
             $workerVersion = trim((string) ($worker['version'] ?? ''));
             $matchesTarget = $targetVersion !== '' && $this->versionsMatch($workerVersion, $targetVersion);
             if ($workerLayer > $ownLayer && !$matchesTarget) {
                 $highestMismatchedLayer = max($highestMismatchedLayer, $workerLayer);
                 $higherMismatched[] = [
                     'pc_id' => $workerId,
-                    'shutdown_layer' => $workerLayer,
+                    'priority_layer' => $workerLayer,
                     'version' => $workerVersion,
                 ];
             }
@@ -2934,7 +2921,7 @@ final class FarmStore
         return [
             'allowed' => $targetVersion !== '' && $higherMismatched === [],
             'pc_id' => $pcId,
-            'shutdown_layer' => $ownLayer,
+            'priority_layer' => $ownLayer,
             'target_version' => $targetVersion,
             'highest_mismatched_layer' => $highestMismatchedLayer,
             'higher_mismatched_workers' => $higherMismatched,
@@ -3056,51 +3043,24 @@ final class FarmStore
             if ($excludeOnline && $pcId !== '' && isset($onlineWorkers[$pcId])) {
                 continue;
             }
+            $machine['priority_layer'] = max(0, (int) ($machine['priority_layer'] ?? ($machine['shutdown_layer'] ?? 0)));
+            unset($machine['shutdown_layer']);
             $machine['min_soc_percent'] = $this->machineMinSocPercent($machine, $settings);
-            $machine['soc_margin_percent'] = $machine['min_soc_percent']; // compatibility alias
+            $machine['soc_margin_percent'] = $machine['min_soc_percent'];
             $machines[] = $machine;
         }
 
         usort($machines, static function (array $a, array $b): int {
-            $layerComparison = ((int) ($a['shutdown_layer'] ?? 0)) <=> ((int) ($b['shutdown_layer'] ?? 0));
+            $layerComparison = ((int) ($a['priority_layer'] ?? 0)) <=> ((int) ($b['priority_layer'] ?? 0));
             if ($layerComparison !== 0) {
                 return $layerComparison;
             }
-
             $socComparison = ((int) ($a['min_soc_percent'] ?? ($a['soc_margin_percent'] ?? 20))) <=> ((int) ($b['min_soc_percent'] ?? ($b['soc_margin_percent'] ?? 20)));
-            if ($socComparison !== 0) {
-                return $socComparison;
-            }
-
-            return strcmp((string) ($a['pc_id'] ?? ''), (string) ($b['pc_id'] ?? ''));
+            return $socComparison !== 0 ? $socComparison : strcmp((string) ($a['pc_id'] ?? ''), (string) ($b['pc_id'] ?? ''));
         });
 
-        $targets = [];
-        foreach ($machines as $machine) {
-            if (!$this->essSocCanLimitWorkers($settings) || $this->machineFitsCurrentSoc($machine, $settings)) {
-                $targets[] = $machine;
-            }
-        }
-
-        return $this->lowestWakeLayerTargets($targets);
-    }
-
-    private function lowestWakeLayerTargets(array $targets): array
-    {
-        if ($targets === []) {
-            return [];
-        }
-
-        $lowestLayer = null;
-        foreach ($targets as $target) {
-            $layer = max(0, (int) ($target['shutdown_layer'] ?? 0));
-            if ($lowestLayer === null || $layer < $lowestLayer) {
-                $lowestLayer = $layer;
-            }
-        }
-
-        return array_values(array_filter($targets, static function (array $target) use ($lowestLayer): bool {
-            return max(0, (int) ($target['shutdown_layer'] ?? 0)) === $lowestLayer;
+        return array_values(array_filter($machines, function (array $machine) use ($settings): bool {
+            return !$this->essSocCanLimitWorkers($settings) || $this->machineFitsCurrentSoc($machine, $settings);
         }));
     }
 

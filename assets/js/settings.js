@@ -22,7 +22,7 @@
             var mac = row.querySelector('input[name^="machine_mac"]');
             var minSoc = row.querySelector('input[name^="machine_min_soc_percent"]');
             var wake = row.querySelector('input[name^="machine_wake_enabled"]');
-            var layer = row.querySelector('input[name^="machine_shutdown_layer"]');
+            var layer = row.querySelector('input[name^="machine_priority_layer"]');
 
             var pcValue = pcId ? pcId.value.trim() : '';
             var macValue = mac ? mac.value.trim() : '';

@@ -76,7 +76,6 @@ try {
                 'ess_ignore_when_unavailable' => isset($_POST['ess_ignore_when_unavailable']),
                 'ess_charging_override_enabled' => isset($_POST['ess_charging_override_enabled']),
                 'idle_shutdown_after_no_job_checks' => (int) ($_POST['idle_shutdown_after_no_job_checks'] ?? 0),
-                'prefer_lower_shutdown_layers_for_work' => isset($_POST['prefer_lower_shutdown_layers_for_work']),
                 'shutdown_debug_mode' => isset($_POST['shutdown_debug_mode']),
                 'auto_wake_for_queued_jobs' => isset($_POST['auto_wake_for_queued_jobs']),
                 'wake_dispatch_mode' => (string) ($_POST['wake_dispatch_mode'] ?? 'worker_relay'),
@@ -107,7 +106,7 @@ try {
 $store->refreshEssSocFromConfiguredEndpoint();
 $settings = $store->effectiveSettings();
 $machines = $store->machines();
-$machineRows = $machines === [] ? [['pc_id' => '', 'mac' => '', 'min_soc_percent' => '', 'wake_enabled' => true, 'shutdown_layer' => 0]] : array_values($machines);
+$machineRows = $machines === [] ? [['pc_id' => '', 'mac' => '', 'min_soc_percent' => '', 'wake_enabled' => true, 'priority_layer' => 0]] : array_values($machines);
 $archiveInfo = $store->archiveInfo();
 $quarantineLocations = $store->quarantineLocations();
 $dataDirectory = dirname((string) $config['storage_path']);
@@ -205,11 +204,6 @@ $dataDirectory = dirname((string) $config['storage_path']);
                             <input type="checkbox" name="shutdown_debug_mode" value="1" <?= !empty($settings['shutdown_debug_mode']) ? 'checked' : '' ?>>
                             Shutdown debug mode
                             <small>When enabled, shutdown requests only stop the farm agent. The computer stays on, stops checking in, and becomes offline/stale from the master view.</small>
-                        </label>
-                        <label class="check-row form-check d-flex gap-2 align-items-center">
-                            <input type="checkbox" name="prefer_lower_shutdown_layers_for_work" value="1" <?= !empty($settings['prefer_lower_shutdown_layers_for_work']) ? 'checked' : '' ?>>
-                            Prefer lower shutdown layers for normal work
-                            <small>Jobs are not reserved for a computer or a layer. Higher-layer workers simply wait when an eligible idle lower-layer worker is online. Control tasks such as shutdown are not blocked by this work preference.</small>
                         </label>
                     </div>
                 </div>
@@ -367,7 +361,7 @@ $dataDirectory = dirname((string) $config['storage_path']);
                                     <th>MAC address</th>
                                     <th>Minimum ESS SOC %</th>
                                     <th>Wake</th>
-                                    <th>Shutdown layer</th>
+                                    <th>Priority layer</th>
                                     <th></th>
                                 </tr>
                             </thead>
@@ -379,21 +373,21 @@ $dataDirectory = dirname((string) $config['storage_path']);
                                     <td><input name="machine_mac[<?= (int) $machineIndex ?>]" class="form-control" value="<?= reflection_h($machine['mac'] ?? '') ?>" placeholder="AA:BB:CC:DD:EE:01"></td>
                                     <td><input type="number" name="machine_min_soc_percent[<?= (int) $machineIndex ?>]" class="form-control" min="0" max="100" value="<?= reflection_h($machineMinSoc) ?>" placeholder="fallback"></td>
                                     <td class="center-cell text-center"><input type="checkbox" name="machine_wake_enabled[<?= (int) $machineIndex ?>]" value="1" <?= !isset($machine['wake_enabled']) || !empty($machine['wake_enabled']) ? 'checked' : '' ?>></td>
-                                    <td><input type="number" name="machine_shutdown_layer[<?= (int) $machineIndex ?>]" class="form-control" min="0" value="<?= (int) ($machine['shutdown_layer'] ?? 0) ?>"></td>
+                                    <td><input type="number" name="machine_priority_layer[<?= (int) $machineIndex ?>]" class="form-control" min="0" value="<?= (int) ($machine['priority_layer'] ?? ($machine['shutdown_layer'] ?? 0)) ?>"></td>
                                     <td><button type="button" class="ghost-button btn btn-outline-primary small-button btn-sm" data-remove-machine-row>Remove</button></td>
                                 </tr>
                             <?php endforeach; ?>
                             </tbody>
                         </table>
                     </div>
-                    <small>Higher shutdown layers power off first. Normal jobs are offered to lower layers first, but no job is reserved for a specific computer or layer. Wake-on-LAN is also phased by layer, so the master wakes the lowest eligible offline layer first before moving upward. Wake can be disabled for a computer while still keeping its SOC and layer policy.</small>
+                    <small>Priority layer controls the whole farm order. Lower numbers are core workers: they wake first, receive normal jobs first, and shut down last. Higher numbers are overflow workers: they are used only when lower eligible workers are already busy, and they shut down first. If two jobs need workers across layers 0, 1, and 2, layers 0 and 1 are used while layer 2 stays available to power off. Wake can be disabled for a computer while still keeping its SOC and priority policy.</small>
                     <template id="machine-row-template">
                         <tr>
                             <td><input name="machine_pc_id[__INDEX__]" placeholder="farm1" class="form-control"></td>
                             <td><input name="machine_mac[__INDEX__]" placeholder="AA:BB:CC:DD:EE:01" class="form-control"></td>
                             <td><input type="number" name="machine_min_soc_percent[__INDEX__]" min="0" max="100" placeholder="fallback" class="form-control"></td>
                             <td class="center-cell text-center"><input type="checkbox" name="machine_wake_enabled[__INDEX__]" value="1" checked></td>
-                            <td><input type="number" name="machine_shutdown_layer[__INDEX__]" min="0" value="0" class="form-control"></td>
+                            <td><input type="number" name="machine_priority_layer[__INDEX__]" min="0" value="0" class="form-control"></td>
                             <td><button type="button" class="ghost-button btn btn-outline-primary small-button btn-sm" data-remove-machine-row>Remove</button></td>
                         </tr>
                     </template>
