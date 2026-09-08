@@ -9,6 +9,13 @@ import shutil
 import subprocess
 from typing import Any, Mapping
 
+from ftp_compat import install_ftplib_filename_compat
+
+
+# Reflection.py imports this module during worker startup. Install the FTP
+# filename compatibility hooks before any storage connection is opened.
+install_ftplib_filename_compat()
+
 
 TERMINAL_BINARIES = (
     "x-terminal-emulator",
