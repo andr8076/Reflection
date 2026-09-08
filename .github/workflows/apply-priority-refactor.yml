@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: refactor/worker-priority-layers
+      - name: Correct helper matchers
+        run: python tools/fix_priority_refactor_helper.py
       - name: Apply refactor
         run: python tools/refactor_priority_layers.py
       - name: Commit refactor
