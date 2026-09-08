@@ -68,7 +68,7 @@ function reflection_parse_machine_list(string $raw): array
             'pc_id' => $parts[0] ?? '',
             'mac' => $parts[1] ?? '',
             'wake_enabled' => !isset($parts[3]) || !in_array(strtolower($parts[3]), ['0', 'false', 'no', 'off'], true),
-            'shutdown_layer' => max(0, (int) ($parts[4] ?? 0)),
+            'priority_layer' => max(0, (int) ($parts[4] ?? 0)),
         ];
         if ($rawMinSoc !== '') {
             $machine['min_soc_percent'] = max(0, min(100, (int) $rawMinSoc));
@@ -92,14 +92,14 @@ function reflection_parse_machine_form(array $post): ?array
     $macs = is_array($post['machine_mac'] ?? null) ? $post['machine_mac'] : [];
     $minSocs = is_array($post['machine_min_soc_percent'] ?? null) ? $post['machine_min_soc_percent'] : [];
     $wakeEnabled = is_array($post['machine_wake_enabled'] ?? null) ? $post['machine_wake_enabled'] : [];
-    $shutdownLayers = is_array($post['machine_shutdown_layer'] ?? null) ? $post['machine_shutdown_layer'] : [];
+    $priorityLayers = is_array($post['machine_priority_layer'] ?? null) ? $post['machine_priority_layer'] : (is_array($post['machine_shutdown_layer'] ?? null) ? $post['machine_shutdown_layer'] : []);
 
     $keys = array_unique(array_merge(
         array_keys($pcIds),
         array_keys($macs),
         array_keys($minSocs),
         array_keys($wakeEnabled),
-        array_keys($shutdownLayers)
+        array_keys($priorityLayers)
     ));
     natsort($keys);
 
@@ -115,7 +115,7 @@ function reflection_parse_machine_form(array $post): ?array
             'pc_id' => $pcId,
             'mac' => $mac,
             'wake_enabled' => isset($wakeEnabled[$key]) && in_array((string) $wakeEnabled[$key], ['1', 'true', 'yes', 'on'], true),
-            'shutdown_layer' => max(0, (int) ($shutdownLayers[$key] ?? 0)),
+            'priority_layer' => max(0, (int) ($priorityLayers[$key] ?? 0)),
         ];
 
         $rawMinSoc = trim((string) ($minSocs[$key] ?? ''));
@@ -156,7 +156,7 @@ function reflection_machine_list_text(array $machines): string
             $machine['mac'] ?? '',
             $machine['min_soc_percent'] ?? ($machine['soc_margin_percent'] ?? ''),
             !empty($machine['wake_enabled']) ? '1' : '0',
-            max(0, (int) ($machine['shutdown_layer'] ?? 0)),
+            max(0, (int) ($machine['priority_layer'] ?? ($machine['shutdown_layer'] ?? 0))),
         ]);
     }
 

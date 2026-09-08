@@ -296,21 +296,21 @@ function reflection_api_register_quarantine(array $payload, FarmStore $store, ar
     );
 }
 
-function reflection_api_shutdown_layer_payload(FarmStore $store, string $pcId, array $config): array
+function reflection_api_priority_layer_payload(FarmStore $store, string $pcId, array $config): array
 {
     $staleAfterSeconds = (int) ($config['stale_after_seconds'] ?? 900);
-    return $store->shutdownLayerStatus($pcId, $staleAfterSeconds);
+    return $store->priorityLayerStatus($pcId, $staleAfterSeconds);
 }
 
-function reflection_api_shutdown_allowed(FarmStore $store, string $pcId, array $config): bool
+function reflection_api_priority_shutdown_allowed(FarmStore $store, string $pcId, array $config): bool
 {
-    $layer = reflection_api_shutdown_layer_payload($store, $pcId, $config);
+    $layer = reflection_api_priority_layer_payload($store, $pcId, $config);
     return !empty($layer['allowed']);
 }
 
 function reflection_api_task_payload(array $job, array $config, array $settings, int $allowedWorkers, ?FarmStore $store = null, string $pcId = ''): array
 {
-    $shutdownLayer = $store !== null && $pcId !== '' ? reflection_api_shutdown_layer_payload($store, $pcId, $config) : ['allowed' => true];
+    $priorityLayer = $store !== null && $pcId !== '' ? reflection_api_priority_layer_payload($store, $pcId, $config) : ['allowed' => true];
 
     $task = [
         'task_id' => $job['task_id'],
@@ -319,7 +319,7 @@ function reflection_api_task_payload(array $job, array $config, array $settings,
         'delivery' => $job['delivery'],
         'overwrite_allowed' => (bool) $job['overwrite_allowed'],
         'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
-        'shutdown_layer' => $shutdownLayer,
+        'priority_layer' => $priorityLayer,
         'quarantine_keep_days' => max(1, (int) ($settings['quarantine_keep_days'] ?? 14)),
         'quarantine_max_gb' => max(0.0, (float) ($settings['quarantine_max_gb'] ?? 100)),
         'worker_temp_max_age_hours' => max(1, (int) ($settings['worker_temp_max_age_hours'] ?? 24)),
@@ -425,8 +425,8 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
         !empty($settings['enforce_version']) && $masterCommit !== ''
     );
     if (empty($layerAdmission['allowed'])) {
-        return reflection_api_no_jobs_response($store, $pcId, $settings, 'lower_shutdown_layer_idle', false, $config, [
-            'work_layer_priority' => $layerAdmission,
+        return reflection_api_no_jobs_response($store, $pcId, $settings, 'higher_priority_worker_idle', false, $config, [
+            'work_priority' => $layerAdmission,
         ]);
     }
 
@@ -443,7 +443,7 @@ function reflection_api_request_task(FarmStore $store, array $config, string $pc
             ? 'ess_worker_limit'
             : ((is_array($claim['rejections'] ?? null) && $claim['rejections'] !== []) ? 'no_eligible_jobs' : 'queue_empty');
         return reflection_api_no_jobs_response($store, $pcId, $settings, $reason, false, $config, [
-            'work_layer_priority' => $layerAdmission,
+            'work_priority' => $layerAdmission,
             'assignment_rejections' => is_array($claim['rejections'] ?? null) ? $claim['rejections'] : [],
         ]);
     }
@@ -469,11 +469,11 @@ function reflection_api_no_jobs_response(FarmStore $store, string $pcId, array $
     $limitReached = $shutdownLimit > 0 && $idleCheckIns >= $shutdownLimit;
 
     $requestedShutdown = $forceShutdown || $limitReached;
-    $shutdownLayer = $config !== [] ? reflection_api_shutdown_layer_payload($store, $pcId, $config) : ['allowed' => true];
-    $shutdownAfterTask = $requestedShutdown && !empty($shutdownLayer['allowed']);
+    $priorityLayer = $config !== [] ? reflection_api_priority_layer_payload($store, $pcId, $config) : ['allowed' => true];
+    $shutdownAfterTask = $requestedShutdown && !empty($priorityLayer['allowed']);
     $finalReason = $limitReached ? 'idle_no_job_check_limit' : $reason;
     if ($requestedShutdown && !$shutdownAfterTask) {
-        $finalReason = 'shutdown_layer_waiting';
+        $finalReason = 'priority_layer_waiting';
     }
 
     $response = [
@@ -483,7 +483,7 @@ function reflection_api_no_jobs_response(FarmStore $store, string $pcId, array $
         'idle_no_job_checkins' => $idleCheckIns,
         'idle_shutdown_after_no_job_checks' => $shutdownLimit,
         'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
-        'shutdown_layer' => $shutdownLayer,
+        'priority_layer' => $priorityLayer,
     ];
     foreach ($extra as $key => $value) {
         if (is_string($key) && preg_match('/^[a-zA-Z0-9_]+$/', $key) === 1) {
@@ -587,15 +587,15 @@ function reflection_api_report_done(array $payload, FarmStore $store, array $con
 
     $settings = $store->effectiveSettings();
     $shutdownRequested = !empty($settings['ess_shutdown_below_minimum']) && !$store->workerFitsCurrentSoc($pcId);
-    $shutdownLayer = reflection_api_shutdown_layer_payload($store, $pcId, $config);
-    $shutdownAfterTask = $shutdownRequested && !empty($shutdownLayer['allowed']);
+    $priorityLayer = reflection_api_priority_layer_payload($store, $pcId, $config);
+    $shutdownAfterTask = $shutdownRequested && !empty($priorityLayer['allowed']);
 
     return reflection_api_with_version_metadata(
         [
             'status' => 'confirmed_by_server',
             'shutdown_after_task' => $shutdownAfterTask,
             'shutdown_debug_mode' => !empty($settings['shutdown_debug_mode']),
-            'shutdown_layer' => $shutdownLayer,
+            'priority_layer' => $priorityLayer,
             'shutdown_blocked_by_layer' => $shutdownRequested && !$shutdownAfterTask,
         ],
         $config,

@@ -38,8 +38,8 @@ $machines = reflection_parse_machine_list("# ignored
 worker-a,aa:bb:cc:dd:ee:ff,7,off
 worker-b,11:22:33:44:55:66");
 assertSameValue([
-    ['pc_id' => 'worker-a', 'mac' => 'aa:bb:cc:dd:ee:ff', 'wake_enabled' => false, 'shutdown_layer' => 0, 'min_soc_percent' => 7, 'soc_margin_percent' => 7],
-    ['pc_id' => 'worker-b', 'mac' => '11:22:33:44:55:66', 'wake_enabled' => true, 'shutdown_layer' => 0],
+    ['pc_id' => 'worker-a', 'mac' => 'aa:bb:cc:dd:ee:ff', 'wake_enabled' => false, 'priority_layer' => 0, 'min_soc_percent' => 7, 'soc_margin_percent' => 7],
+    ['pc_id' => 'worker-b', 'mac' => '11:22:33:44:55:66', 'wake_enabled' => true, 'priority_layer' => 0],
 ], $machines, 'Machine-list parser should treat the third column as per-worker minimum ESS SOC.');
 assertSameValue(
     "worker-a,aa:bb:cc:dd:ee:ff,7,0,0
@@ -53,11 +53,11 @@ $formMachines = reflection_parse_machine_form([
     'machine_mac' => ['0' => 'AA:BB:CC:DD:EE:01', '1' => 'AA:BB:CC:DD:EE:02', '2' => ''],
     'machine_min_soc_percent' => ['0' => '25', '1' => '', '2' => '80'],
     'machine_wake_enabled' => ['0' => '1'],
-    'machine_shutdown_layer' => ['0' => '2', '1' => '0', '2' => '5'],
+    'machine_priority_layer' => ['0' => '2', '1' => '0', '2' => '5'],
 ]);
 assertSameValue([
-    ['pc_id' => 'farm1', 'mac' => 'AA:BB:CC:DD:EE:01', 'wake_enabled' => true, 'shutdown_layer' => 2, 'min_soc_percent' => 25, 'soc_margin_percent' => 25],
-    ['pc_id' => 'farm2', 'mac' => 'AA:BB:CC:DD:EE:02', 'wake_enabled' => false, 'shutdown_layer' => 0],
+    ['pc_id' => 'farm1', 'mac' => 'AA:BB:CC:DD:EE:01', 'wake_enabled' => true, 'priority_layer' => 2, 'min_soc_percent' => 25, 'soc_margin_percent' => 25],
+    ['pc_id' => 'farm2', 'mac' => 'AA:BB:CC:DD:EE:02', 'wake_enabled' => false, 'priority_layer' => 0],
 ], $formMachines, 'Machine form parser should preserve blank per-computer SOC as global fallback and unchecked wake boxes as false.');
 assertSameValue(null, reflection_parse_machine_form([]), 'Machine form parser should return null when the new UI fields are not present.');
 assertSameValue('yes', reflection_ess_charging_label(['ess_charging' => true]), 'Charging label helper should show a known charging state.');

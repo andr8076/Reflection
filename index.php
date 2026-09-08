@@ -399,7 +399,7 @@ function reflection_worker_cards(array $workers, array $machines, int $staleAfte
             'mac' => $machine['mac'] ?? '',
             'min_soc_percent' => $machine['min_soc_percent'] ?? ($machine['soc_margin_percent'] ?? null),
             'wake_enabled' => !empty($machine['wake_enabled']),
-            'shutdown_layer' => max(0, (int) ($machine['shutdown_layer'] ?? 0)),
+            'priority_layer' => max(0, (int) ($machine['priority_layer'] ?? ($machine['shutdown_layer'] ?? 0))),
             'version' => '—',
             'current_job' => null,
             'last_check_in' => null,
@@ -428,7 +428,7 @@ function reflection_worker_cards(array $workers, array $machines, int $staleAfte
             'mac' => '',
             'min_soc_percent' => null,
             'wake_enabled' => false,
-            'shutdown_layer' => 0,
+            'priority_layer' => 0,
         ], [
             'version' => $worker['version'] ?? '—',
             'current_job' => $worker['current_job'] ?? null,
@@ -485,10 +485,10 @@ function reflection_render_worker_cards_html(array $workerCards): string
         $version = trim((string) ($card['version'] ?? ''));
         $versionDisplay = $version !== '' ? $version : '—';
         $minSoc = ($card['min_soc_percent'] ?? null) === null ? 'global' : ((int) $card['min_soc_percent']) . '%';
-        $layer = (int) ($card['shutdown_layer'] ?? 0);
+        $layer = (int) ($card['priority_layer'] ?? ($card['shutdown_layer'] ?? 0));
         $wakeLabel = !empty($card['wake_enabled']) ? 'WOL on' : 'WOL off';
         $mac = trim((string) ($card['mac'] ?? ''));
-        $powerTitle = trim($wakeLabel . ($mac !== '' ? ' · ' . $mac : '') . ' · minimum ESS SOC ' . $minSoc . ' · shutdown layer ' . $layer);
+        $powerTitle = trim($wakeLabel . ($mac !== '' ? ' · ' . $mac : '') . ' · minimum ESS SOC ' . $minSoc . ' · priority layer ' . $layer);
         ?>
         <article class="worker-wide-card col-12 bg-light border rounded-4 p-3">
             <div class="worker-wide-main row g-3 align-items-center">

@@ -221,7 +221,6 @@ function reflection_default_runtime_settings(): array
         'ess_soc_last_failure_at' => null,
         'ess_soc_refresh_cooldown_seconds' => 30,
         'idle_shutdown_after_no_job_checks' => 0,
-        'prefer_lower_shutdown_layers_for_work' => true,
         'shutdown_debug_mode' => false,
         'auto_wake_for_queued_jobs' => true,
         'wake_dispatch_mode' => 'worker_relay',
