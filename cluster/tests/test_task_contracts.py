@@ -83,10 +83,7 @@ class TaskContractTest(unittest.TestCase):
             source_file.write_text("placeholder", encoding="utf-8")
             bad_delivery = root / "movie_h265.mp4"
 
-            with mock.patch.object(module, "_require_tool"), \
-                 mock.patch.object(module, "_choose_encoder", return_value=(module.SOFTWARE_ARGS, module.PIXEL_FORMAT_ARGS)), \
-                 mock.patch.object(module, "_analyze_video", return_value={"codec": "h264", "height": 1080}), \
-                 mock.patch.object(module, "_encode_file"):
+            with mock.patch.object(module, "_require_tool"):
                 with self.assertRaisesRegex(ValueError, "must end with .mkv"):
                     module.run(str(source_file), str(bad_delivery), True)
 
@@ -108,8 +105,8 @@ class TaskContractTest(unittest.TestCase):
         self.assertEqual(four_k_profile, "4k")
         self.assertIn("20", standard_args)
         self.assertIn("22", four_k_args)
-        self.assertEqual(standard_pix_fmt, module.PIXEL_FORMAT_ARGS)
-        self.assertEqual(four_k_pix_fmt, module.PIXEL_FORMAT_ARGS)
+        self.assertEqual(standard_pix_fmt, ["-pix_fmt", "yuv420p10le"])
+        self.assertEqual(four_k_pix_fmt, ["-pix_fmt", "yuv420p10le"])
 
     def test_h265_encode_source_json_can_override_profile(self):
         module = load_task("h265_encode")
@@ -132,10 +129,11 @@ class TaskContractTest(unittest.TestCase):
             source_file = root / "movie.mkv"
             output_file = root / "movie_h265.mkv"
             source_file.write_text("placeholder", encoding="utf-8")
+            encoder_args, pixel_format_args = module._choose_encoder("software", module.ENCODE_PROFILES["standard"])
 
             with mock.patch.object(module.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run_mock, \
                  mock.patch.object(module.os, "replace") as replace_mock:
-                module._encode_file(source_file, output_file, module.SOFTWARE_ARGS, module.PIXEL_FORMAT_ARGS)
+                module._encode_file(source_file, output_file, encoder_args, pixel_format_args)
 
             command = run_mock.call_args.args[0]
             self.assertIn("-map", command)
