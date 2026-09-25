@@ -116,6 +116,7 @@ fi
 python3 -m py_compile \
     "$SOURCE_DIR/cluster/Reflection.py" \
     "$SOURCE_DIR/cluster/encoder_dependency.py" \
+    "$SOURCE_DIR/cluster/archive_dependency.py" \
     "$SOURCE_DIR/cluster/agent_state.py" \
     "$SOURCE_DIR/cluster/task_readiness.py" \
     "$SOURCE_DIR/cluster/task_registry.py" \

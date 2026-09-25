@@ -38,6 +38,10 @@ $deliveryRejected = reflection_expand_task_sources('h265_encode', $root, '/tmp/a
 assertSameValue(true, is_string($deliveryRejected['error']), 'Folder submissions should reject one shared delivery path.');
 $single = reflection_expand_task_sources('h265_encode', $root . '/b.mp4', '');
 assertSameValue([$root . '/b.mp4'], $single['sources'], 'A single video submission should remain one job.');
+
+$archiveFolder = reflection_expand_task_sources('hardcore_archive', $root, '');
+assertSameValue([$root], $archiveFolder['sources'], 'A Hardcore Archive folder should remain one source job.');
+assertSameValue(false, $archiveFolder['expanded_folder'], 'A Hardcore Archive folder should not expand into child jobs.');
 assertSameValue(['minimum_free_temp_bytes' => 22], reflection_job_resource_requirements($root . '/b.mp4'), 'Known local files should reserve twice their source size in temporary capacity.');
 
 unlink($root . '/b.mp4');

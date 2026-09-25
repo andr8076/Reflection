@@ -50,6 +50,14 @@ The installer:
 
 Use `./install.sh --skip-server-check` only when preparing a worker before its master is reachable. Re-run `./install.sh --configure` to edit configuration. `./uninstall.sh` removes desktop autostart and keeps configuration unless `--remove-config` is supplied.
 
+## Hardcore Archive jobs
+
+The `hardcore_archive` task sends one folder as one job to the linked [Hardcore Archive](https://github.com/andr8076/Hardcore-Archive) project. It refreshes the repository from `main` before each run and initializes the encoder submodules at the revisions pinned by that commit.
+
+Leave delivery blank to write `<source-folder>.7z` beside the source, or provide a `.7z` delivery path. The source folder must be directly readable by the worker, such as a local or shared mount; the current FTP/SFTP transfer adapter transfers individual files, not whole directories.
+
+The task runs Hardcore Archive's normal verified archive command and never enables source deletion. If a machine is missing a required media tool, the project's doctor handles that in the visible worker terminal.
+
 ## H.265 jobs
 
 The `h265_encode` worker task delegates encoding to [265Encode](https://github.com/andr8076/265Encode) through its protocol-2 dependency interface. Reflection does not carry a second FFmpeg encoder implementation.
@@ -68,6 +76,7 @@ The master must be able to enumerate a submitted folder. For an unmounted remote
 The bundled production task catalogue contains:
 
 - `compress_archive` — compress a source directory into a ZIP archive.
+- `hardcore_archive` — archive one source folder into a verified `.7z` using linked Hardcore Archive.
 - `h265_encode` — encode one video through the linked [265Encode](https://github.com/andr8076/265Encode) dependency.
 - `invert_image` — create an image with inverted colors.
 

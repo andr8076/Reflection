@@ -26,12 +26,22 @@ def load_task(name):
 class TaskContractTest(unittest.TestCase):
     def test_task_modules_declare_contracts(self):
         registry = discover_task_definitions(TASKS_DIR)
-        self.assertEqual(set(registry), {"compress_archive", "h265_encode", "invert_image"})
+        self.assertEqual(set(registry), {"compress_archive", "hardcore_archive", "h265_encode", "invert_image"})
         self.assertTrue(registry["compress_archive"].spec["production_ready"])
         self.assertTrue(registry["h265_encode"].spec["production_ready"])
+        self.assertTrue(registry["hardcore_archive"].spec["production_ready"])
         self.assertTrue(registry["invert_image"].spec["production_ready"])
         self.assertEqual(registry["compress_archive"].spec["delivery"]["extension"], ".zip")
         self.assertEqual(registry["compress_archive"].spec["delivery"]["mode"], "auto")
+        self.assertEqual(registry["hardcore_archive"].spec["delivery"]["extension"], ".7z")
+        self.assertEqual(registry["hardcore_archive"].spec["delivery"]["mode"], "auto")
+        self.assertEqual(registry["hardcore_archive"].spec["output"]["container"], "7z")
+        self.assertEqual(registry["hardcore_archive"].spec["requirements"]["command_alternatives"], [["7zz", "7z", "7za"]])
+        dependency = registry["hardcore_archive"].spec["dependencies"]["repositories"][0]
+        self.assertEqual(dependency["repository"], "https://github.com/andr8076/Hardcore-Archive")
+        self.assertEqual(dependency["branch"], "main")
+        self.assertEqual(dependency["update"], "before_each_hardcore_archive_run")
+        self.assertEqual(dependency["submodules"], "pinned_to_parent_commit")
         self.assertEqual(registry["h265_encode"].spec["delivery"]["extension"], ".mkv")
         self.assertEqual(registry["h265_encode"].spec["delivery"]["mode"], "auto")
         self.assertEqual(registry["h265_encode"].spec["output"]["container"], "mkv")

@@ -127,6 +127,7 @@ VENV_PYTHON="$VENV_DIR/bin/python"
 "$VENV_PYTHON" -m py_compile \
     "$SCRIPT_DIR/Reflection.py" \
     "$SCRIPT_DIR/encoder_dependency.py" \
+    "$SCRIPT_DIR/archive_dependency.py" \
     "$SCRIPT_DIR/agent_state.py" \
     "$SCRIPT_DIR/task_readiness.py" \
     "$SCRIPT_DIR/task_registry.py" \

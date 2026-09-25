@@ -8,6 +8,15 @@
       "path": ".dependencies/265Encode",
       "interface": "protocol-2",
       "auto_update": "before-each-h265-run"
+    },
+    {
+      "name": "Hardcore-Archive",
+      "repository": "https://github.com/andr8076/Hardcore-Archive.git",
+      "branch": "main",
+      "path": ".dependencies/Hardcore-Archive",
+      "interface": "folder-to-7z-cli",
+      "auto_update": "before-each-hardcore-archive-run",
+      "submodules": "pinned-to-parent-commit"
     }
   ]
 }

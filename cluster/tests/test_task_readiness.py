@@ -8,7 +8,9 @@ WORKER_ROOT = Path(__file__).resolve().parents[1]
 if str(WORKER_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKER_ROOT))
 
-from task_readiness import available_terminal, supported_transfer_schemes
+from types import SimpleNamespace
+
+from task_readiness import available_terminal, supported_transfer_schemes, task_readiness
 
 
 class TaskReadinessTests(unittest.TestCase):
@@ -27,6 +29,27 @@ class TaskReadinessTests(unittest.TestCase):
     @mock.patch("task_readiness.importlib.util.find_spec", return_value=object())
     def test_sftp_is_advertised_when_paramiko_is_installed(self, _find_spec):
         self.assertEqual(["ftp", "ftps", "sftp"], supported_transfer_schemes())
+
+
+    def test_command_alternatives_accept_any_available_command(self):
+        definition = SimpleNamespace(
+            spec={
+                "production_ready": True,
+                "requirements": {
+                    "commands": ["bash", "git", "python3"],
+                    "command_alternatives": [["7zz", "7z", "7za"]],
+                },
+            }
+        )
+        available = {"bash", "git", "python3", "7z"}
+        with mock.patch("task_readiness.available_terminal", return_value="/usr/bin/xterm"), mock.patch(
+            "task_readiness.shutil.which",
+            side_effect=lambda command: f"/usr/bin/{command}" if command in available else None,
+        ):
+            result = task_readiness({"hardcore_archive": definition})
+
+        self.assertTrue(result["hardcore_archive"]["ready"])
+        self.assertEqual(result["hardcore_archive"]["reason"], "")
 
 
 if __name__ == "__main__":

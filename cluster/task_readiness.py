@@ -79,6 +79,13 @@ def task_readiness(registry: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
             if command and shutil.which(command) is None:
                 reasons.append(f"Required command is missing: {command}")
 
+        for alternatives in requirements.get("command_alternatives", []):
+            commands = [str(command).strip() for command in alternatives]
+            if commands and not any(shutil.which(command) is not None for command in commands):
+                reasons.append(
+                    "One of these required commands is missing: " + " or ".join(commands)
+                )
+
         for module in requirements.get("python_modules", []):
             module = str(module).strip()
             if module and importlib.util.find_spec(module) is None:

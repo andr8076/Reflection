@@ -91,6 +91,17 @@ def validate_task_spec(path: Path, task_name: str, spec: dict) -> None:
         if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
             raise TypeError(f"{path} TASK_SPEC.requirements.{key} must be a list of non-empty strings.")
 
+    command_alternatives = requirements.get("command_alternatives", [])
+    if not isinstance(command_alternatives, list) or any(
+        not isinstance(group, list)
+        or not group
+        or any(not isinstance(item, str) or not item.strip() for item in group)
+        for group in command_alternatives
+    ):
+        raise TypeError(
+            f"{path} TASK_SPEC.requirements.command_alternatives must be a list of non-empty command lists."
+        )
+
 
 def discover_task_definitions(tasks_dir: Path, on_error=None) -> dict:
     """Load valid task definitions while reporting and skipping broken files."""
