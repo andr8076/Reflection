@@ -472,7 +472,7 @@ function reflection_render_worker_cards_html(array $workerCards): string
     ob_start();
     if ($workerCards === []):
         ?>
-        <p class="empty text-secondary text-center py-4">No configured computers or worker check-ins yet.</p>
+        <p class="empty text-secondary text-center py-4 w-100">No configured computers or worker check-ins yet.</p>
         <?php
     endif;
 
@@ -490,53 +490,53 @@ function reflection_render_worker_cards_html(array $workerCards): string
         $mac = trim((string) ($card['mac'] ?? ''));
         $powerTitle = trim($wakeLabel . ($mac !== '' ? ' · ' . $mac : '') . ' · minimum ESS SOC ' . $minSoc . ' · shutdown layer ' . $layer);
         ?>
-        <article class="worker-wide-card col-12 bg-light border rounded-4 p-3">
-            <div class="worker-wide-main row g-3 align-items-center">
-                <div class="worker-wide-title col-12 col-lg-3 d-flex align-items-center gap-2">
+        <article class="worker-wide-card col bg-light border rounded-4 p-2 h-100">
+            <div class="worker-wide-title d-flex justify-content-between align-items-start gap-2 mb-2">
+                <div class="d-flex align-items-center gap-2">
                     <span class="worker-dot rounded-circle d-inline-block p-2 <?= reflection_h(reflection_status_dot_class($state)) ?>" aria-hidden="true"></span>
                     <div>
-                        <strong><?= reflection_h($card['pc_id'] ?? 'unknown') ?></strong>
+                        <strong class="d-block text-break"><?= reflection_h($card['pc_id'] ?? 'unknown') ?></strong>
                         <span class="badge <?= reflection_h($stateClass) ?>"><?= reflection_h($state) ?></span>
                     </div>
                 </div>
-                <div class="worker-wide-focus col-12 col-lg bg-white border rounded-3 p-2">
-                    <span>Current job</span>
-                    <code title="<?= reflection_h($currentJobDisplay) ?>"><?= reflection_h(reflection_short_value($currentJobDisplay, 40)) ?></code>
-                </div>
-                <div class="worker-wide-focus col-12 col-lg bg-white border rounded-3 p-2 compact-focus col-lg-2">
-                    <span>Seen</span>
-                    <strong title="<?= reflection_h($lastCheckIn ?? '') ?>"><?= reflection_h(reflection_relative_time($lastCheckIn)) ?></strong>
-                </div>
-                <div class="worker-wide-layer col-12 col-lg-auto badge text-bg-light border text-dark soft-label text-secondary">Layer <?= $layer ?></div>
+                <span class="worker-wide-layer badge text-bg-light border text-dark soft-label text-secondary">Layer <?= $layer ?></span>
             </div>
 
-            <dl class="worker-wide-details row row-cols-1 row-cols-md-2 row-cols-xl-4 g-2 mt-1">
-                <div class="worker-info-box col bg-white border rounded-3 p-2 version-box">
-                    <dt>Version</dt>
-                    <dd><code title="<?= reflection_h($versionDisplay) ?>"><?= reflection_h(reflection_short_value($versionDisplay, 14)) ?></code></dd>
+            <dl class="worker-wide-details d-flex flex-column gap-2 mb-0">
+                <div class="worker-info-box bg-white border rounded-3 p-2">
+                    <dt class="small text-secondary">Current job</dt>
+                    <dd class="mb-0 text-break"><code class="text-break" title="<?= reflection_h($currentJobDisplay) ?>"><?= reflection_h(reflection_short_value($currentJobDisplay, 40)) ?></code></dd>
                 </div>
-                <div class="worker-info-box col bg-white border rounded-3 p-2 power-box">
-                    <dt>Minimum ESS SOC</dt>
-                    <dd><?= reflection_h($minSoc) ?></dd>
+                <div class="worker-info-box bg-white border rounded-3 p-2">
+                    <dt class="small text-secondary">Seen</dt>
+                    <dd class="mb-0"><strong title="<?= reflection_h($lastCheckIn ?? '') ?>"><?= reflection_h(reflection_relative_time($lastCheckIn)) ?></strong></dd>
                 </div>
-                <div class="worker-info-box col bg-white border rounded-3 p-2 wake-box">
-                    <dt>Wake</dt>
-                    <dd title="<?= reflection_h($powerTitle) ?>"><?= reflection_h($wakeLabel) ?><?= $mac !== '' ? ' · ' . reflection_h(reflection_short_value($mac, 20)) : '' ?></dd>
+                <div class="worker-info-box bg-white border rounded-3 p-2 version-box">
+                    <dt class="small text-secondary">Version</dt>
+                    <dd class="mb-0 text-break"><code class="text-break" title="<?= reflection_h($versionDisplay) ?>"><?= reflection_h(reflection_short_value($versionDisplay, 14)) ?></code></dd>
                 </div>
-                <div class="worker-info-box col bg-white border rounded-3 p-2 polls-box">
-                    <dt>No-job polls</dt>
-                    <dd><?= (int) ($card['idle_no_job_checkins'] ?? 0) ?></dd>
+                <div class="worker-info-box bg-white border rounded-3 p-2 power-box">
+                    <dt class="small text-secondary">Minimum ESS SOC</dt>
+                    <dd class="mb-0"><?= reflection_h($minSoc) ?></dd>
+                </div>
+                <div class="worker-info-box bg-white border rounded-3 p-2 wake-box">
+                    <dt class="small text-secondary">Wake</dt>
+                    <dd class="mb-0 text-break" title="<?= reflection_h($powerTitle) ?>"><?= reflection_h($wakeLabel) ?><?= $mac !== '' ? ' · ' . reflection_h(reflection_short_value($mac, 20)) : '' ?></dd>
+                </div>
+                <div class="worker-info-box bg-white border rounded-3 p-2 polls-box">
+                    <dt class="small text-secondary">No-job polls</dt>
+                    <dd class="mb-0"><?= (int) ($card['idle_no_job_checkins'] ?? 0) ?></dd>
                 </div>
                 <?php if (!empty($card['expected_offline'])): ?>
-                    <div class="worker-info-box col bg-white border rounded-3 p-2 expected-box col-12 col-md-6" title="<?= reflection_h($card['expected_offline_at'] ?? '') ?>">
-                        <dt>Expected offline</dt>
-                        <dd><?= reflection_h(reflection_relative_time($card['expected_offline_at'] ?? null)) ?><?= ($card['expected_offline_reason'] ?? '') !== '' ? ' · ' . reflection_h($card['expected_offline_reason']) : '' ?></dd>
+                    <div class="worker-info-box bg-white border rounded-3 p-2 expected-box" title="<?= reflection_h($card['expected_offline_at'] ?? '') ?>">
+                        <dt class="small text-secondary">Expected offline</dt>
+                        <dd class="mb-0 text-break"><?= reflection_h(reflection_relative_time($card['expected_offline_at'] ?? null)) ?><?= ($card['expected_offline_reason'] ?? '') !== '' ? ' · ' . reflection_h($card['expected_offline_reason']) : '' ?></dd>
                     </div>
                 <?php endif; ?>
                 <?php if ($state === 'stale'): ?>
-                    <div class="worker-info-box col bg-white border rounded-3 p-2 action-box col-12 col-md-6">
-                        <dt>Action</dt>
-                        <dd>
+                    <div class="worker-info-box bg-white border rounded-3 p-2 action-box">
+                        <dt class="small text-secondary">Action</dt>
+                        <dd class="mb-0">
                             <form method="post" class="worker-wide-action m-0" data-confirm="Remove this stale worker check-in from the board?">
                                 <input type="hidden" name="form_action" value="worker_action">
                                 <input type="hidden" name="worker_action" value="remove_stale">
@@ -1388,7 +1388,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                     <?= reflection_render_worker_summary($workerStateCounts) ?>
                 </div>
             </div>
-            <div class="computer-grid row g-3" id="workers-grid">
+            <div class="computer-grid row row-cols-1 row-cols-sm-2 row-cols-lg-4 g-3" id="workers-grid">
                 <?= reflection_render_worker_cards_html($workerCards) ?>
             </div>
         </section>
