@@ -47,7 +47,9 @@ $automationRules = [];
 try { $automationRules = (new AutomationStore($dataDirectory, is_array($config['task_specs'] ?? null) ? $config['task_specs'] : []))->rules(); } catch (Throwable $exception) { $automationRules = []; }
 $blockedCount = (int) (($store->jobPage(1, 10, 'blocked')['total'] ?? 0));
 $archive = $store->archiveInfo();
-$masterTick = reflection_read_master_tick_status($dataDirectory);
+$masterTick = (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET')
+    ? reflection_run_master_tick_if_stale($config, $store)
+    : reflection_read_master_tick_status($dataDirectory);
 $masterTickAt = strtotime((string) ($masterTick['finished_at'] ?? ''));
 $masterTickHealthy = ($masterTick['status'] ?? '') === 'ok'
     && $masterTickAt !== false

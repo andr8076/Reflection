@@ -15,7 +15,9 @@ $config = reflection_master_config();
 $taskSpecs = is_array($config['task_specs'] ?? null) ? $config['task_specs'] : [];
 $store = reflection_farm_store($config);
 $dataDirectory = dirname((string) $config['storage_path']);
-$masterTickStatus = reflection_read_master_tick_status($dataDirectory);
+$masterTickStatus = (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET')
+    ? reflection_run_master_tick_if_stale($config, $store)
+    : reflection_read_master_tick_status($dataDirectory);
 $masterTickFinishedAt = strtotime((string) ($masterTickStatus['finished_at'] ?? ''));
 $masterTickHealthy = ($masterTickStatus['status'] ?? '') === 'ok'
     && $masterTickFinishedAt !== false

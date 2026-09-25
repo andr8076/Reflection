@@ -11,6 +11,21 @@ function assertSameValue($expected, $actual, string $message): void
     }
 }
 
+$now = time();
+assertSameValue(true, reflection_master_tick_should_run([], $now), 'A missing tick status should trigger a fallback run.');
+assertSameValue(false, reflection_master_tick_should_run([
+    'status' => 'ok',
+    'finished_at' => gmdate(DATE_ATOM, $now - 59),
+], $now), 'A recent tick should not be repeated on every page request.');
+assertSameValue(false, reflection_master_tick_should_run([
+    'status' => 'error',
+    'finished_at' => gmdate(DATE_ATOM, $now - 30),
+], $now), 'Recent failures should be rate-limited instead of retried on every request.');
+assertSameValue(true, reflection_master_tick_should_run([
+    'status' => 'error',
+    'finished_at' => gmdate(DATE_ATOM, $now - 60),
+], $now), 'A failed tick should be retried after the fallback interval.');
+
 $root = sys_get_temp_dir() . '/reflection_master_tick_' . bin2hex(random_bytes(6));
 $dataDirectory = $root . '/data';
 mkdir($dataDirectory, 0775, true);

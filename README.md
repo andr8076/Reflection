@@ -19,7 +19,7 @@ The master needs PHP 8.1+ with JSON support and a web server that can execute th
 ./install_master.sh --install-cron
 ```
 
-The second command installs the single once-per-minute tick for the current user. If another scheduler is preferred, run this command once per minute:
+The second command installs the single once-per-minute tick for the current user. Dashboard and System checks requests also make a fallback attempt when the last tick was at least 60 seconds ago. The cron remains necessary while the website is idle. If another scheduler is preferred, run this command once per minute:
 
 ```bash
 php /absolute/path/to/Reflection/automation_tick.php

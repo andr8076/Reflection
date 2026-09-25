@@ -105,6 +105,48 @@ function reflection_run_master_tick(
     }
 }
 
+/**
+ * Decide whether a web request should provide a bounded fallback for the cron tick.
+ * Uses the last attempt time so repeated failures are rate-limited too.
+ */
+function reflection_master_tick_should_run(array $status, ?int $now = null, int $minimumIntervalSeconds = 60): bool
+{
+    $lastAttemptValue = $status['finished_at'] ?? null;
+    if ($lastAttemptValue === null || trim((string) $lastAttemptValue) === '') {
+        $lastAttemptValue = $status['started_at'] ?? '';
+    }
+    $lastAttempt = strtotime((string) $lastAttemptValue);
+    if ($lastAttempt === false) {
+        return true;
+    }
+
+    return (($now ?? time()) - $lastAttempt) >= max(1, $minimumIntervalSeconds);
+}
+
+/**
+ * Retry a stale tick on an active dashboard/health-check request.
+ * The normal cron remains responsible for running while the site is idle.
+ */
+function reflection_run_master_tick_if_stale(
+    array $config,
+    ?FarmStore $farmStore = null,
+    int $minimumIntervalSeconds = 60
+): array {
+    $dataDirectory = dirname((string) ($config['storage_path'] ?? (__DIR__ . '/data/farm_master.json')));
+    $status = reflection_read_master_tick_status($dataDirectory);
+    if (!reflection_master_tick_should_run($status, null, $minimumIntervalSeconds)) {
+        return $status;
+    }
+
+    try {
+        reflection_run_master_tick($config, $farmStore);
+    } catch (Throwable $exception) {
+        // The tick persists its error status; keep the dashboard available to show it.
+    }
+
+    return reflection_read_master_tick_status($dataDirectory);
+}
+
 function reflection_read_master_tick_status(string $dataDirectory): array
 {
     $path = rtrim($dataDirectory, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'master_tick_status.json';
