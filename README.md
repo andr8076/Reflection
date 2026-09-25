@@ -52,10 +52,17 @@ Use `./install.sh --skip-server-check` only when preparing a worker before its m
 
 ## H.265 jobs
 
-`h265_encode` processes exactly one video per job and writes MKV. A folder submitted through the dashboard is recursively enumerated by the master and expanded into one independently leased job per supported video. Leave delivery blank for a folder so each output can be generated beside its source.
+The `h265_encode` worker task delegates encoding to [265Encode](https://github.com/andr8076/265Encode) through its protocol-2 dependency interface. Reflection does not carry a second FFmpeg encoder implementation.
+
+Worker setup clones the dependency into `cluster/.dependencies/265Encode`. Before each H.265 job and each optional preflight, the worker fetches the latest `main` commit. If GitHub cannot be reached but a previous checkout is available, the worker logs the update failure and uses that installed commit. The repository link, branch, and update policy are declared in `cluster/dependencies.json`; the updater preserves the runtime checkout.
+
+AUTO uses only a capability-proven hardware encoder. It does not silently fall back to CPU encoding. To request software encoding explicitly, use source JSON with `"mode":"software"`. 265Encode evaluates a bounded sample, seals a plan against the encoder/runtime/source/requirements, and validates the complete output before Reflection publishes it. The default policy targets VMAF 92, favors the smallest output, and copies all audio streams.
+
+The task accepts exactly one video per job and writes MKV. A blank delivery path creates `{name}_h265.mkv` beside the source. A folder submitted through the dashboard is recursively enumerated by the master and expanded into one independently leased job per supported video.
+
+The optional worker command filter remains available for candidate screening. It now asks 265Encode to plan a bounded sample and checks predicted saving and quality; details and supported options are in [H.265 preflight](docs/H265_PREFLIGHT.md).
 
 The master must be able to enumerate a submitted folder. For an unmounted remote folder, use Bulk import with one video path per line or configure an automation scan. The worker rejects directory jobs so a single process can never hide an entire multi-video batch.
-
 ## Local task modules
 
 Bundled tasks live in `cluster/tasks/`. Site-specific tasks belong in `cluster/tasks_local/`, which the updater preserves. Every task file must define:

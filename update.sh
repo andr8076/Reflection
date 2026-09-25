@@ -115,6 +115,7 @@ fi
 # only installation does not need a desktop terminal or worker dependencies.
 python3 -m py_compile \
     "$SOURCE_DIR/cluster/Reflection.py" \
+    "$SOURCE_DIR/cluster/encoder_dependency.py" \
     "$SOURCE_DIR/cluster/agent_state.py" \
     "$SOURCE_DIR/cluster/task_readiness.py" \
     "$SOURCE_DIR/cluster/task_registry.py" \
@@ -167,6 +168,7 @@ preserve_paths = [
     Path("cluster/reflection_outbox.json"),
     Path("cluster/tasks_local"),
     Path("cluster/.venv"),
+    Path("cluster/.dependencies"),
     Path(".env"),
 ]
 ignored_names = {"__MACOSX", ".DS_Store"}
@@ -259,6 +261,7 @@ if [[ "$WORKER_INSTALL" == true ]]; then
 fi
 if ! "$POST_PYTHON" -m py_compile \
     "$SCRIPT_DIR/cluster/Reflection.py" \
+    "$SCRIPT_DIR/cluster/encoder_dependency.py" \
     "$SCRIPT_DIR/cluster/agent_state.py" \
     "$SCRIPT_DIR/cluster/task_readiness.py" \
     "$SCRIPT_DIR/cluster/task_registry.py" \

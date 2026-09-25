@@ -1,10 +1,4 @@
-"""Transcode one video to H.265/HEVC MKV while preserving movie streams.
-
-This module also exposes an optional H.265 preflight helper for Reflection
-automation command filters. The task never runs the sample/quality preflight
-by default; it only runs when the automation rule explicitly calls this file
-with ``--preflight`` from its Optional command filter.
-"""
+"""Reflection H.265 task backed by the auto-updating 265Encode dependency."""
 
 from __future__ import annotations
 
@@ -12,7 +6,6 @@ import argparse
 import json
 import logging
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -20,77 +13,63 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+WORKER_ROOT = Path(__file__).resolve().parents[1]
+if str(WORKER_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKER_ROOT))
+
+from encoder_dependency import (  # noqa: E402
+    PROBE_CACHE_PATH,
+    EncoderDependency,
+    EncoderDependencyError,
+    ensure_265encode,
+)
+
 TASK_NAME = "h265_encode"
-DESCRIPTION = "Transcode the main video stream to H.265/HEVC MKV while preserving audio, subtitles, chapters, attachments, and metadata."
+DESCRIPTION = (
+    "Encode one video to validated H.265/HEVC MKV using the linked 265Encode "
+    "project, preserving all streams, chapters, and metadata."
+)
 TASK_SPEC_JSON = r'''
 {
   "name": "h265_encode",
-  "description": "Transcode the main video stream to H.265/HEVC MKV while preserving the rest of the movie structure.",
+  "description": "Encode one video to validated H.265/HEVC MKV through the linked 265Encode protocol-2 dependency.",
   "production_ready": true,
   "requirements": {
-    "commands": ["ffmpeg", "ffprobe"],
-    "ffmpeg_encoders": ["libx265"]
+    "commands": ["git", "python3", "ffmpeg", "ffprobe"]
+  },
+  "dependencies": {
+    "repositories": [{
+      "name": "265Encode",
+      "repository": "https://github.com/andr8076/265Encode",
+      "branch": "main",
+      "update": "before_each_h265_run",
+      "protocol_version": 2
+    }]
   },
   "source": {
     "mode": "required",
     "label": "Source video",
-    "help": "One video file. When a folder is submitted, the master expands it into one independently scheduled job per video. JSON options may tune encoder mode, encode_profile, and worker-side skip_hevc behavior."
+    "help": "One video file. Folders are expanded by the master into independent jobs. JSON source options use the 265Encode semantic requirements documented in docs/H265_PREFLIGHT.md."
   },
   "delivery": {
     "mode": "auto",
     "label": "H.265 MKV output",
-    "help": "Automatically written beside the source as {name}_h265.mkv. Audio, subtitles, chapters, attachments, and metadata are copied when FFmpeg can preserve them.",
+    "help": "Written beside the source as {name}_h265.mkv when delivery is blank. All streams, chapters, and metadata are preserved.",
     "template": "{dir}/{name}_h265.mkv",
     "extension": ".mkv"
   },
   "preflight": {
     "mode": "optional_command",
-    "label": "Optional H.265 candidate test",
-    "help": "Only runs when an automation rule enables Optional command filter. Use command mode 'Include if command exits 0'. The task itself does not run this preflight by default.",
+    "label": "Optional 265Encode candidate evaluation",
+    "help": "Only runs when an automation rule enables Optional worker command filter. Uses 265Encode protocol 2 to sample-plan the candidate and check predicted saving and quality.",
     "command": "python3 {task_file} --preflight {path}",
-    "timeout_seconds": 900,
+    "timeout_seconds": 3600,
     "profile_command_example": "python3 {task_file} --preflight {path} --profile '{\"min_saving_percent\":30}'",
-    "four_k_only_example": "python3 {task_file} --preflight {path} --only-4k --encode-profile 4k --min-saving-percent 30",
-    "hard_skips": ["already_h265", "already_av1_or_vp9", "4k_source_by_default"],
+    "four_k_only_example": "python3 {task_file} --preflight {path} --only-4k --min-vmaf 93",
+    "hard_skips": ["already_hevc", "already_av1_or_vp9", "4k_source_by_default"],
     "sample_encode": true,
     "minimum_saving_percent": 25,
-    "minimum_ssim": 0.985,
     "minimum_vmaf": 93
-  },
-  "encode_profiles": {
-    "default": "auto",
-    "auto": {
-      "label": "Auto",
-      "help": "Automatically uses the 4k profile for 4K sources and the standard profile otherwise."
-    },
-    "standard": {
-      "label": "Standard / HD",
-      "mode": "software",
-      "crf": 20,
-      "preset": "slow",
-      "pixel_format": "yuv420p10le"
-    },
-    "4k": {
-      "label": "4K balanced",
-      "mode": "software",
-      "crf": 22,
-      "preset": "slow",
-      "pixel_format": "yuv420p10le"
-    },
-    "4k_quality": {
-      "label": "4K quality",
-      "mode": "software",
-      "crf": 20,
-      "preset": "slow",
-      "pixel_format": "yuv420p10le"
-    },
-    "space_saver": {
-      "label": "Space saver",
-      "mode": "software",
-      "crf": 24,
-      "preset": "medium",
-      "pixel_format": "yuv420p10le"
-    }
   },
   "output": {
     "kind": "file",
@@ -108,78 +87,40 @@ TASK_SPEC_JSON = r'''
 '''
 TASK_SPEC = json.loads(TASK_SPEC_JSON)
 
-
+DEFAULT_QUALITY = {
+    "mode": "required",
+    "metric": "vmaf",
+    "target": 92.0,
+    "p10_minimum": 88.0,
+    "sustained_floor": 86.0,
+    "maximum_sustained_seconds": 1.0,
+}
+DEFAULT_OPTIMIZATION = {"primary": "smallest_output", "secondary": "fastest_encoding"}
+DEFAULT_VIDEO = {"maximum_height": None, "denoise": "auto"}
+DEFAULT_AUDIO = {"mode": "copy_all"}
+DEFAULT_EVALUATION = {"sample_seconds": 3}
+LEGACY_PROFILES = {
+    "auto": 92.0,
+    "standard": 92.0,
+    "4k": 92.0,
+    "4k_quality": 95.0,
+    "space_saver": 88.0,
+}
+UNSUPPORTED_TUNING_KEYS = ("crf", "preset", "x265_params", "pixel_format", "pix_fmt")
 EFFICIENT_CODECS = {"hevc", "h265", "av1", "vp9"}
-SOFTWARE_ARGS = ["-c:v:0", "libx265", "-crf", "20", "-preset", "slow"]
-DEFAULT_ENCODE_PROFILE = "auto"
-ENCODE_PROFILES = {
-    "standard": {
-        "label": "Standard / HD",
-        "mode": "software",
-        "crf": "20",
-        "preset": "slow",
-        "pixel_format": "yuv420p10le",
-    },
-    "4k": {
-        "label": "4K balanced",
-        "mode": "software",
-        "crf": "22",
-        "preset": "slow",
-        "pixel_format": "yuv420p10le",
-    },
-    "4k_quality": {
-        "label": "4K quality",
-        "mode": "software",
-        "crf": "20",
-        "preset": "slow",
-        "pixel_format": "yuv420p10le",
-    },
-    "space_saver": {
-        "label": "Space saver",
-        "mode": "software",
-        "crf": "24",
-        "preset": "medium",
-        "pixel_format": "yuv420p10le",
-    },
-}
-HARDWARE_ENCODERS = {
-    "nvidia": {
-        "ffmpeg_encoder": "hevc_nvenc",
-        "args": ["-c:v:0", "hevc_nvenc", "-rc", "vbr", "-cq", "23", "-preset", "slow"],
-    },
-    "apple": {
-        "ffmpeg_encoder": "hevc_videotoolbox",
-        "args": ["-c:v:0", "hevc_videotoolbox", "-q:v", "65"],
-    },
-    "intel": {
-        "ffmpeg_encoder": "hevc_qsv",
-        "args": ["-c:v:0", "hevc_qsv", "-global_quality", "24", "-preset", "slow"],
-    },
-}
-PIXEL_FORMAT_ARGS = ["-pix_fmt", "yuv420p10le"]
-
 DEFAULT_PREFLIGHT_OPTIONS = {
-    # This default controls the helper profile only. The main task does not run
-    # preflight unless the automation Optional command filter calls --preflight.
-    "enabled": True,
     "skip_4k": True,
+    "only_4k": False,
     "skip_efficient_codecs": True,
     "skip_hevc": True,
     "sample_encode": True,
-    "sample_seconds": 24,
-    "sample_points": [0.12, 0.35, 0.60, 0.82],
-    "min_saving_percent": 10.0,
+    "sample_seconds": 3,
+    "min_saving_percent": 25.0,
     "min_ssim": 0.985,
-    "min_vmaf": 92.0,
+    "min_vmaf": 93.0,
     "quality_metric": "auto",
-    "encode_profile": DEFAULT_ENCODE_PROFILE,
-    "mode": "software",
-    "crf": None,
-    "preset": None,
-    "pixel_format": None,
-    "pix_fmt": None,
-    "x265_params": None,
-    "only_4k": False,
+    "encode_profile": "auto",
+    "mode": None,
     "skip_under_width": 0,
     "skip_under_height": 0,
     "skip_over_width": 0,
@@ -187,467 +128,143 @@ DEFAULT_PREFLIGHT_OPTIONS = {
 }
 
 
-def install():
-    """Install/validate FFmpeg dependencies needed by this task."""
-    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
-        _install_system_packages(["ffmpeg"])
+def install() -> None:
+    """Install runtime commands and refresh the linked 265Encode checkout."""
+    _ensure_runtime_commands()
+    dependency = ensure_265encode(update=True)
+    _negotiate_protocol(dependency)
+    logging.info(
+        "265Encode dependency is ready: %s (%s).",
+        dependency.repository,
+        dependency.commit[:12],
+    )
 
-    _require_tool("ffmpeg")
-    _require_tool("ffprobe")
 
-    if not _ffmpeg_encoder_available("libx265"):
+def _ensure_runtime_commands() -> None:
+    missing = [
+        command for command in ("git", "ffmpeg", "ffprobe")
+        if shutil.which(command) is None
+    ]
+    if not missing:
+        return
+
+    packages = []
+    if "git" in missing:
+        packages.append("git")
+    if "ffmpeg" in missing or "ffprobe" in missing:
+        packages.append("ffmpeg")
+
+    apt = shutil.which("apt-get") or shutil.which("apt")
+    if apt is None:
         raise RuntimeError(
-            "ffmpeg is installed, but the libx265 encoder is not available. "
-            "Install an FFmpeg build with x265/HEVC support."
+            "Missing required command(s): " + ", ".join(missing)
+            + ". Install git and FFmpeg, then run the Reflection worker installer again."
         )
 
-    if not _ffmpeg_filter_available("ssim"):
-        logging.warning("FFmpeg SSIM filter is not available; h265 preflight quality checks will use size-only fallback.")
-    if not _ffmpeg_filter_available("libvmaf"):
-        logging.info("FFmpeg libvmaf filter is not available; h265 preflight will use SSIM when available.")
+    prefix = []
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        sudo = shutil.which("sudo")
+        if sudo is None:
+            raise RuntimeError(
+                "Missing required command(s): " + ", ".join(missing)
+                + "; automatic installation requires sudo on this system."
+            )
+        prefix = [sudo, "-n"]
 
-    logging.info("h265_encode dependencies are available.")
+    env = os.environ.copy()
+    env["DEBIAN_FRONTEND"] = "noninteractive"
+    logging.info("Installing H.265 worker system dependencies: %s", ", ".join(packages))
+    update = subprocess.run([*prefix, apt, "update", "-y"], check=False, env=env)
+    if update.returncode != 0:
+        raise RuntimeError("Unable to refresh the system package list while installing H.265 dependencies.")
+    install = subprocess.run([*prefix, apt, "install", "-y", *packages], check=False, env=env)
+    if install.returncode != 0:
+        raise RuntimeError("Unable to install H.265 worker system dependencies: " + ", ".join(packages))
+
+    still_missing = [command for command in missing if shutil.which(command) is None]
+    if still_missing:
+        raise RuntimeError("Required command(s) remain unavailable after installation: " + ", ".join(still_missing))
 
 
 def run(source, delivery, overwrite_allowed):
-    """Transcode exactly one source file; folders are expanded by the master."""
+    """Encode exactly one source file through 265Encode protocol 2."""
     options = _parse_options(source)
-    input_path = Path(options["path"]).expanduser()
+    input_path = Path(options["path"]).expanduser().resolve()
     if not input_path.exists():
         raise FileNotFoundError(f"Source path does not exist: {input_path}")
     if not input_path.is_file():
         raise IsADirectoryError(
-            "h265_encode accepts one video per job. Submit the folder through the "
+            "h265_encode accepts one video per job. Submit a folder through the "
             "master dashboard so it can create one job for each video."
         )
 
-    _require_tool("ffmpeg")
-    _require_tool("ffprobe")
-
-    skip_hevc = _option_enabled(options.get("skip_hevc", True))
     delivery_path = Path(delivery).expanduser() if delivery else None
-    output_file = _output_path(input_path, input_path, delivery_path, 1)
+    output_file = _output_path(input_path, delivery_path)
     if output_file.suffix.lower() != ".mkv":
         raise ValueError(f"h265_encode delivery must end with .mkv: {output_file}")
+    output_file.parent.mkdir(parents=True, exist_ok=True)
     if output_file.exists() and not overwrite_allowed:
         raise FileExistsError(f"Target delivery file exists and overwrite is disabled: {output_file}")
 
     analysis = _analyze_video(input_path)
-    if analysis["codec"] == "hevc" and skip_hevc:
+    skip_hevc = _option_enabled(options.get("skip_hevc", True))
+    skip_efficient = _option_enabled(options.get("skip_efficient_codecs", False))
+    if analysis["codec"] in {"hevc", "h265"} and skip_hevc:
         message = f"Skipped source because it is already HEVC: {input_path}"
         logging.info(message)
         return {"success": True, "skipped": True, "message": message, "cleanup_source": False}
+    if analysis["codec"] in EFFICIENT_CODECS and skip_efficient:
+        message = f"Skipped source because it already uses an efficient codec ({analysis['codec']}): {input_path}"
+        logging.info(message)
+        return {"success": True, "skipped": True, "message": message, "cleanup_source": False}
 
-    profile_name, encoder_args, pixel_format_args = _encoder_for_analysis(options, analysis)
-    logging.info("Using H.265 encode profile %s for %s.", profile_name, input_path)
-    if analysis["height"] > 1080:
-        logging.warning("%s is %sp; keeping original resolution.", input_path, analysis["height"])
+    dependency = ensure_265encode(update=True)
+    requirements = _requirements_payload(input_path, output_file, options, analysis=analysis)
+    required_features = _required_features(requirements)
+    _validate_dependency(dependency, required_features)
 
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    _encode_file(input_path, output_file, encoder_args, pixel_format_args)
-    message = f"Encoded 1 MKV file: {output_file}"
-    logging.info("h265_encode complete. %s", message)
-    return {"success": True, "message": message, "cleanup_source": False}
+    with tempfile.TemporaryDirectory(prefix=".265encode-", dir=str(output_file.parent)) as work_dir_raw:
+        work_dir = Path(work_dir_raw)
+        staged_output = work_dir / output_file.name
+        requirements["output"] = str(staged_output.resolve())
+        plan_path = work_dir / "plan.json"
+        result_path = work_dir / "result.json"
+        _write_json(work_dir / "requirements.json", requirements)
 
+        plan = _evaluate_plan(dependency, work_dir / "requirements.json", plan_path)
+        if plan.get("execution", {}).get("state") != "ready":
+            reason = plan.get("execution", {}).get("reason") or "265Encode rejected the sampled plan"
+            quality = plan.get("prediction", {}).get("quality", {})
+            score = quality.get("predicted_score")
+            detail = f"; sampled quality={score}" if score is not None else ""
+            raise RuntimeError(f"265Encode did not approve this encode: {reason}{detail}")
 
-def preflight_file(input_file: Path | str, options: dict[str, Any] | None = None, *, analysis: dict[str, Any] | None = None, encoder_args: list[str] | None = None, pixel_format_args: list[str] | None = None) -> dict[str, Any]:
-    """Return whether one file is a useful H.265 candidate."""
-    path = Path(input_file).expanduser()
-    if not path.exists():
-        return _preflight_decision(False, "source path does not exist")
+        result = _execute_plan(dependency, plan_path, result_path)
+        _validate_execution_result(result, staged_output)
+        if output_file.exists() and not overwrite_allowed:
+            raise FileExistsError(f"Target delivery file appeared while encoding and overwrite is disabled: {output_file}")
+        os.replace(staged_output, output_file)
 
-    options = options or {}
-    config = _preflight_options(options)
-    analysis = analysis or _analyze_video(path)
-    codec = str(analysis.get("codec") or "").lower()
-    width = int(analysis.get("width") or 0)
-    height = int(analysis.get("height") or 0)
-
-    if _option_enabled(config["skip_hevc"]) and codec in {"hevc", "h265"}:
-        return _preflight_decision(False, f"already H.265/HEVC ({codec})", analysis=analysis)
-
-    if _option_enabled(config["skip_efficient_codecs"]) and codec in EFFICIENT_CODECS:
-        return _preflight_decision(False, f"already efficient codec ({codec})", analysis=analysis)
-
-    is_4k = width >= 3840 or height >= 2160
-    if _option_enabled(config["only_4k"]) and not is_4k:
-        return _preflight_decision(False, f"below 4K profile ({width}x{height})", analysis=analysis)
-
-    if _option_enabled(config["skip_4k"]) and not _option_enabled(config["only_4k"]) and is_4k:
-        return _preflight_decision(False, f"4K source blocked by preflight profile ({width}x{height})", analysis=analysis)
-
-    min_width = int(config.get("skip_under_width") or 0)
-    min_height = int(config.get("skip_under_height") or 0)
-    max_width = int(config.get("skip_over_width") or 0)
-    max_height = int(config.get("skip_over_height") or 0)
-    if min_width > 0 and width < min_width:
-        return _preflight_decision(False, f"width {width} below preflight minimum {min_width}", analysis=analysis)
-    if min_height > 0 and height < min_height:
-        return _preflight_decision(False, f"height {height} below preflight minimum {min_height}", analysis=analysis)
-    if max_width > 0 and width > max_width:
-        return _preflight_decision(False, f"width {width} above preflight maximum {max_width}", analysis=analysis)
-    if max_height > 0 and height > max_height:
-        return _preflight_decision(False, f"height {height} above preflight maximum {max_height}", analysis=analysis)
-
-    if encoder_args is None:
-        profile_name, encoder_args, resolved_pixel_format_args = _encoder_for_analysis(config, analysis)
-        if pixel_format_args is None:
-            pixel_format_args = resolved_pixel_format_args
-    else:
-        profile_name = _selected_profile_name(config, analysis)
-        pixel_format_args = pixel_format_args if pixel_format_args is not None else PIXEL_FORMAT_ARGS
-
-    if not _option_enabled(config["sample_encode"]):
-        return _preflight_decision(True, f"hard checks passed ({codec} {width}x{height}) using profile {profile_name}", analysis=analysis, encode_profile=profile_name)
-
-    return _sample_preflight(path, analysis, config, encoder_args, pixel_format_args, profile_name)
-
-
-def preflight_source(source: str, extra_options: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Run preflight checks for a CLI/source value. The CLI expects a single file."""
-    options = _parse_options(source)
-    if extra_options:
-        options.update(extra_options)
-    path = Path(options["path"]).expanduser()
-    if path.is_dir():
-        return _preflight_decision(False, "automation preflight expects a single file, not a folder")
-    _require_tool("ffmpeg")
-    _require_tool("ffprobe")
-    return preflight_file(path, options)
-
-
-def _preflight_decision(include: bool, reason: str, **extra: Any) -> dict[str, Any]:
-    payload = {"include": bool(include), "reason": reason}
-    payload.update(extra)
-    return payload
-
-
-def _preflight_options(options: dict[str, Any]) -> dict[str, Any]:
-    config = dict(DEFAULT_PREFLIGHT_OPTIONS)
-    aliases = {
-        "skip_4k": "skip_4k",
-        "preflight_skip_4k": "skip_4k",
-        "skip_efficient_codecs": "skip_efficient_codecs",
-        "preflight_skip_efficient_codecs": "skip_efficient_codecs",
-        "skip_hevc": "skip_hevc",
-        "preflight_skip_hevc": "skip_hevc",
-        "sample_encode": "sample_encode",
-        "preflight_sample_encode": "sample_encode",
-        "sample_seconds": "sample_seconds",
-        "preflight_sample_seconds": "sample_seconds",
-        "sample_points": "sample_points",
-        "preflight_sample_points": "sample_points",
-        "min_saving_percent": "min_saving_percent",
-        "preflight_min_saving_percent": "min_saving_percent",
-        "min_ssim": "min_ssim",
-        "preflight_min_ssim": "min_ssim",
-        "min_vmaf": "min_vmaf",
-        "preflight_min_vmaf": "min_vmaf",
-        "quality_metric": "quality_metric",
-        "preflight_quality_metric": "quality_metric",
-        "encode_profile": "encode_profile",
-        "profile": "encode_profile",
-        "preflight_encode_profile": "encode_profile",
-        "mode": "mode",
-        "encoder_mode": "mode",
-        "preflight_mode": "mode",
-        "crf": "crf",
-        "preflight_crf": "crf",
-        "preset": "preset",
-        "preflight_preset": "preset",
-        "pixel_format": "pixel_format",
-        "pix_fmt": "pix_fmt",
-        "preflight_pixel_format": "pixel_format",
-        "preflight_pix_fmt": "pix_fmt",
-        "x265_params": "x265_params",
-        "preflight_x265_params": "x265_params",
-        "only_4k": "only_4k",
-        "preflight_only_4k": "only_4k",
-        "skip_under_width": "skip_under_width",
-        "preflight_skip_under_width": "skip_under_width",
-        "skip_under_height": "skip_under_height",
-        "preflight_skip_under_height": "skip_under_height",
-        "skip_over_width": "skip_over_width",
-        "preflight_skip_over_width": "skip_over_width",
-        "skip_over_height": "skip_over_height",
-        "preflight_skip_over_height": "skip_over_height",
+    encoder = str(result.get("encoder") or "HEVC")
+    message = f"Encoded {input_path.name} with 265Encode ({encoder}) -> {output_file}"
+    logging.info("%s", message)
+    return {
+        "success": True,
+        "message": message,
+        "cleanup_source": False,
+        "encoder": encoder,
+        "dependency_commit": dependency.commit,
     }
 
-    for source_key, target_key in aliases.items():
-        if source_key in options:
-            config[target_key] = options[source_key]
 
-    config["sample_seconds"] = max(5, min(120, int(float(config["sample_seconds"]))))
-    config["sample_points"] = _normalize_sample_points(config["sample_points"])
-    config["min_saving_percent"] = max(0.0, min(95.0, float(config["min_saving_percent"])))
-    config["min_ssim"] = max(0.0, min(1.0, float(config["min_ssim"])))
-    config["min_vmaf"] = max(0.0, min(100.0, float(config["min_vmaf"])))
-    config["quality_metric"] = str(config["quality_metric"] or "auto").strip().lower()
-    if config["quality_metric"] not in {"auto", "vmaf", "ssim", "none"}:
-        config["quality_metric"] = "auto"
-    config["encode_profile"] = _normalize_profile_name(config.get("encode_profile"))
-    config["mode"] = str(config.get("mode") or "software").strip().lower()
-    for key in ("crf", "preset", "pixel_format", "pix_fmt", "x265_params"):
-        if config.get(key) is not None:
-            config[key] = str(config.get(key)).strip()
-            if config[key] == "":
-                config[key] = None
-    for key in ("skip_under_width", "skip_under_height", "skip_over_width", "skip_over_height"):
-        try:
-            config[key] = max(0, int(float(config.get(key) or 0)))
-        except (TypeError, ValueError):
-            config[key] = 0
-    if _option_enabled(config.get("only_4k")):
-        # A 4K-only profile should accept 4K candidates rather than be blocked
-        # by the normal default skip_4k profile.
-        config["skip_4k"] = False
-        config["only_4k"] = True
-    return config
-
-
-def _normalize_sample_points(value: Any) -> list[float]:
-    if isinstance(value, str):
-        value = value.replace(",", " ").split()
-    if not isinstance(value, (list, tuple)):
-        return list(DEFAULT_PREFLIGHT_OPTIONS["sample_points"])
-
-    points: list[float] = []
-    for item in value:
-        try:
-            point = float(item)
-        except (TypeError, ValueError):
-            continue
-        if point > 1.0:
-            point = point / 100.0
-        if 0.0 < point < 1.0:
-            points.append(point)
-    return points[:8] or list(DEFAULT_PREFLIGHT_OPTIONS["sample_points"])
-
-
-def _sample_preflight(path: Path, analysis: dict[str, Any], config: dict[str, Any], encoder_args: list[str], pixel_format_args: list[str], profile_name: str) -> dict[str, Any]:
-    duration = float(analysis.get("duration") or 0.0)
-    if duration <= 0:
-        return _preflight_decision(False, "missing duration for sample test", analysis=analysis)
-
-    total_source_size = 0
-    total_encoded_size = 0
-    quality_scores: list[float] = []
-    quality_metric_used = "none"
-
-    with tempfile.TemporaryDirectory(prefix="reflection_h265_preflight_") as temp_dir:
-        temp_root = Path(temp_dir)
-        for index, point in enumerate(config["sample_points"], start=1):
-            start_seconds = max(0, int(duration * float(point)))
-            source_sample = temp_root / f"sample_{index}_source.mkv"
-            encoded_sample = temp_root / f"sample_{index}_h265.mkv"
-
-            try:
-                _make_source_sample(path, start_seconds, int(config["sample_seconds"]), source_sample)
-                _encode_sample(source_sample, encoded_sample, encoder_args, pixel_format_args)
-            except RuntimeError as exc:
-                return _preflight_decision(False, str(exc), analysis=analysis)
-
-            source_size = source_sample.stat().st_size if source_sample.exists() else 0
-            encoded_size = encoded_sample.stat().st_size if encoded_sample.exists() else 0
-            if source_size <= 0 or encoded_size <= 0:
-                return _preflight_decision(False, "sample size check failed", analysis=analysis)
-
-            total_source_size += source_size
-            total_encoded_size += encoded_size
-
-            metric_name, score = _quality_score(source_sample, encoded_sample, str(config["quality_metric"]))
-            if score is not None:
-                quality_metric_used = metric_name
-                quality_scores.append(score)
-
-    if total_source_size <= 0 or total_encoded_size <= 0:
-        return _preflight_decision(False, "sample size check failed", analysis=analysis)
-
-    saving_percent = 100.0 * (1.0 - (total_encoded_size / total_source_size))
-    if saving_percent < float(config["min_saving_percent"]):
-        return _preflight_decision(
-            False,
-            f"sample saving only {saving_percent:.1f}% below {float(config['min_saving_percent']):.1f}% minimum",
-            analysis=analysis,
-            saving_percent=saving_percent,
-            quality_metric=quality_metric_used,
-            encode_profile=profile_name,
-        )
-
-    if quality_scores:
-        average_quality = sum(quality_scores) / len(quality_scores)
-        if quality_metric_used == "vmaf":
-            minimum = float(config["min_vmaf"])
-            if average_quality < minimum:
-                return _preflight_decision(
-                    False,
-                    f"sample VMAF {average_quality:.2f} below {minimum:.2f} minimum",
-                    analysis=analysis,
-                    saving_percent=saving_percent,
-                    quality_metric=quality_metric_used,
-                    quality_score=average_quality,
-                    encode_profile=profile_name,
-                )
-        elif quality_metric_used == "ssim":
-            minimum = float(config["min_ssim"])
-            if average_quality < minimum:
-                return _preflight_decision(
-                    False,
-                    f"sample SSIM {average_quality:.4f} below {minimum:.4f} minimum",
-                    analysis=analysis,
-                    saving_percent=saving_percent,
-                    quality_metric=quality_metric_used,
-                    quality_score=average_quality,
-                    encode_profile=profile_name,
-                )
-
-        return _preflight_decision(
-            True,
-            f"sample saving {saving_percent:.1f}% with {quality_metric_used.upper()} {average_quality:.4g}",
-            analysis=analysis,
-            saving_percent=saving_percent,
-            quality_metric=quality_metric_used,
-            encode_profile=profile_name,
-            quality_score=average_quality,
-        )
-
-    return _preflight_decision(
-        True,
-        f"sample saving {saving_percent:.1f}%; no quality metric available",
-        analysis=analysis,
-        saving_percent=saving_percent,
-        quality_metric=quality_metric_used,
-        encode_profile=profile_name,
-    )
-
-
-def _make_source_sample(path: Path, start_seconds: int, sample_seconds: int, output: Path) -> None:
-    command = [
-        "ffmpeg",
-        "-hide_banner",
-        "-y",
-        "-v",
-        "error",
-        "-ss",
-        str(max(0, start_seconds)),
-        "-i",
-        str(path),
-        "-t",
-        str(sample_seconds),
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a?",
-        "-c",
-        "copy",
-        str(output),
-    ]
-    result = subprocess.run(command, check=False, capture_output=True, text=True)
-    if result.returncode != 0 or not output.exists() or output.stat().st_size <= 0:
-        detail = (result.stderr or result.stdout or "source sample failed").strip().splitlines()[-1:]
-        raise RuntimeError("source sample failed" + (f": {detail[0]}" if detail else ""))
-
-
-def _encode_sample(source_sample: Path, encoded_sample: Path, encoder_args: list[str], pixel_format_args: list[str]) -> None:
-    command = [
-        "ffmpeg",
-        "-hide_banner",
-        "-y",
-        "-v",
-        "error",
-        "-i",
-        str(source_sample),
-        "-map",
-        "0",
-        "-c",
-        "copy",
-        *encoder_args,
-        *pixel_format_args,
-        str(encoded_sample),
-    ]
-    result = subprocess.run(command, check=False, capture_output=True, text=True)
-    if result.returncode != 0 or not encoded_sample.exists() or encoded_sample.stat().st_size <= 0:
-        detail = (result.stderr or result.stdout or "sample encode failed").strip().splitlines()[-1:]
-        raise RuntimeError("sample encode failed" + (f": {detail[0]}" if detail else ""))
-
-
-def _quality_score(original: Path, encoded: Path, requested_metric: str) -> tuple[str, float | None]:
-    if requested_metric in {"auto", "vmaf"} and _ffmpeg_filter_available("libvmaf"):
-        score = _vmaf_score(original, encoded)
-        if score is not None:
-            return "vmaf", score
-        if requested_metric == "vmaf":
-            return "vmaf", None
-
-    if requested_metric in {"auto", "ssim"} and _ffmpeg_filter_available("ssim"):
-        score = _ssim_score(original, encoded)
-        if score is not None:
-            return "ssim", score
-
-    return "none", None
-
-
-def _ssim_score(original: Path, encoded: Path) -> float | None:
-    result = subprocess.run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-v",
-            "info",
-            "-i",
-            str(original),
-            "-i",
-            str(encoded),
-            "-lavfi",
-            "[0:v:0][1:v:0]ssim",
-            "-f",
-            "null",
-            "-",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    matches = re.findall(r"All:([0-9.]+)", result.stderr or "")
-    return float(matches[-1]) if matches else None
-
-
-def _vmaf_score(original: Path, encoded: Path) -> float | None:
-    result = subprocess.run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-v",
-            "info",
-            "-i",
-            str(encoded),
-            "-i",
-            str(original),
-            "-lavfi",
-            "libvmaf",
-            "-f",
-            "null",
-            "-",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    text = result.stderr or ""
-    matches = re.findall(r"VMAF score:\s*([0-9.]+)", text)
-    return float(matches[-1]) if matches else None
-
-
-def _parse_options(source):
+def _parse_options(source: Any) -> dict[str, Any]:
     if source is None or str(source).strip() == "":
         raise ValueError("Source path is required for h265_encode.")
-
     raw_source = str(source).strip()
     try:
         parsed = json.loads(raw_source)
     except json.JSONDecodeError:
         return {"path": raw_source}
-
     if isinstance(parsed, str):
         return {"path": parsed}
     if not isinstance(parsed, dict):
@@ -657,7 +274,7 @@ def _parse_options(source):
     return parsed
 
 
-def _option_enabled(value):
+def _option_enabled(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -665,256 +282,551 @@ def _option_enabled(value):
     return bool(value)
 
 
-def _require_tool(tool):
-    if shutil.which(tool) is None:
-        raise RuntimeError(f"{tool} is not installed. Please install it to use h265_encode.")
+def _analyze_video(input_file: Path) -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name,width,height",
+                "-show_entries",
+                "format=duration,size",
+                "-of",
+                "json",
+                str(input_file),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"Could not inspect video with ffprobe: {exc}") from exc
 
-
-def _install_system_packages(packages: list[str]) -> None:
-    apt = shutil.which("apt-get") or shutil.which("apt")
-    if apt is None:
-        logging.warning("apt/apt-get was not found; cannot auto-install packages: %s", ", ".join(packages))
-        return
-
-    prefix: list[str] = []
-    if hasattr(os, "geteuid") and os.geteuid() != 0:
-        sudo = shutil.which("sudo")
-        if sudo is None:
-            logging.warning("Not running as root and sudo is unavailable; cannot auto-install packages: %s", ", ".join(packages))
-            return
-        prefix = [sudo, "-n"]
-
-    env = os.environ.copy()
-    env["DEBIAN_FRONTEND"] = "noninteractive"
-    logging.info("Installing h265_encode system dependencies with apt: %s", ", ".join(packages))
-    subprocess.run([*prefix, apt, "update", "-y"], check=False, env=env)
-    subprocess.run([*prefix, apt, "install", "-y", *packages], check=False, env=env)
-
-
-def _detected_hardware():
-    result = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-encoders"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    encoders = result.stdout + result.stderr
-    for hardware_name, encoder in HARDWARE_ENCODERS.items():
-        if encoder["ffmpeg_encoder"] in encoders:
-            return hardware_name
-    return "none"
-
-
-def _normalize_profile_name(value: Any) -> str:
-    profile = str(value or DEFAULT_ENCODE_PROFILE).strip().lower().replace("-", "_")
-    aliases = {
-        "": DEFAULT_ENCODE_PROFILE,
-        "default": DEFAULT_ENCODE_PROFILE,
-        "auto": DEFAULT_ENCODE_PROFILE,
-        "normal": "standard",
-        "hd": "standard",
-        "1080p": "standard",
-        "uhd": "4k",
-        "4k_balanced": "4k",
-        "quality_4k": "4k_quality",
-    }
-    profile = aliases.get(profile, profile)
-    if profile != DEFAULT_ENCODE_PROFILE and profile not in ENCODE_PROFILES:
-        raise ValueError(f"Unknown h265 encode_profile {profile!r}. Valid profiles: auto, " + ", ".join(sorted(ENCODE_PROFILES)))
-    return profile
-
-
-def _selected_profile_name(options: dict[str, Any], analysis: dict[str, Any]) -> str:
-    profile = _normalize_profile_name(options.get("encode_profile", options.get("profile", DEFAULT_ENCODE_PROFILE)))
-    if profile == DEFAULT_ENCODE_PROFILE:
-        width = int(analysis.get("width") or 0)
-        height = int(analysis.get("height") or 0)
-        return "4k" if width >= 3840 or height >= 2160 else "standard"
-    return profile
-
-
-def _profile_options(options: dict[str, Any], analysis: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    profile_name = _selected_profile_name(options, analysis)
-    profile = dict(ENCODE_PROFILES[profile_name])
-
-    # Job/source JSON and preflight CLI flags may override profile pieces while
-    # still using the task-owned profile defaults as the base.
-    if options.get("mode"):
-        profile["mode"] = str(options.get("mode")).strip().lower()
-    for key in ("crf", "preset", "x265_params"):
-        if options.get(key) not in {None, ""}:
-            profile[key] = str(options.get(key)).strip()
-    pixel_format = options.get("pixel_format", options.get("pix_fmt"))
-    if pixel_format not in {None, ""}:
-        profile["pixel_format"] = str(pixel_format).strip()
-
-    return profile_name, profile
-
-
-def _encoder_for_analysis(options: dict[str, Any], analysis: dict[str, Any]) -> tuple[str, list[str], list[str]]:
-    profile_name, profile = _profile_options(options, analysis)
-    encoder_args, pixel_format_args = _choose_encoder(str(profile.get("mode") or "software").lower(), profile)
-    return profile_name, encoder_args, pixel_format_args
-
-
-def _choose_encoder(mode: str, profile: dict[str, Any] | None = None) -> tuple[list[str], list[str]]:
-    profile = profile or ENCODE_PROFILES["standard"]
-    if mode in {"hardware", "hw", "auto"}:
-        hardware_name = _detected_hardware()
-        if hardware_name != "none":
-            logging.info("Using %s hardware HEVC encoder.", hardware_name)
-            # Hardware encoders can reject yuv420p10le even when HEVC itself is available.
-            return HARDWARE_ENCODERS[hardware_name]["args"], []
-        logging.warning("Hardware HEVC encoder was requested but none was detected; using libx265.")
-
-    encoder_args = [
-        "-c:v:0",
-        "libx265",
-        "-crf",
-        str(profile.get("crf") or "20"),
-        "-preset",
-        str(profile.get("preset") or "slow"),
-    ]
-    if profile.get("x265_params"):
-        encoder_args.extend(["-x265-params", str(profile["x265_params"])])
-
-    pixel_format = str(profile.get("pixel_format") or "").strip()
-    pixel_format_args = ["-pix_fmt", pixel_format] if pixel_format and pixel_format.lower() not in {"none", "copy", "source"} else []
-    return encoder_args, pixel_format_args
-
-
-def _ffmpeg_encoder_available(encoder_name: str) -> bool:
-    if shutil.which("ffmpeg") is None:
-        return False
-    result = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], check=False, capture_output=True, text=True)
-    return encoder_name in ((result.stdout or "") + (result.stderr or ""))
-
-
-def _ffmpeg_filter_available(filter_name: str) -> bool:
-    if shutil.which("ffmpeg") is None:
-        return False
-    result = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], check=False, capture_output=True, text=True)
-    text = (result.stdout or "") + (result.stderr or "")
-    return re.search(r"(^|\n)\s*[.A-Z|]+\s+" + re.escape(filter_name) + r"\s", text) is not None
-
-
-def _analyze_video(input_file):
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=codec_name,width,height,bit_rate",
-            "-show_entries",
-            "format=duration,size,bit_rate",
-            "-of",
-            "json",
-            str(input_file),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
     payload = json.loads(result.stdout or "{}")
     streams = payload.get("streams", [])
     if not streams:
         raise RuntimeError(f"Could not read a video stream from: {input_file}")
-
     stream = streams[0]
     fmt = payload.get("format", {}) if isinstance(payload.get("format"), dict) else {}
     codec = str(stream.get("codec_name") or "").lower()
     width = int(stream.get("width") or 0)
     height = int(stream.get("height") or 0)
     duration = float(fmt.get("duration") or 0.0)
-    size = int(float(fmt.get("size") or 0))
-    bitrate = int(float(stream.get("bit_rate") or fmt.get("bit_rate") or 0))
-    if bitrate <= 0 and size > 0 and duration > 0:
-        bitrate = int(size * 8 / duration)
-
-    if codec == "" or height <= 0 or width <= 0:
+    size = int(float(fmt.get("size") or input_file.stat().st_size))
+    if not codec or width <= 0 or height <= 0:
         raise RuntimeError(f"Could not read video codec and resolution from: {input_file}")
+    logging.info("%s codec=%s resolution=%sx%s size=%s", input_file, codec, width, height, size)
+    return {"codec": codec, "width": width, "height": height, "duration": duration, "size": size}
 
-    logging.info("%s codec=%s resolution=%sx%s bitrate=%s", input_file, codec, width, height, bitrate)
-    return {"codec": codec, "width": width, "height": height, "duration": duration, "size": size, "bitrate": bitrate}
 
-
-def _output_path(input_file, input_root, delivery_path, input_count):
+def _output_path(input_file: Path, delivery_path: Path | None) -> Path:
     if delivery_path is None:
         return input_file.with_name(f"{input_file.stem}_h265.mkv")
-
-    if input_count == 1 and not delivery_path.is_dir() and delivery_path.suffix:
+    if not delivery_path.is_dir() and delivery_path.suffix:
         return delivery_path
-
-    if input_root.is_dir():
-        relative_parent = input_file.parent.relative_to(input_root)
-        return delivery_path / relative_parent / f"{input_file.stem}_h265.mkv"
-
     return delivery_path / f"{input_file.stem}_h265.mkv"
 
 
-def _temporary_output_path(output_file):
-    suffix = output_file.suffix or ".mkv"
-    with tempfile.NamedTemporaryFile(
-        prefix=f".{output_file.stem}.",
-        suffix=suffix,
-        dir=output_file.parent,
-        delete=False,
-    ) as temp_file:
-        return Path(temp_file.name)
+def _requirements_payload(
+    input_path: Path,
+    output_path: Path,
+    options: dict[str, Any],
+    *,
+    analysis: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    unsupported = [key for key in UNSUPPORTED_TUNING_KEYS if options.get(key) not in (None, "")]
+    if unsupported:
+        joined = ", ".join(unsupported)
+        raise ValueError(
+            f"265Encode owns encoder tuning; remove legacy FFmpeg setting(s): {joined}. "
+            "Use semantic quality, optimization, video, and audio options instead."
+        )
+
+    mode = str(options.get("mode") or "").strip().lower()
+    policy_aliases = {
+        "": "auto_hardware_only",
+        "auto": "auto_hardware_only",
+        "hardware": "auto_hardware_only",
+        "hw": "auto_hardware_only",
+        "auto_hardware_only": "auto_hardware_only",
+        "software": "manual_software",
+        "manual_software": "manual_software",
+    }
+    if mode not in policy_aliases:
+        raise ValueError("mode must be auto, hardware, or software.")
+    mode_policy = policy_aliases[mode]
+    hardware_policy = str(options.get("hardware_policy") or mode_policy).strip().lower()
+    if hardware_policy not in {"auto_hardware_only", "manual_software"}:
+        raise ValueError("hardware_policy must be auto_hardware_only or manual_software.")
+    if options.get("hardware_policy") and mode and hardware_policy != mode_policy:
+        raise ValueError("mode and hardware_policy request conflicting encoder policies.")
+
+    requested_encoder = options.get("requested_encoder", options.get("encoder"))
+    if requested_encoder in (None, "", "auto"):
+        requested_encoder = None
+    else:
+        requested_encoder = str(requested_encoder).strip()
+
+    quality = dict(DEFAULT_QUALITY)
+    nested_quality = options.get("quality")
+    if nested_quality is not None:
+        if not isinstance(nested_quality, dict):
+            raise ValueError("quality must be an object.")
+        quality.update(nested_quality)
+
+    profile_name = str(options.get("encode_profile", options.get("profile", "auto")) or "auto").strip().lower().replace("-", "_")
+    if profile_name not in LEGACY_PROFILES:
+        raise ValueError(
+            "encode_profile must be auto, standard, 4k, 4k_quality, or space_saver. "
+            "These names select semantic quality targets; 265Encode chooses the actual encoder recipe."
+        )
+    if "target" not in (nested_quality or {}):
+        quality["target"] = LEGACY_PROFILES[profile_name]
+
+    quality_mode = options.get("quality_mode")
+    if quality_mode not in (None, ""):
+        quality["mode"] = str(quality_mode).strip().lower()
+    quality_metric = options.get("quality_metric")
+    if quality_metric not in (None, "", "auto"):
+        normalized_metric = str(quality_metric).strip().lower()
+        if normalized_metric in {"ssim", "ssim_percent"}:
+            quality["metric"] = "ssim_percent"
+        elif normalized_metric in {"vmaf"}:
+            quality["metric"] = "vmaf"
+        elif normalized_metric in {"none", "off"}:
+            quality["mode"] = "off"
+        else:
+            raise ValueError("quality_metric must be auto, vmaf, ssim, or none.")
+    if options.get("min_vmaf") not in (None, ""):
+        quality["metric"] = "vmaf"
+        quality["target"] = float(options["min_vmaf"])
+    if options.get("min_ssim") not in (None, ""):
+        score = float(options["min_ssim"])
+        quality["metric"] = "ssim_percent"
+        quality["target"] = score * 100 if score <= 1 else score
+    quality["target"] = float(quality.get("target", 92.0))
+    if "p10_minimum" not in (nested_quality or {}):
+        quality["p10_minimum"] = max(0.0, quality["target"] - 4)
+    else:
+        quality["p10_minimum"] = float(quality["p10_minimum"])
+    if "sustained_floor" not in (nested_quality or {}):
+        quality["sustained_floor"] = max(0.0, quality["target"] - 6)
+    else:
+        quality["sustained_floor"] = float(quality["sustained_floor"])
+    quality["maximum_sustained_seconds"] = float(quality.get("maximum_sustained_seconds", 1.0))
+
+    optimization = dict(DEFAULT_OPTIMIZATION)
+    nested_optimization = options.get("optimization")
+    if nested_optimization is not None:
+        if not isinstance(nested_optimization, dict):
+            raise ValueError("optimization must be an object.")
+        optimization.update(nested_optimization)
+
+    video = dict(DEFAULT_VIDEO)
+    nested_video = options.get("video")
+    if nested_video is not None:
+        if not isinstance(nested_video, dict):
+            raise ValueError("video must be an object.")
+        video.update(nested_video)
+    if options.get("maximum_height") not in (None, ""):
+        video["maximum_height"] = int(options["maximum_height"])
+    if options.get("denoise") not in (None, ""):
+        video["denoise"] = str(options["denoise"]).strip().lower()
+
+    audio = dict(DEFAULT_AUDIO)
+    nested_audio = options.get("audio")
+    if nested_audio is not None:
+        if not isinstance(nested_audio, dict):
+            raise ValueError("audio must be an object.")
+        audio.update(nested_audio)
+    if options.get("audio_mode") not in (None, ""):
+        audio_mode = str(options["audio_mode"]).strip().lower()
+        audio["mode"] = {"copy": "copy_all", "copy_all": "copy_all", "archive_optimize": "archive_optimize"}.get(audio_mode, audio_mode)
+
+    evaluation = dict(DEFAULT_EVALUATION)
+    nested_evaluation = options.get("evaluation")
+    if nested_evaluation is not None:
+        if not isinstance(nested_evaluation, dict):
+            raise ValueError("evaluation must be an object.")
+        evaluation.update(nested_evaluation)
+    if options.get("sample_seconds") not in (None, ""):
+        evaluation["sample_seconds"] = options["sample_seconds"]
+    evaluation["sample_seconds"] = float(evaluation["sample_seconds"])
+
+    return {
+        "schema": "encode265.requirements",
+        "protocol_version": 2,
+        "input": str(input_path.expanduser().resolve()),
+        "output": str(output_path.expanduser().resolve()),
+        "hardware_policy": hardware_policy,
+        "requested_encoder": requested_encoder,
+        "quality": {
+            "mode": quality["mode"],
+            "metric": quality["metric"],
+            "target": quality["target"],
+            "p10_minimum": quality["p10_minimum"],
+            "sustained_floor": quality["sustained_floor"],
+            "maximum_sustained_seconds": quality["maximum_sustained_seconds"],
+        },
+        "optimization": optimization,
+        "video": video,
+        "preservation": {"streams": "all", "chapters": True, "metadata": True},
+        "audio": audio,
+        "evaluation": evaluation,
+    }
 
 
-def _encode_file(input_file, output_file, encoder_args, pixel_format_args):
-    temp_output = _temporary_output_path(output_file)
-    command = [
-        "ffmpeg",
-        "-hide_banner",
-        "-y",
-        "-i",
-        str(input_file),
-        "-map",
-        "0",
-        "-map_metadata",
-        "0",
-        "-map_chapters",
-        "0",
-        "-c",
-        "copy",
-        *encoder_args,
-        *pixel_format_args,
-        str(temp_output),
-    ]
-    logging.info("Encoding %s -> %s", input_file, output_file)
+def _required_features(requirements: dict[str, Any]) -> set[str]:
+    required = {
+        "exact_output",
+        "atomic_result",
+        "preserve_all",
+        "full_decode_validation",
+        "semantic_planning",
+        "opaque_plan_id",
+        "fingerprint_invalidation",
+        "sampled_predictions",
+    }
+    if requirements.get("requested_encoder") is not None:
+        required.add("semantic_requested_encoder")
+    if requirements.get("quality", {}).get("mode") == "off":
+        required.add("semantic_quality_off")
+    video = requirements.get("video", {})
+    if video.get("maximum_height") is not None:
+        required.add("semantic_scaling")
+    if video.get("denoise") not in (None, "auto"):
+        required.add("semantic_denoise")
+    if requirements.get("audio", {}).get("mode") == "archive_optimize":
+        required.add("semantic_audio_optimize")
+    return required
+
+
+def _dependency_command(
+    dependency: EncoderDependency,
+    arguments: list[str],
+    *,
+    timeout: int | None = None,
+) -> subprocess.CompletedProcess[str]:
     try:
-        subprocess.run(command, check=True)
-        os.replace(temp_output, output_file)
-    except Exception:
-        temp_output.unlink(missing_ok=True)
-        raise
+        result = subprocess.run(
+            [str(dependency.script), *arguments],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise EncoderDependencyError(f"Could not run 265Encode {arguments[0]}: {exc}") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "no output").strip()
+        raise EncoderDependencyError(
+            f"265Encode {arguments[0]} failed with exit code {result.returncode}: {detail[-4000:]}"
+        )
+    return result
+
+
+def _negotiate_protocol(dependency: EncoderDependency) -> dict[str, Any]:
+    result = _dependency_command(dependency, ["--machine-negotiate", "2"], timeout=30)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise EncoderDependencyError("265Encode returned invalid protocol negotiation JSON.") from exc
+    if payload.get("compatible") is not True or payload.get("selected_protocol_version") != 2:
+        raise EncoderDependencyError("The installed 265Encode version does not support protocol 2.")
+    return payload
+
+
+def _capability_report(dependency: EncoderDependency) -> dict[str, Any]:
+    cache_path = PROBE_CACHE_PATH
+    if cache_path.is_file():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if cached.get("commit") == dependency.commit and isinstance(cached.get("report"), dict):
+                return cached["report"]
+        except (OSError, json.JSONDecodeError, AttributeError):
+            pass
+
+    result = _dependency_command(dependency, ["--machine-probe"], timeout=3600)
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise EncoderDependencyError("265Encode returned invalid capability-probe JSON.") from exc
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = cache_path.with_name(f".{cache_path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps({"commit": dependency.commit, "report": report}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, cache_path)
+    return report
+
+
+def _validate_dependency(dependency: EncoderDependency, required_features: set[str]) -> None:
+    _negotiate_protocol(dependency)
+    report = _capability_report(dependency)
+    versions = report.get("supported_protocol_versions", [])
+    if 2 not in versions:
+        raise EncoderDependencyError("265Encode capability probe does not advertise protocol 2.")
+    features = report.get("features")
+    features = features if isinstance(features, dict) else {}
+    missing = sorted(name for name in required_features if features.get(name) is not True)
+    if missing:
+        raise EncoderDependencyError(
+            "265Encode protocol 2 is missing required feature(s): " + ", ".join(missing)
+        )
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _evaluate_plan(
+    dependency: EncoderDependency,
+    requirements_path: Path,
+    plan_path: Path,
+) -> dict[str, Any]:
+    command = _dependency_command(
+        dependency,
+        ["--machine-evaluate", str(requirements_path), "--plan-json", str(plan_path)],
+        timeout=3600,
+    )
+    try:
+        reference = json.loads(command.stdout)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(f"265Encode did not produce a readable plan: {exc}") from exc
+    if reference.get("schema") != "encode265.plan-reference" or plan.get("schema") != "encode265.plan":
+        raise RuntimeError("265Encode returned an unsupported plan response.")
+    if reference.get("plan_id") != plan.get("plan_id"):
+        raise RuntimeError("265Encode plan reference does not match the saved plan.")
+    return plan
+
+
+def _execute_plan(
+    dependency: EncoderDependency,
+    plan_path: Path,
+    result_path: Path,
+) -> dict[str, Any]:
+    _dependency_command(
+        dependency,
+        ["--execute-plan", str(plan_path), "--result-json", str(result_path)],
+        timeout=None,
+    )
+    try:
+        return json.loads(result_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(f"265Encode did not produce a readable execution result: {exc}") from exc
+
+
+def _validate_execution_result(result: dict[str, Any], expected_output: Path) -> None:
+    if result.get("schema") != "encode265.plan-result" or result.get("status") != "ok" or result.get("exit_code") != 0:
+        detail = result.get("error") or result.get("executor_result") or "unknown execution result"
+        raise RuntimeError(f"265Encode execution was not validated successfully: {detail}")
+    actual_output = Path(str(result.get("output") or "")).resolve()
+    if actual_output != expected_output.resolve():
+        raise RuntimeError(
+            f"265Encode wrote an unexpected output path: {actual_output} (expected {expected_output.resolve()})"
+        )
+    if not expected_output.is_file():
+        raise RuntimeError(f"265Encode reported success but the output file is missing: {expected_output}")
+
+
+def _preflight_options(options: dict[str, Any]) -> dict[str, Any]:
+    config = dict(DEFAULT_PREFLIGHT_OPTIONS)
+    for key in config:
+        if key in options:
+            config[key] = options[key]
+        elif f"preflight_{key}" in options:
+            config[key] = options[f"preflight_{key}"]
+    return config
+
+
+def _preflight_decision(include: bool, reason: str, **extra: Any) -> dict[str, Any]:
+    payload = {"include": bool(include), "reason": reason}
+    payload.update(extra)
+    return payload
+
+
+def preflight_file(
+    input_file: Path | str,
+    options: dict[str, Any] | None = None,
+    *,
+    analysis: dict[str, Any] | None = None,
+    encoder_args: list[str] | None = None,
+    pixel_format_args: list[str] | None = None,
+) -> dict[str, Any]:
+    """Evaluate one candidate with 265Encode's protocol-2 sample planner."""
+    path = Path(input_file).expanduser()
+    if not path.is_file():
+        return _preflight_decision(False, "source path does not exist or is not a file")
+
+    options = options or {}
+    config = _preflight_options(options)
+    if not _option_enabled(config["sample_encode"]):
+        return _preflight_decision(
+            False,
+            "265Encode protocol 2 requires bounded sample evaluation; --no-sample is unsupported.",
+        )
+    if options.get("sample_points", options.get("preflight_sample_points")) not in (None, ""):
+        return _preflight_decision(
+            False,
+            "265Encode selects representative sample positions internally; custom sample_points are unsupported.",
+        )
+    for legacy_option in UNSUPPORTED_TUNING_KEYS:
+        if options.get(legacy_option, options.get(f"preflight_{legacy_option}")) not in (None, ""):
+            return _preflight_decision(
+                False,
+                f"265Encode owns encoder tuning; remove legacy setting {legacy_option}.",
+            )
+
+    try:
+        analysis = analysis or _analyze_video(path)
+    except Exception as exc:
+        return _preflight_decision(False, f"could not inspect source: {type(exc).__name__}: {exc}")
+
+    codec = str(analysis.get("codec") or "").lower()
+    width = int(analysis.get("width") or 0)
+    height = int(analysis.get("height") or 0)
+    if _option_enabled(config["skip_hevc"]) and codec in {"hevc", "h265"}:
+        return _preflight_decision(False, f"already H.265/HEVC ({codec})", analysis=analysis)
+    if _option_enabled(config["skip_efficient_codecs"]) and codec in EFFICIENT_CODECS:
+        return _preflight_decision(False, f"already efficient codec ({codec})", analysis=analysis)
+
+    is_4k = width >= 3840 or height >= 2160
+    if _option_enabled(config["only_4k"]) and not is_4k:
+        return _preflight_decision(False, f"below 4K profile ({width}x{height})", analysis=analysis)
+    if _option_enabled(config["skip_4k"]) and not _option_enabled(config["only_4k"]) and is_4k:
+        return _preflight_decision(False, f"4K source blocked by preflight profile ({width}x{height})", analysis=analysis)
+
+    bounds = (
+        ("skip_under_width", width, "width", "below"),
+        ("skip_under_height", height, "height", "below"),
+        ("skip_over_width", width, "width", "above"),
+        ("skip_over_height", height, "height", "above"),
+    )
+    for key, actual, label, relation in bounds:
+        limit = int(config.get(key) or 0)
+        if limit > 0 and ((relation == "below" and actual < limit) or (relation == "above" and actual > limit)):
+            return _preflight_decision(False, f"{label} {actual} {relation} preflight limit {limit}", analysis=analysis)
+
+    try:
+        dependency = ensure_265encode(update=True)
+        preflight_options = dict(options)
+        preflight_options["sample_seconds"] = config["sample_seconds"]
+        profile_supplied = any(
+            options.get(key) not in (None, "")
+            for key in ("encode_profile", "profile", "preflight_encode_profile")
+        )
+        min_vmaf_supplied = any(
+            options.get(key) not in (None, "")
+            for key in ("min_vmaf", "preflight_min_vmaf")
+        )
+        if "encode_profile" not in preflight_options and "profile" not in preflight_options:
+            if config.get("encode_profile") not in (None, ""):
+                preflight_options["encode_profile"] = config["encode_profile"]
+        if not preflight_options.get("mode") and config.get("mode"):
+            preflight_options["mode"] = config["mode"]
+        if not isinstance(preflight_options.get("quality"), dict):
+            preflight_options["quality_metric"] = config["quality_metric"]
+            if config["quality_metric"] in {"auto", "vmaf"}:
+                if min_vmaf_supplied or not profile_supplied:
+                    preflight_options["min_vmaf"] = config["min_vmaf"]
+                elif profile_supplied and "encode_profile" not in preflight_options:
+                    preflight_options["encode_profile"] = options.get("preflight_encode_profile", options.get("profile"))
+            elif config["quality_metric"] == "ssim":
+                preflight_options["min_ssim"] = config["min_ssim"]
+            elif config["quality_metric"] in {"none", "off"}:
+                preflight_options["quality_mode"] = "off"
+
+        with tempfile.TemporaryDirectory(prefix="265encode-preflight-") as temp_dir_raw:
+            temp_dir = Path(temp_dir_raw)
+            planned_output = temp_dir / "candidate.mkv"
+            requirements = _requirements_payload(path, planned_output, preflight_options, analysis=analysis)
+            _validate_dependency(dependency, _required_features(requirements))
+            requirements_path = temp_dir / "requirements.json"
+            plan_path = temp_dir / "plan.json"
+            _write_json(requirements_path, requirements)
+            plan = _evaluate_plan(dependency, requirements_path, plan_path)
+
+        execution = plan.get("execution", {})
+        prediction = plan.get("prediction", {})
+        quality = prediction.get("quality", {})
+        size = prediction.get("size", {})
+        predicted_bytes = int(size.get("predicted_output_bytes") or 0)
+        source_bytes = int(analysis.get("size") or path.stat().st_size)
+        saving_percent = (
+            (source_bytes - predicted_bytes) / source_bytes * 100.0
+            if source_bytes > 0 and predicted_bytes > 0
+            else None
+        )
+        if execution.get("state") != "ready":
+            reason = execution.get("reason") or "sample quality did not meet the requested target"
+            return _preflight_decision(
+                False,
+                f"265Encode rejected the sample plan: {reason}",
+                analysis=analysis,
+                saving_percent=saving_percent,
+                quality_metric=quality.get("metric"),
+                quality_score=quality.get("predicted_score"),
+                selected_encoder=(plan.get("selection") or {}).get("encoder"),
+            )
+
+        minimum_saving = float(config["min_saving_percent"])
+        if saving_percent is not None and saving_percent < minimum_saving:
+            return _preflight_decision(
+                False,
+                f"predicted saving {saving_percent:.1f}% is below the {minimum_saving:.1f}% minimum",
+                analysis=analysis,
+                saving_percent=saving_percent,
+                quality_metric=quality.get("metric"),
+                quality_score=quality.get("predicted_score"),
+                selected_encoder=(plan.get("selection") or {}).get("encoder"),
+            )
+
+        return _preflight_decision(
+            True,
+            "265Encode sample plan meets the requested quality and saving thresholds",
+            analysis=analysis,
+            saving_percent=saving_percent,
+            predicted_output_bytes=predicted_bytes,
+            quality_metric=quality.get("metric"),
+            quality_score=quality.get("predicted_score"),
+            selected_encoder=(plan.get("selection") or {}).get("encoder"),
+            encode_profile=preflight_options.get("encode_profile", "auto"),
+        )
+    except Exception as exc:
+        return _preflight_decision(False, f"preflight failed: {type(exc).__name__}: {exc}", analysis=analysis)
+
+
+def preflight_source(source: str, extra_options: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run the optional protocol-2 preflight for a single file."""
+    try:
+        options = _parse_options(source)
+        if extra_options:
+            options.update(extra_options)
+        path = Path(options["path"]).expanduser()
+        if path.is_dir():
+            return _preflight_decision(False, "automation preflight expects a single file, not a folder")
+        return preflight_file(path, options)
+    except Exception as exc:
+        return _preflight_decision(False, f"preflight failed: {type(exc).__name__}: {exc}")
 
 
 def _format_cli_result(result: dict[str, Any]) -> str:
     prefix = "queue" if result.get("include") else "skip"
-    reason = str(result.get("reason") or "")
-    analysis = result.get("analysis") if isinstance(result.get("analysis"), dict) else {}
     details = []
-    if analysis:
-        codec = analysis.get("codec")
-        width = analysis.get("width")
-        height = analysis.get("height")
-        if codec and width and height:
-            details.append(f"{codec} {width}x{height}")
-    if result.get("encode_profile"):
-        details.append(f"profile {result['encode_profile']}")
-    if "saving_percent" in result:
+    if result.get("selected_encoder"):
+        details.append(f"encoder {result['selected_encoder']}")
+    if result.get("saving_percent") is not None:
         details.append(f"saving {float(result['saving_percent']):.1f}%")
-    if "quality_metric" in result and result.get("quality_metric") not in {None, "none"} and "quality_score" in result:
-        metric = str(result.get("quality_metric")).upper()
-        details.append(f"{metric} {float(result['quality_score']):.4g}")
+    if result.get("quality_metric") not in (None, "disabled") and result.get("quality_score") is not None:
+        details.append(f"{str(result['quality_metric']).upper()} {float(result['quality_score']):.4g}")
     suffix = f" ({', '.join(details)})" if details else ""
-    return f"{prefix}: {reason}{suffix}"
+    return f"{prefix}: {result.get('reason', '')}{suffix}"
 
 
 def _load_profile(value: str | None) -> dict[str, Any]:
@@ -932,43 +844,32 @@ def _load_profile(value: str | None) -> dict[str, Any]:
     return payload
 
 
-def _csv_to_points(value: str | None) -> list[float] | None:
-    if value is None:
-        return None
-    return _normalize_sample_points(value)
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Reflection H.265 task helper")
     parser.add_argument("path", nargs="?", help="Video path for --preflight")
-    parser.add_argument("--preflight", action="store_true", help="Run the optional H.265 candidate preflight check. Exit 0 only when this file should be queued.")
+    parser.add_argument("--preflight", action="store_true", help="Evaluate a candidate through the linked 265Encode protocol-2 dependency.")
     parser.add_argument("--json", action="store_true", help="Print the preflight result as JSON.")
-    parser.add_argument("--profile", help="JSON object, or @file containing JSON, that overrides the default preflight profile.")
+    parser.add_argument("--profile", help="JSON object, or @file containing JSON, that overrides the preflight profile.")
     parser.add_argument("--allow-4k", action="store_true", help="Do not skip 4K sources.")
     parser.add_argument("--only-4k", action="store_true", help="Only queue 4K sources; lower resolutions are skipped.")
     parser.add_argument("--skip-under-width", type=int, help="Skip sources below this width.")
     parser.add_argument("--skip-under-height", type=int, help="Skip sources below this height.")
     parser.add_argument("--skip-over-width", type=int, help="Skip sources above this width.")
     parser.add_argument("--skip-over-height", type=int, help="Skip sources above this height.")
-    parser.add_argument("--allow-efficient-codecs", action="store_true", help="Do not automatically skip AV1/VP9/HEVC before sample testing.")
-    parser.add_argument("--no-sample", action="store_true", help="Only run hard metadata checks; do not run sample encodes.")
-    parser.add_argument("--min-saving-percent", type=float, help="Required sample size saving percentage.")
-    parser.add_argument("--sample-seconds", type=int, help="Length of each sample in seconds.")
-    parser.add_argument("--sample-points", help="Comma/space-separated sample positions, e.g. 12,35,60,82 or 0.12,0.35,0.60,0.82.")
-    parser.add_argument("--encode-profile", choices=["auto", "standard", "4k", "4k_quality", "space_saver"], help="Encoder profile to use for the sample test. Default auto uses the 4k profile for 4K sources and standard otherwise.")
-    parser.add_argument("--mode", choices=["software", "hardware", "hw", "auto"], help="Encoder mode for the sample test/profile.")
-    parser.add_argument("--crf", help="Override libx265 CRF for the sample test/profile.")
-    parser.add_argument("--preset", help="Override libx265 preset for the sample test/profile.")
-    parser.add_argument("--pix-fmt", help="Override output pixel format for the sample test/profile, e.g. yuv420p10le or none.")
-    parser.add_argument("--x265-params", help="Extra x265 parameter string for software encodes, e.g. aq-mode=3.")
-    parser.add_argument("--quality-metric", choices=["auto", "vmaf", "ssim", "none"], help="Quality metric to use after the sample encode.")
-    parser.add_argument("--min-ssim", type=float, help="Minimum average SSIM score.")
-    parser.add_argument("--min-vmaf", type=float, help="Minimum average VMAF score.")
+    parser.add_argument("--allow-efficient-codecs", action="store_true", help="Do not skip AV1/VP9/HEVC before sample planning.")
+    parser.add_argument("--no-sample", action="store_true", help="Deprecated; protocol 2 requires bounded sample evaluation.")
+    parser.add_argument("--min-saving-percent", type=float, help="Required predicted output size saving percentage.")
+    parser.add_argument("--sample-seconds", type=int, help="Duration of each protocol-2 sample, from 1 to 10 seconds.")
+    parser.add_argument("--sample-points", help="Deprecated; 265Encode chooses representative sample positions internally.")
+    parser.add_argument("--encode-profile", choices=sorted(LEGACY_PROFILES), help="Compatibility alias for a semantic quality target.")
+    parser.add_argument("--mode", choices=["software", "hardware", "hw", "auto"], help="software is explicit; auto/hardware only select proven hardware.")
+    parser.add_argument("--quality-metric", choices=["auto", "vmaf", "ssim", "none"], help="Quality metric for the 265Encode sample plan.")
+    parser.add_argument("--min-ssim", type=float, help="Minimum mean SSIM, as a fraction or percentage.")
+    parser.add_argument("--min-vmaf", type=float, help="Minimum VMAF target.")
     args = parser.parse_args(argv)
 
     if not args.preflight:
         parser.error("This helper only runs when --preflight is supplied. Normal task work is done by the Reflection worker.")
-
     if not args.path:
         print("skip: no path supplied", file=sys.stderr)
         return 1
@@ -979,47 +880,28 @@ def main(argv: list[str] | None = None) -> int:
             extra_options["skip_4k"] = False
         if args.only_4k:
             extra_options["only_4k"] = True
-        if args.skip_under_width is not None:
-            extra_options["skip_under_width"] = args.skip_under_width
-        if args.skip_under_height is not None:
-            extra_options["skip_under_height"] = args.skip_under_height
-        if args.skip_over_width is not None:
-            extra_options["skip_over_width"] = args.skip_over_width
-        if args.skip_over_height is not None:
-            extra_options["skip_over_height"] = args.skip_over_height
+        for name in ("skip_under_width", "skip_under_height", "skip_over_width", "skip_over_height"):
+            value = getattr(args, name)
+            if value is not None:
+                extra_options[name] = value
         if args.allow_efficient_codecs:
             extra_options["skip_efficient_codecs"] = False
             extra_options["skip_hevc"] = False
         if args.no_sample:
             extra_options["sample_encode"] = False
-        if args.encode_profile is not None:
-            extra_options["encode_profile"] = args.encode_profile
-        if args.mode is not None:
-            extra_options["mode"] = args.mode
-        if args.crf is not None:
-            extra_options["crf"] = args.crf
-        if args.preset is not None:
-            extra_options["preset"] = args.preset
-        if args.pix_fmt is not None:
-            extra_options["pix_fmt"] = args.pix_fmt
-        if args.x265_params is not None:
-            extra_options["x265_params"] = args.x265_params
         if args.min_saving_percent is not None:
             extra_options["min_saving_percent"] = args.min_saving_percent
         if args.sample_seconds is not None:
             extra_options["sample_seconds"] = args.sample_seconds
-        points = _csv_to_points(args.sample_points)
-        if points is not None:
-            extra_options["sample_points"] = points
-        if args.quality_metric is not None:
-            extra_options["quality_metric"] = args.quality_metric
-        if args.min_ssim is not None:
-            extra_options["min_ssim"] = args.min_ssim
-        if args.min_vmaf is not None:
-            extra_options["min_vmaf"] = args.min_vmaf
+        if args.sample_points is not None:
+            extra_options["sample_points"] = args.sample_points
+        for name in ("encode_profile", "mode", "quality_metric", "min_ssim", "min_vmaf"):
+            value = getattr(args, name)
+            if value is not None:
+                extra_options[name] = value
 
         result = preflight_source(args.path, extra_options)
-    except Exception as exc:  # noqa: BLE001 - CLI must produce a concise automation reason.
+    except Exception as exc:  # noqa: BLE001 - CLI must return a concise automation reason.
         result = _preflight_decision(False, f"preflight failed: {type(exc).__name__}: {exc}")
 
     if args.json:

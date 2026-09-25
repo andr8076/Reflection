@@ -16,4 +16,5 @@ farm_settings.local.php
 __MACOSX/
 
 /cluster/output
+/cluster/.dependencies/
 /cluster/tasks_local/__pycache__/

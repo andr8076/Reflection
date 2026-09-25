@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import subprocess
 import sys
 import tempfile
@@ -41,8 +42,6 @@ class TaskContractTest(unittest.TestCase):
         self.assertTrue(registry["h265_encode"].spec["output"]["preserve_metadata"])
         self.assertTrue(registry["h265_encode"].spec["output"]["preserve_attachments"])
         self.assertEqual(registry["h265_encode"].spec["output"]["encoded_streams"], ["video:0"])
-        self.assertEqual(registry["h265_encode"].spec["encode_profiles"]["default"], "auto")
-        self.assertIn("4k", registry["h265_encode"].spec["encode_profiles"])
         self.assertEqual(registry["h265_encode"].spec["output"]["kind"], "file")
 
     def test_compress_archive_writes_zip_and_rejects_wrong_extension(self):
@@ -67,11 +66,9 @@ class TaskContractTest(unittest.TestCase):
         module = load_task("h265_encode")
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            source_file = root / "movie.mp4"
+            source_file = Path(temp_dir) / "movie.mp4"
             source_file.write_text("placeholder", encoding="utf-8")
-            output_file = module._output_path(source_file, source_file, None, 1)
-            self.assertEqual(output_file.name, "movie_h265.mkv")
+            self.assertEqual(module._output_path(source_file, None).name, "movie_h265.mkv")
 
     def test_h265_encode_rejects_non_mkv_delivery(self):
         module = load_task("h265_encode")
@@ -80,14 +77,8 @@ class TaskContractTest(unittest.TestCase):
             root = Path(temp_dir)
             source_file = root / "movie.mp4"
             source_file.write_text("placeholder", encoding="utf-8")
-            bad_delivery = root / "movie_h265.mp4"
-
-            with mock.patch.object(module, "_require_tool"), \
-                 mock.patch.object(module, "_choose_encoder", return_value=(module.SOFTWARE_ARGS, module.PIXEL_FORMAT_ARGS)), \
-                 mock.patch.object(module, "_analyze_video", return_value={"codec": "h264", "height": 1080}), \
-                 mock.patch.object(module, "_encode_file"):
-                with self.assertRaisesRegex(ValueError, "must end with .mkv"):
-                    module.run(str(source_file), str(bad_delivery), True)
+            with self.assertRaisesRegex(ValueError, "must end with .mkv"):
+                module.run(str(source_file), str(root / "movie_h265.mp4"), True)
 
     def test_h265_encode_rejects_directory_jobs(self):
         module = load_task("h265_encode")
@@ -97,58 +88,118 @@ class TaskContractTest(unittest.TestCase):
             with self.assertRaisesRegex(IsADirectoryError, "one video per job"):
                 module.run(str(source_dir), "", False)
 
-    def test_h265_encode_auto_profile_selects_4k_settings(self):
+    def test_h265_encode_declares_linked_auto_updating_dependency(self):
         module = load_task("h265_encode")
+        dependency = module.TASK_SPEC["dependencies"]["repositories"][0]
+        self.assertEqual(dependency["repository"], "https://github.com/andr8076/265Encode")
+        self.assertEqual(dependency["branch"], "main")
+        self.assertEqual(dependency["protocol_version"], 2)
+        self.assertEqual(dependency["update"], "before_each_h265_run")
+        self.assertNotIn("libx265", module.TASK_SPEC["requirements"].get("ffmpeg_encoders", []))
 
-        standard_profile, standard_args, standard_pix_fmt = module._encoder_for_analysis({}, {"codec": "h264", "width": 1920, "height": 1080})
-        four_k_profile, four_k_args, four_k_pix_fmt = module._encoder_for_analysis({}, {"codec": "h264", "width": 3840, "height": 2160})
-
-        self.assertEqual(standard_profile, "standard")
-        self.assertEqual(four_k_profile, "4k")
-        self.assertIn("20", standard_args)
-        self.assertIn("22", four_k_args)
-        self.assertEqual(standard_pix_fmt, module.PIXEL_FORMAT_ARGS)
-        self.assertEqual(four_k_pix_fmt, module.PIXEL_FORMAT_ARGS)
-
-    def test_h265_encode_source_json_can_override_profile(self):
+    def test_h265_requirements_default_to_hardware_only_and_preserve_streams(self):
         module = load_task("h265_encode")
-
-        profile_name, encoder_args, pixel_format_args = module._encoder_for_analysis(
-            {"encode_profile": "4k_quality", "crf": "18", "preset": "slower", "pix_fmt": "none"},
-            {"codec": "h264", "width": 3840, "height": 2160},
+        requirements = module._requirements_payload(
+            Path("/tmp/input.mp4"),
+            Path("/tmp/output.mkv"),
+            {},
         )
+        self.assertEqual(requirements["hardware_policy"], "auto_hardware_only")
+        self.assertEqual(requirements["quality"]["metric"], "vmaf")
+        self.assertEqual(requirements["quality"]["target"], 92.0)
+        self.assertEqual(requirements["optimization"]["primary"], "smallest_output")
+        self.assertEqual(requirements["preservation"]["streams"], "all")
+        self.assertEqual(requirements["audio"]["mode"], "copy_all")
 
-        self.assertEqual(profile_name, "4k_quality")
-        self.assertIn("18", encoder_args)
-        self.assertIn("slower", encoder_args)
-        self.assertEqual(pixel_format_args, [])
+    def test_h265_software_encoding_requires_explicit_semantic_mode(self):
+        module = load_task("h265_encode")
+        requirements = module._requirements_payload(
+            Path("/tmp/input.mp4"),
+            Path("/tmp/output.mkv"),
+            {"mode": "software", "encode_profile": "4k_quality"},
+        )
+        self.assertEqual(requirements["hardware_policy"], "manual_software")
+        self.assertEqual(requirements["quality"]["target"], 95.0)
+        self.assertEqual(requirements["quality"]["p10_minimum"], 91.0)
+        self.assertEqual(requirements["quality"]["sustained_floor"], 89.0)
 
-    def test_h265_encode_command_preserves_movie_streams(self):
+    def test_h265_rejects_legacy_ffmpeg_tuning_flags(self):
+        module = load_task("h265_encode")
+        with self.assertRaisesRegex(ValueError, "265Encode owns encoder tuning"):
+            module._requirements_payload(
+                Path("/tmp/input.mp4"),
+                Path("/tmp/output.mkv"),
+                {"crf": 20},
+            )
+
+    def test_h265_skips_already_hevc_without_updating_dependency(self):
+        module = load_task("h265_encode")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_file = Path(temp_dir) / "movie.mkv"
+            source_file.write_text("placeholder", encoding="utf-8")
+            with mock.patch.object(module, "_analyze_video", return_value={
+                "codec": "hevc", "width": 1920, "height": 1080, "duration": 60, "size": 10,
+            }), mock.patch.object(module, "ensure_265encode") as ensure:
+                result = module.run(str(source_file), "", False)
+            self.assertTrue(result["success"])
+            self.assertTrue(result["skipped"])
+            ensure.assert_not_called()
+
+    def test_h265_run_uses_protocol_plan_and_commits_validated_output(self):
         module = load_task("h265_encode")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            source_file = root / "movie.mkv"
+            source_file = root / "movie.mp4"
             output_file = root / "movie_h265.mkv"
-            source_file.write_text("placeholder", encoding="utf-8")
+            source_file.write_text("source", encoding="utf-8")
+            dependency = module.EncoderDependency(
+                name="265Encode",
+                repository="https://github.com/andr8076/265Encode.git",
+                branch="main",
+                checkout=root / "dependency",
+                script=root / "dependency" / "265Encode.sh",
+                commit="a" * 40,
+            )
 
-            with mock.patch.object(module.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run_mock, \
-                 mock.patch.object(module.os, "replace") as replace_mock:
-                module._encode_file(source_file, output_file, module.SOFTWARE_ARGS, module.PIXEL_FORMAT_ARGS)
+            def evaluate(_dependency, requirements_path, plan_path):
+                requirements = json.loads(requirements_path.read_text(encoding="utf-8"))
+                plan = {
+                    "schema": "encode265.plan",
+                    "plan_id": "plan-test",
+                    "requirements": requirements,
+                    "execution": {"state": "ready", "reason": None},
+                    "selection": {"encoder": "hevc_nvenc"},
+                    "prediction": {},
+                }
+                plan_path.write_text(json.dumps(plan), encoding="utf-8")
+                return plan
 
-            command = run_mock.call_args.args[0]
-            self.assertIn("-map", command)
-            self.assertIn("0", command)
-            self.assertIn("-map_metadata", command)
-            self.assertIn("-map_chapters", command)
-            self.assertIn("-c", command)
-            self.assertIn("copy", command)
-            self.assertIn("-c:v:0", command)
-            self.assertIn("libx265", command)
-            self.assertNotIn("-c:a", command)
-            self.assertEqual(Path(command[-1]).suffix, ".mkv")
-            replace_mock.assert_called_once()
+            def execute(_dependency, plan_path, result_path):
+                plan = json.loads(plan_path.read_text(encoding="utf-8"))
+                encoded = Path(plan["requirements"]["output"])
+                encoded.write_text("validated", encoding="utf-8")
+                result = {
+                    "schema": "encode265.plan-result",
+                    "status": "ok",
+                    "exit_code": 0,
+                    "output": str(encoded),
+                    "encoder": "hevc_nvenc",
+                }
+                result_path.write_text(json.dumps(result), encoding="utf-8")
+                return result
 
+            with mock.patch.object(module, "_analyze_video", return_value={
+                "codec": "h264", "width": 1920, "height": 1080, "duration": 60, "size": 10,
+            }), mock.patch.object(module, "ensure_265encode", return_value=dependency), \
+                 mock.patch.object(module, "_validate_dependency"), \
+                 mock.patch.object(module, "_evaluate_plan", side_effect=evaluate), \
+                 mock.patch.object(module, "_execute_plan", side_effect=execute):
+                result = module.run(str(source_file), "", False)
+
+            self.assertTrue(result["success"])
+            self.assertEqual(result["encoder"], "hevc_nvenc")
+            self.assertEqual(output_file.read_text(encoding="utf-8"), "validated")
 
 if __name__ == "__main__":
     unittest.main()

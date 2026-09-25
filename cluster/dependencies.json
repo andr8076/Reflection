@@ -1,0 +1,13 @@
+{
+  "schema": "reflection.external-dependencies.v1",
+  "dependencies": [
+    {
+      "name": "265Encode",
+      "repository": "https://github.com/andr8076/265Encode.git",
+      "branch": "main",
+      "path": ".dependencies/265Encode",
+      "interface": "protocol-2",
+      "auto_update": "before-each-h265-run"
+    }
+  ]
+}
