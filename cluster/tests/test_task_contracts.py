@@ -1,6 +1,5 @@
 import importlib.util
 import json
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -27,10 +26,10 @@ def load_task(name):
 class TaskContractTest(unittest.TestCase):
     def test_task_modules_declare_contracts(self):
         registry = discover_task_definitions(TASKS_DIR)
+        self.assertEqual(set(registry), {"compress_archive", "h265_encode", "invert_image"})
         self.assertTrue(registry["compress_archive"].spec["production_ready"])
+        self.assertTrue(registry["h265_encode"].spec["production_ready"])
         self.assertTrue(registry["invert_image"].spec["production_ready"])
-        self.assertFalse(registry["dummy_task"].spec["production_ready"])
-        self.assertFalse(registry["render_frame"].spec["production_ready"])
         self.assertEqual(registry["compress_archive"].spec["delivery"]["extension"], ".zip")
         self.assertEqual(registry["compress_archive"].spec["delivery"]["mode"], "auto")
         self.assertEqual(registry["h265_encode"].spec["delivery"]["extension"], ".mkv")

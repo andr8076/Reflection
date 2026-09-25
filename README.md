@@ -63,16 +63,22 @@ The task accepts exactly one video per job and writes MKV. A blank delivery path
 The optional worker command filter remains available for candidate screening. It now asks 265Encode to plan a bounded sample and checks predicted saving and quality; details and supported options are in [H.265 preflight](docs/H265_PREFLIGHT.md).
 
 The master must be able to enumerate a submitted folder. For an unmounted remote folder, use Bulk import with one video path per line or configure an automation scan. The worker rejects directory jobs so a single process can never hide an entire multi-video batch.
-## Local task modules
+## Worker task modules
 
-Bundled tasks live in `cluster/tasks/`. Site-specific tasks belong in `cluster/tasks_local/`, which the updater preserves. Every task file must define:
+The bundled production task catalogue contains:
+
+- `compress_archive` — compress a source directory into a ZIP archive.
+- `h265_encode` — encode one video through the linked [265Encode](https://github.com/andr8076/265Encode) dependency.
+- `invert_image` — create an image with inverted colors.
+
+Site-specific tasks belong in `cluster/tasks_local/`, which the updater preserves. Every task file must define:
 
 - `TASK_NAME`;
 - `TASK_SPEC` with `name`, `production_ready`, valid `source.mode`, valid `delivery.mode`, and `output.kind`;
 - `run(source, delivery, overwrite_allowed)`;
 - optional declarative `requirements` and optional `install()`.
 
-Tasks marked `production_ready: false` remain examples and are never advertised to the scheduler. A local task cannot replace a bundled or built-in task name.
+Only tasks marked `production_ready: true` are advertised to the scheduler. Keep unfinished examples out of the bundled `cluster/tasks/` catalogue. A local task cannot replace a bundled or built-in task name.
 
 ## Updating
 
