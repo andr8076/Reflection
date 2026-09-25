@@ -100,7 +100,7 @@
         var parts = [];
 
         if (title) {
-            title.textContent = moduleName + ' contract';
+            title.textContent = (spec.display_name || moduleName) + ' contract';
         }
         parts.push('source ' + sourceMode);
         parts.push('delivery ' + deliveryMode);
