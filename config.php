@@ -335,6 +335,7 @@ function reflection_normalize_task_spec(string $name, array $spec, ?string $fall
 
     $normalized = [
         'name' => (string) ($spec['name'] ?? $name),
+        'display_name' => (string) ($spec['display_name'] ?? $spec['name'] ?? $name),
         'description' => (string) ($spec['description'] ?? $fallbackDescription ?? ''),
         'source' => [
             'mode' => $sourceMode,
