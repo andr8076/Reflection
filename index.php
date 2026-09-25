@@ -1423,7 +1423,7 @@ if ((strtolower((string) ($_GET['ajax'] ?? '')) === '1' || strtolower((string) (
                 <select class="form-select" name="module" id="task-module" required>
                     <?php foreach ($config['allowed_tasks'] as $taskName => $description): ?>
                         <?php $selectDescription = reflection_task_select_description((string) $taskName, (string) $description, $taskSpecs); ?>
-                        <option value="<?= reflection_h($taskName) ?>"><?= reflection_h($taskName) ?> — <?= reflection_h($selectDescription) ?></option>
+                        <option value="<?= reflection_h($taskName) ?>"><?= reflection_h($taskSpecs[$taskName]['display_name'] ?? $taskName) ?> — <?= reflection_h($selectDescription) ?></option>
                     <?php endforeach; ?>
                 </select>
             </label>
