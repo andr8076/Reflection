@@ -25,14 +25,16 @@ from encoder_dependency import (  # noqa: E402
 )
 
 TASK_NAME = "h265_encode"
+DISPLAY_NAME = "265Encode"
 DESCRIPTION = (
-    "Encode one video to validated H.265/HEVC MKV using the linked 265Encode "
-    "project, preserving all streams, chapters, and metadata."
+    "Encode video to H.265/HEVC MKV with the auto-updating 265Encode GitHub project; "
+    "preserve all streams, chapters, and metadata."
 )
 TASK_SPEC_JSON = r'''
 {
   "name": "h265_encode",
-  "description": "Encode one video to validated H.265/HEVC MKV through the linked 265Encode protocol-2 dependency.",
+  "display_name": "265Encode",
+  "description": "Encode video to H.265/HEVC MKV with the auto-updating 265Encode GitHub project. The worker refreshes 265Encode before each job and preserves all streams, chapters, and metadata.",
   "production_ready": true,
   "requirements": {
     "commands": ["git", "python3", "ffmpeg", "ffprobe"]
