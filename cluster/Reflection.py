@@ -1135,6 +1135,11 @@ def _ftp_connection(parsed_uri, transfer_auth):
     ftp = ftp_class()
     ftp.connect(host, port, timeout=30)
     ftp.login(username, password)
+    # Some FTP servers advertise UTF-8 but leave it disabled by default.
+    # Python ftplib sends command arguments as UTF-8, so enable the server
+    # mode before addressing paths that contain non-ASCII characters.
+    with contextlib.suppress(ftplib.error_perm, ftplib.error_reply, ftplib.error_temp):
+        ftp.sendcmd("OPTS UTF8 ON")
     if isinstance(ftp, ftplib.FTP_TLS):
         ftp.prot_p()
     return ftp
