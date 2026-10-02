@@ -245,6 +245,7 @@ function reflection_default_allowed_tasks(): array
 {
     return [
         'h265_encode' => 'Transcode the main video stream to H.265/HEVC MKV while preserving audio, subtitles, chapters, attachments, and metadata.',
+        'hardcore_archive' => 'Archive one source folder as a verified .7z using the linked Hardcore-Archive project.',
         'compress_archive' => 'Compress a file or directory into a .zip archive.',
         'invert_image' => 'Invert an image while preserving alpha transparency when possible.',
         'noop' => 'Built-in worker connectivity check.',
